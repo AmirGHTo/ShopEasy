@@ -1,0 +1,313 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using Prometheus;
+using Serilog;
+using Serilog.Events;
+using ShopEasy.ProductService.Data;
+using ShopEasy.Shared.Middleware;
+using ShopEasy.Shared.Services;
+using StackExchange.Redis;
+using System.IdentityModel.Tokens.Jwt;
+
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+    .Enrich.FromLogContext()
+    .Enrich.WithProperty("Service", "ShopEasy.ProductService")
+    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [OrderService] {Message:lj}{NewLine}{Exception}")
+    .WriteTo.Seq("http://seq:5341")
+    .CreateBootstrapLogger();
+
+try
+{
+    var builder = WebApplication.CreateBuilder(args);
+
+    builder.Host.UseSerilog((ctx, _, cfg) => cfg
+       .MinimumLevel.Information()
+       .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+       .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
+       .Enrich.FromLogContext()
+       .Enrich.WithProperty("Service", "ShopEasy.ProductService")
+       .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [OrderService] {Message:lj}{NewLine}{Exception}")
+       .WriteTo.Seq("http://seq:5341", restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Information));
+
+    builder.Services.AddDbContext<ProductDbContext>(options =>
+        options.UseNpgsql(
+            builder.Configuration.GetConnectionString("DefaultConnection")
+            ?? throw new InvalidOperationException(
+                "Connection string 'DefaultConnection' not found.")));
+
+    // ── JWT Authentication ────────────────────────────────────────────────────
+    // This middleware:
+    // 1. Reads the Authorization: Bearer <token> header
+    // 2. Fetches public keys from the IdP's /.well-known/jwks endpoint (cached)
+    // 3. Validates the signature, expiry, issuer, and audience
+    // 4. Populates HttpContext.User with claims from the token
+
+    // Prevent ASP.NET from remapping "role" → long URI claim type
+    // Without this, [Authorize(Roles = "admin")] never matches
+    JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
+    JwtSecurityTokenHandler.DefaultMapInboundClaims = false;
+
+    builder.Services
+        .AddAuthentication("Bearer")
+        .AddJwtBearer("Bearer", options =>
+        {
+            options.Authority = builder.Configuration["IdentityServer:Authority"]
+                ?? "http://identity:8080";
+            options.Audience = "shopeasy-api";
+            options.RequireHttpsMetadata = false;
+
+            // Assign a NEW object instead of modifying the existing one
+            options.TokenValidationParameters = new TokenValidationParameters
+            {
+                RoleClaimType = "role",
+                NameClaimType = "name",
+                ValidateAudience = true,
+                ValidAudience = "shopeasy-api"
+            };
+        });
+
+
+    builder.Services.AddAuthorization();
+
+    builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing
+        .SetResourceBuilder(ResourceBuilder.CreateDefault()
+        .AddService("ShopEasy.ProductService"))
+        .AddAspNetCoreInstrumentation(options =>
+        {
+            options.Filter = ctx =>
+                !ctx.Request.Path.StartsWithSegments("/health");
+        })
+        .AddHttpClientInstrumentation()
+        .AddOtlpExporter(options =>
+        {
+            options.Endpoint = new Uri(
+                builder.Configuration["Telemetry:Endpoint"]
+                ?? "http://jaeger:4317");
+        }));
+
+    builder.Services.AddControllers();
+    builder.Services.AddEndpointsApiExplorer();
+    builder.Services.AddSwaggerGen(options =>
+    {
+        options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
+        {
+            Title = "ShopEasy Product API",
+            Version = "v1",
+            Description = "Original product API — stable, no breaking changes"
+        });
+        options.SwaggerDoc("v2", new Microsoft.OpenApi.Models.OpenApiInfo
+        {
+            Title = "ShopEasy Product API",
+            Version = "v2",
+            Description = "Enhanced product API — adds currency, formatted price, createdAt"
+        });
+
+        options.DocInclusionPredicate((docName, apiDesc) =>
+        {
+            var actionApiVersionModel = apiDesc.ActionDescriptor
+                .EndpointMetadata
+                .OfType<Asp.Versioning.ApiVersionAttribute>()
+                .FirstOrDefault();
+
+            if (actionApiVersionModel == null)
+                return docName == "v1"; // unversioned endpoints go to v1
+
+            return actionApiVersionModel.Versions
+                .Any(v => $"v{v.MajorVersion}" == docName);
+        });
+
+        // ← Resolve conflict when two controllers have same method names
+        options.ResolveConflictingActions(apiDescriptions => apiDescriptions.First());
+
+        options.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+        {
+            Name = "Authorization",
+            Type = Microsoft.OpenApi.Models.SecuritySchemeType.Http,
+            Scheme = "Bearer",
+            BearerFormat = "JWT",
+            In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+            Description = "Paste your JWT token here. Get it from http://localhost:5000/account/token"
+        });
+
+        options.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+    {
+        {
+            new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+            {
+                Reference = new Microsoft.OpenApi.Models.OpenApiReference
+                {
+                    Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+                    Id   = "Bearer"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
+    });
+    builder.Services.AddApiVersioning(options =>
+    {
+        // Default version when client doesn't specify
+        options.DefaultApiVersion = new Asp.Versioning.ApiVersion(1, 0);
+        options.AssumeDefaultVersionWhenUnspecified = true;
+
+        // Return API version info in response headers
+        // X-Api-Version: 1.0
+        options.ReportApiVersions = true;
+
+        // Support both URL segment and header versioning
+        options.ApiVersionReader = Asp.Versioning.ApiVersionReader.Combine(
+            new Asp.Versioning.UrlSegmentApiVersionReader(),
+            new Asp.Versioning.HeaderApiVersionReader("X-Api-Version")
+        );
+    })
+    .AddApiExplorer(options =>
+    {
+        // Format version as 'v1', 'v2' in URL
+        options.GroupNameFormat = "'v'VVV";
+        options.SubstituteApiVersionInUrl = true;
+    });
+
+
+    // ── Redis Distributed Cache ───────────────────────────────────────────────
+    // Caches product data to reduce database load.
+    // TTL: 5 minutes for product lists, 5 minutes for individual products.
+    // Cache is invalidated when products are created, updated, or deleted.
+    var redisConnection = builder.Configuration["Redis:Connection"] ?? "redis:6379";
+
+    builder.Services.AddStackExchangeRedisCache(options =>
+    {
+        options.Configuration = redisConnection;
+        options.InstanceName = "shopeasy:";
+    });
+
+    // With this — abortConnect=false means it won't crash if Redis is unavailable:
+    builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+        ConnectionMultiplexer.Connect(
+            $"{redisConnection},abortConnect=false"));
+
+    builder.Services.AddScoped<CacheService>();
+
+    builder.Services
+        .AddHealthChecks()
+        .AddDbContextCheck<ProductDbContext>(
+            name: "database",
+            failureStatus: Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy,
+            tags: new[] { "ready" })
+        .AddUrlGroup(
+            uri: new Uri($"{builder.Configuration["IdentityServer:Authority"]}/health"),
+            name: "identity",
+            failureStatus: Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded,
+            tags: new[] { "ready" });
+
+    // ── Prometheus Metrics ────────────────────────────────────────────────────
+    builder.Services.AddMetricServer(options =>
+    {
+        options.Port = 9091; // separate port from the API
+    });
+
+    var app = builder.Build();
+
+    app.UseMiddleware<CorrelationIdMiddleware>();
+
+    app.UseSwagger();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/swagger/v1/swagger.json", "Products API v1");
+        options.SwaggerEndpoint("/swagger/v2/swagger.json", "Products API v2");
+        options.RoutePrefix = string.Empty; // Swagger UI at root "/"
+    });
+
+
+    using (var scope = app.Services.CreateScope())
+    {
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        var logger = scope.ServiceProvider
+            .GetRequiredService<ILogger<Program>>();
+        try
+        {
+            logger.LogInformation("Applying database migrations...");
+            db.Database.Migrate();
+            if (!db.Products.Any())
+                ProductDbSeeder.Seed(db);
+            logger.LogInformation("Database migrations applied.");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to apply migrations");
+            throw;
+        }
+    }
+
+    app.UseSerilogRequestLogging(options =>
+    {
+        options.GetLevel = (ctx, elapsed, ex) =>
+        {
+            if (ctx.Request.Path.StartsWithSegments("/health") ||
+                ctx.Request.Path.StartsWithSegments("/metrics"))
+                return Serilog.Events.LogEventLevel.Debug;
+            return Serilog.Events.LogEventLevel.Information;
+        };
+    });
+    app.UseAuthentication();
+    app.UseAuthorization();
+
+    app.UseHttpMetrics(options =>
+    {
+        options.AddCustomLabel("service", _ => "ProductService");
+    });
+    app.MapMetrics();
+    app.MapControllers();
+
+    // Liveness — is the process alive?
+    app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+    {
+        Predicate = _ => false, // no checks — if process is running, it's live
+        ResponseWriter = WriteHealthResponse
+    });
+
+    // Readiness — can it serve traffic?
+    app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+    {
+        Predicate = check => check.Tags.Contains("ready"),
+        ResponseWriter = WriteHealthResponse
+    });
+
+    // Legacy endpoint — keeps docker-compose healthcheck working
+    app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))
+       .AllowAnonymous();
+
+    app.Run();
+}
+catch (Exception ex)
+{
+    Log.Fatal(ex, "Product Service terminated unexpectedly");
+}
+finally
+{
+    Log.CloseAndFlush();
+}
+
+static Task WriteHealthResponse(
+    HttpContext context,
+    Microsoft.Extensions.Diagnostics.HealthChecks.HealthReport report)
+{
+    context.Response.ContentType = "application/json";
+    var result = System.Text.Json.JsonSerializer.Serialize(new
+    {
+        status = report.Status.ToString(),
+        checks = report.Entries.Select(e => new
+        {
+            name = e.Key,
+            status = e.Value.Status.ToString(),
+            duration = e.Value.Duration.TotalMilliseconds + "ms",
+            error = e.Value.Exception?.Message
+        }),
+        totalDuration = report.TotalDuration.TotalMilliseconds + "ms"
+    });
+    return context.Response.WriteAsync(result);
+}

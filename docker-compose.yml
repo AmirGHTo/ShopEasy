@@ -1,0 +1,331 @@
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL Database ─────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: shopeasy-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER:     shopeasy
+      POSTGRES_PASSWORD: ShopEasy_Pass123!
+      POSTGRES_DB:       shopeasy
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shopeasy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - shopeasy-net
+
+  pgadmin:
+    image: dpage/pgadmin4:8.6
+    container_name: shopeasy-pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL:    admin@shopeasy.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    networks:
+      - shopeasy-net
+    depends_on:
+      - postgres
+
+  seq:
+    image: datalust/seq:2024.1
+    container_name: shopeasy-seq
+    ports:
+      - "5341:80"
+      - "5342:5341"
+    environment:
+      ACCEPT_EULA: Y
+    networks:
+      - shopeasy-net
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: shopeasy-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - shopeasy-net
+    depends_on:
+      - gateway
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: shopeasy-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - shopeasy-net
+    depends_on:
+      - prometheus
+
+  redis:
+    image: redis:7-alpine
+    container_name: shopeasy-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - shopeasy-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-insight:
+    image: redis/redisinsight:latest
+    container_name: shopeasy-redis-insight
+    ports:
+      - "5540:5540"
+    networks:
+      - shopeasy-net
+    depends_on:
+      - redis
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: shopeasy-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_ERLANG_COOKIE: "SHOPEASY_SECRET_COOKIE_12345"
+    tmpfs:
+      - /var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    networks:
+      - shopeasy-net
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: shopeasy-jaeger
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    networks:
+      - shopeasy-net
+
+  # ── Identity Provider ───────────────────────────────────────────────────────
+  identity:
+    build:
+      context: .
+      dockerfile: src/Identity/ShopEasy.Identity/Dockerfile
+    container_name: shopeasy-identity
+    ports:
+      - "5001:8080"
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_identity;Username=shopeasy;Password=ShopEasy_Pass123!"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    networks:
+      - shopeasy-net
+
+  # ── Product Service ─────────────────────────────────────────────────────────
+  product:
+    build:
+      context: .
+      dockerfile: src/Services/ShopEasy.ProductService/Dockerfile
+    container_name: shopeasy-product
+    ports:
+      - "5101:8080"
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_products;Username=shopeasy;Password=ShopEasy_Pass123!"
+      IdentityServer__Authority: "http://identity:8080"
+      Redis__Connection: "redis:6379"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - shopeasy-net
+
+  # ── Inventory Service ───────────────────────────────────────────────────────
+  inventory:
+    build:
+      context: .
+      dockerfile: src/Services/ShopEasy.InventoryService/Dockerfile
+    container_name: shopeasy-inventory
+    ports:
+      - "5103:8080"
+    environment:
+      # Enable HTTP/2 for gRPC (required)
+      ASPNETCORE_HTTP_PORTS: ""   # disable default
+        # Force HTTP/2 support
+      DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2UNENCRYPTEDSUPPORT: "1"
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_inventory;Username=shopeasy;Password=ShopEasy_Pass123!"
+      IdentityServer__Authority: "http://identity:8080"
+      RabbitMQ__Host: rabbitmq
+      RabbitMQ__Username: guest
+      RabbitMQ__Password: guest
+      Redis__Connection: "redis:6379"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - shopeasy-net
+
+  # ── Payment Service ─────────────────────────────────────────────────────────
+  payment:
+    build:
+      context: .
+      dockerfile: src/Services/ShopEasy.PaymentService/Dockerfile
+    container_name: shopeasy-payment
+    ports:
+      - "5104:8080"
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      Testing__ForcePaymentSuccess: "true"
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_payments;Username=shopeasy;Password=ShopEasy_Pass123!"
+      IdentityServer__Authority: "http://identity:8080"
+      RabbitMQ__Host: rabbitmq
+      RabbitMQ__Username: guest
+      RabbitMQ__Password: guest
+    depends_on:
+      postgres:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - shopeasy-net
+
+  # ── Order Service ───────────────────────────────────────────────────────────
+  order:
+    build:
+      context: .
+      dockerfile: src/Services/ShopEasy.OrderService/Dockerfile
+    # container_name: shopeasy-order
+    ports:
+      - "8080"        # ← change from "5102:8080" to just "8080" (dynamic host port)
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      Services__InventoryService:     "http://inventory:8080"
+      Services__InventoryGrpcService: "http://inventory:8090"
+      DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2UNENCRYPTEDSUPPORT: "1"
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_orders;Username=shopeasy;Password=ShopEasy_Pass123!"
+      IdentityServer__Authority: "http://identity:8080"
+      ServiceAuth__ClientId: "order-service"
+      ServiceAuth__ClientSecret: "order-service-secret"
+      RabbitMQ__Host: rabbitmq
+      RabbitMQ__Username: guest
+      RabbitMQ__Password: guest
+    depends_on:
+      postgres:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
+      inventory:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - shopeasy-net
+
+  # ── API Gateway ─────────────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: src/Gateway/ShopEasy.Gateway/Dockerfile
+    container_name: shopeasy-gateway
+    ports:
+      - "5000:8080"
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      IdentityServer__Authority: "http://identity:8080"
+      ReverseProxy__Clusters__products-cluster__Destinations__primary__Address: "http://product:8080"
+      ReverseProxy__Clusters__orders-cluster__Destinations__primary__Address: "http://order:8080"
+      ReverseProxy__Clusters__inventory-cluster__Destinations__primary__Address: "http://inventory:8080"
+      ReverseProxy__Clusters__payments-cluster__Destinations__primary__Address: "http://payment:8080"
+    depends_on:
+      identity:
+        condition: service_healthy
+      product:
+        condition: service_healthy
+      order:
+        condition: service_healthy
+      inventory:
+        condition: service_healthy
+      payment:
+        condition: service_healthy
+    networks:
+      - shopeasy-net
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  postgres-data:
+
+# ── Network ───────────────────────────────────────────────────────────────────
+networks:
+  shopeasy-net:
+    driver: bridge

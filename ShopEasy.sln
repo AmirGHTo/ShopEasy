@@ -1,0 +1,78 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.1.11312.151
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ShopEasy.Shared", "src\Shared\ShopEasy.Shared\ShopEasy.Shared.csproj", "{A1B2C3D4-0001-0000-0000-000000000001}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ShopEasy.Identity", "src\Identity\ShopEasy.Identity\ShopEasy.Identity.csproj", "{A1B2C3D4-0002-0000-0000-000000000002}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ShopEasy.Gateway", "src\Gateway\ShopEasy.Gateway\ShopEasy.Gateway.csproj", "{A1B2C3D4-0003-0000-0000-000000000003}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ShopEasy.ProductService", "src\Services\ShopEasy.ProductService\ShopEasy.ProductService.csproj", "{A1B2C3D4-0004-0000-0000-000000000004}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ShopEasy.OrderService", "src\Services\ShopEasy.OrderService\ShopEasy.OrderService.csproj", "{A1B2C3D4-0005-0000-0000-000000000005}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ShopEasy.InventoryService", "src\Services\ShopEasy.InventoryService\ShopEasy.InventoryService.csproj", "{A1B2C3D4-0006-0000-0000-000000000006}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ShopEasy.PaymentService", "src\Services\ShopEasy.PaymentService\ShopEasy.PaymentService.csproj", "{A1B2C3D4-0007-0000-0000-000000000007}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{FA9DDA92-6001-4C1A-AAE1-238EAD296C95}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ShopEasy.UnitTests", "src\Tests\ShopEasy.UnitTests\ShopEasy.UnitTests.csproj", "{053AF938-4CFF-47A7-8C5C-2C34B108B198}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ShopEasy.IntegrationTests", "src\Tests\ShopEasy.IntegrationTests\ShopEasy.IntegrationTests.csproj", "{83925D89-25C8-4E40-8F6F-0A9DC4336DFE}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A1B2C3D4-0001-0000-0000-000000000001}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-0001-0000-0000-000000000001}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-0001-0000-0000-000000000001}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-0001-0000-0000-000000000001}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1B2C3D4-0002-0000-0000-000000000002}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-0002-0000-0000-000000000002}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-0002-0000-0000-000000000002}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-0002-0000-0000-000000000002}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1B2C3D4-0003-0000-0000-000000000003}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-0003-0000-0000-000000000003}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-0003-0000-0000-000000000003}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-0003-0000-0000-000000000003}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1B2C3D4-0004-0000-0000-000000000004}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-0004-0000-0000-000000000004}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-0004-0000-0000-000000000004}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-0004-0000-0000-000000000004}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1B2C3D4-0005-0000-0000-000000000005}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-0005-0000-0000-000000000005}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-0005-0000-0000-000000000005}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-0005-0000-0000-000000000005}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1B2C3D4-0006-0000-0000-000000000006}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-0006-0000-0000-000000000006}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-0006-0000-0000-000000000006}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-0006-0000-0000-000000000006}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1B2C3D4-0007-0000-0000-000000000007}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-0007-0000-0000-000000000007}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-0007-0000-0000-000000000007}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-0007-0000-0000-000000000007}.Release|Any CPU.Build.0 = Release|Any CPU
+		{053AF938-4CFF-47A7-8C5C-2C34B108B198}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{053AF938-4CFF-47A7-8C5C-2C34B108B198}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{053AF938-4CFF-47A7-8C5C-2C34B108B198}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{053AF938-4CFF-47A7-8C5C-2C34B108B198}.Release|Any CPU.Build.0 = Release|Any CPU
+		{83925D89-25C8-4E40-8F6F-0A9DC4336DFE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{83925D89-25C8-4E40-8F6F-0A9DC4336DFE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{83925D89-25C8-4E40-8F6F-0A9DC4336DFE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{83925D89-25C8-4E40-8F6F-0A9DC4336DFE}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{053AF938-4CFF-47A7-8C5C-2C34B108B198} = {FA9DDA92-6001-4C1A-AAE1-238EAD296C95}
+		{83925D89-25C8-4E40-8F6F-0A9DC4336DFE} = {FA9DDA92-6001-4C1A-AAE1-238EAD296C95}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {30059EEA-5D03-43AD-AE5F-59E7640F6895}
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,20 @@
+
+Open http://localhost:5050
+Login:
+
+Email: admin@shopeasy.com
+Password: admin
+
+Add the server:
+
+Right-click Servers → Register → Server
+General tab → Name: ShopEasy
+Connection tab:
+
+Host: postgres
+Port: 5432
+Username: shopeasy
+Password: ShopEasy_Pass123!
+
+
+Click Save

@@ -1,0 +1,2 @@
+obj\Debug\net8.0/Inventory.cs \
+obj\Debug\net8.0/InventoryGrpc.cs: ../../Shared/ShopEasy.Shared/Protos/inventory.proto

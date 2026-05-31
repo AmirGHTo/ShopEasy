@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "ShopEasy.InventoryService": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:1815;http://localhost:1818"
+    }
+  }
+}

@@ -1,0 +1,473 @@
+using MassTransit;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using Prometheus;
+using Serilog;
+using Serilog.Events;
+using ShopEasy.OrderService.Data;
+using ShopEasy.OrderService.ReadModels;
+using ShopEasy.OrderService.Sagas;
+using ShopEasy.OrderService.Services;
+using ShopEasy.Shared.Grpc;
+using ShopEasy.Shared.Middleware;
+using ShopEasy.Shared.Services;
+using StackExchange.Redis;
+using System.IdentityModel.Tokens.Jwt;
+using System.Threading.RateLimiting;
+
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+    .Enrich.FromLogContext()
+    .Enrich.WithProperty("Service", "ShopEasy.OrderService")
+    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [OrderService] {Message:lj}{NewLine}{Exception}")
+    .WriteTo.Seq("http://seq:5341")
+    .CreateBootstrapLogger();
+
+try
+{
+    AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
+
+    var builder = WebApplication.CreateBuilder(args);
+
+    builder.Host.UseSerilog((ctx, _, cfg) => cfg
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
+    .Enrich.FromLogContext()
+    .Enrich.WithProperty("Service", "ShopEasy.OrderService")
+    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [OrderService] {Message:lj}{NewLine}{Exception}")
+    .WriteTo.Seq("http://seq:5341",restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Information));
+
+    builder.Services.AddDbContext<OrderDbContext>(options =>
+    options.UseNpgsql(
+        builder.Configuration.GetConnectionString("DefaultConnection")
+        ?? throw new InvalidOperationException(
+            "Connection string 'DefaultConnection' not found.")));
+
+    // Prevent ASP.NET from remapping "role" → long URI claim type
+    // Without this, [Authorize(Roles = "admin")] never matches
+    JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
+    JwtSecurityTokenHandler.DefaultMapInboundClaims = false;
+
+    builder.Services
+        .AddAuthentication("Bearer")
+        .AddJwtBearer("Bearer", options =>
+        {
+            options.Authority = builder.Configuration["IdentityServer:Authority"]
+                ?? "http://identity:8080";
+            options.Audience = "shopeasy-api";
+            options.RequireHttpsMetadata = false;
+
+            // Assign a NEW object instead of modifying the existing one
+            options.TokenValidationParameters = new TokenValidationParameters
+            {
+                RoleClaimType = "role",
+                NameClaimType = "name",
+                ValidateAudience = true,
+                ValidAudience = "shopeasy-api"
+            };
+        });
+
+    builder.Services.AddAuthorization();
+
+    // ── Token Service (for Client Credentials / M2M calls) ───────────────────
+    builder.Services.AddSingleton<ITokenService, TokenService>();
+
+    // ── HTTP Client for IdP (used by TokenService to request service tokens) ──
+    builder.Services.AddHttpClient("idp");
+
+    // ── Typed HTTP Client for InventoryService with Polly resilience ──────────
+    // This is production-grade: automatic retries with exponential backoff,
+    // circuit breaker to stop calling a failing service, and timeouts.
+    builder.Services.AddHttpClient<InventoryClient>(client =>
+        {
+            client.BaseAddress = new Uri(builder.Configuration["Services:InventoryService"] ?? "http://inventory:8080");
+            client.Timeout = TimeSpan.FromSeconds(10);
+        })
+        .AddHttpMessageHandler<CorrelationIdHandler>()
+        .AddStandardResilienceHandler(options =>
+        {
+            // Retry up to 3 times with exponential backoff
+            options.Retry.MaxRetryAttempts = 3;
+            options.Retry.Delay = TimeSpan.FromSeconds(1);
+
+            // Circuit breaker: after 5 failures in 30s, stop calling for 30s
+            options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(30);
+            options.CircuitBreaker.FailureRatio = 0.5;
+            options.CircuitBreaker.MinimumThroughput = 5;
+            options.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(30);
+
+            // Total timeout per request (including retries)
+            options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(30);
+        });
+
+    builder.Services.AddTransient<CorrelationIdHandler>();
+    builder.Services.AddScoped<OrderReadModelUpdater>();
+    // Track when the bus connects so outbox knows consumers are ready
+    builder.Services.AddSingleton<BusReadySignal>();
+    builder.Services.AddSingleton<IBusObserver, BusObserver>();
+    builder.Services.AddHttpClient();
+    builder.Services.AddHostedService<OutboxDeliveryService>();
+    builder.Services.AddMassTransit(x =>
+    {
+        x.AddConsumer<OrderConfirmedSagaStarter>();
+        x.AddConsumer<InventoryReservedConsumer>();
+        x.AddConsumer<InventoryReservationFailedConsumer>();
+        x.AddConsumer<PaymentSucceededConsumer>();
+        x.AddConsumer<PaymentFailedConsumer>();
+        x.AddConsumer<InventoryReleasedConsumer>();
+
+        x.UsingRabbitMq((ctx, cfg) =>
+        {
+            cfg.Host(builder.Configuration["RabbitMQ:Host"] ?? "rabbitmq", "/", h =>
+            {
+                h.Username(builder.Configuration["RabbitMQ:Username"] ?? "guest");
+                h.Password(builder.Configuration["RabbitMQ:Password"] ?? "guest");
+            });
+
+            // ── Global retry policy ───────────────────────────────────────────────
+            // Retry 3 times with exponential backoff before moving to error queue
+            cfg.UseMessageRetry(r =>
+            {
+                r.Exponential(
+                    retryLimit: 3,
+                    minInterval: TimeSpan.FromSeconds(1),
+                    maxInterval: TimeSpan.FromSeconds(10),
+                    intervalDelta: TimeSpan.FromSeconds(2));
+
+                // Don't retry these — they will never succeed
+                r.Ignore<ArgumentNullException>();
+                r.Ignore<InvalidOperationException>();
+            });
+
+            // Saga starter — bind directly to the publisher exchange
+            cfg.ReceiveEndpoint("order-saga-starter", e =>
+            {
+                e.ConfigureConsumeTopology = false;
+                e.Bind("ShopEasy.Shared.Contracts:OrderConfirmedEvent", b =>
+                {
+                    b.ExchangeType = "fanout";
+                    b.Durable = true;
+                });
+                e.ConfigureConsumer<OrderConfirmedSagaStarter>(ctx);
+            });
+
+            // Saga event consumers — these receive responses from inventory and payment
+            cfg.ReceiveEndpoint("order-saga-inventory-reserved", e =>
+            {
+                e.ConfigureConsumeTopology = false;
+                e.Bind("ShopEasy.Shared.Contracts:InventoryReservedEvent", b =>
+                {
+                    b.ExchangeType = "fanout";
+                    b.Durable = true;
+                });
+                e.ConfigureConsumer<InventoryReservedConsumer>(ctx);
+            });
+
+            cfg.ReceiveEndpoint("order-saga-inventory-failed", e =>
+            {
+                e.ConfigureConsumeTopology = false;
+                e.Bind("ShopEasy.Shared.Contracts:InventoryReservationFailedEvent", b =>
+                {
+                    b.ExchangeType = "fanout";
+                    b.Durable = true;
+                });
+                e.ConfigureConsumer<InventoryReservationFailedConsumer>(ctx);
+            });
+
+            cfg.ReceiveEndpoint("order-saga-payment-succeeded", e =>
+            {
+                e.ConfigureConsumeTopology = false;
+                e.Bind("ShopEasy.Shared.Contracts:PaymentSucceededEvent", b =>
+                {
+                    b.ExchangeType = "fanout";
+                    b.Durable = true;
+                });
+                e.ConfigureConsumer<PaymentSucceededConsumer>(ctx);
+            });
+
+            cfg.ReceiveEndpoint("order-saga-payment-failed", e =>
+            {
+                e.ConfigureConsumeTopology = false;
+                e.Bind("ShopEasy.Shared.Contracts:PaymentFailedEvent", b =>
+                {
+                    b.ExchangeType = "fanout";
+                    b.Durable = true;
+                });
+                e.ConfigureConsumer<PaymentFailedConsumer>(ctx);
+            });
+
+            cfg.ReceiveEndpoint("order-saga-inventory-released", e =>
+            {
+                e.ConfigureConsumeTopology = false;
+                e.Bind("ShopEasy.Shared.Contracts:InventoryReleasedEvent", b =>
+                {
+                    b.ExchangeType = "fanout";
+                    b.Durable = true;
+                });
+                e.ConfigureConsumer<InventoryReleasedConsumer>(ctx);
+            });
+        });
+    });
+    builder.Services.AddSingleton<DeadLetterMonitor>();
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<DeadLetterMonitor>());
+    builder.Services.AddHostedService<SagaOrchestrator>();
+    builder.Services.AddHostedService<SagaTimeoutService>();
+    builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing
+        .SetResourceBuilder(ResourceBuilder.CreateDefault()
+            .AddService("ShopEasy.OrderService"))
+        .AddAspNetCoreInstrumentation(options =>
+        {
+            options.Filter = ctx =>
+                !ctx.Request.Path.StartsWithSegments("/health");
+        })
+        .AddHttpClientInstrumentation()
+        .AddOtlpExporter(options =>
+        {
+            options.Endpoint = new Uri(
+                builder.Configuration["Telemetry:Endpoint"]
+                ?? "http://jaeger:4317");
+        }));
+
+    builder.Services.AddHttpContextAccessor();
+    builder.Services.AddControllers();
+    builder.Services.AddEndpointsApiExplorer();
+    builder.Services.AddSwaggerGen(options =>
+    {
+        options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
+        {
+            Title = "ShopEasy - Order API",
+            Version = "v1"
+        });
+
+        // This adds the Authorize button in Swagger UI
+        // so you can paste a Bearer token and test protected endpoints
+        options.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+        {
+            Name = "Authorization",
+            Type = Microsoft.OpenApi.Models.SecuritySchemeType.Http,
+            Scheme = "Bearer",
+            BearerFormat = "JWT",
+            In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+            Description = "Paste your JWT token here. Get it from http://localhost:5000/account/token"
+        });
+
+        options.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+    {
+        {
+            new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+            {
+                Reference = new Microsoft.OpenApi.Models.OpenApiReference
+                {
+                    Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
+    });
+
+    // ── Service-level rate limiting ───────────────────────────────────────────
+    // Defense in depth — protects even if Gateway is bypassed
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.RejectionStatusCode = 429;
+
+        // Limit order creation per user
+        options.AddPolicy("create-order", context =>
+        {
+            var userId = context.User.FindFirst("sub")?.Value
+                      ?? context.Connection.RemoteIpAddress?.ToString()
+                      ?? "unknown";
+
+            return RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey: userId,
+                factory: _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 10,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                    QueueLimit = 0
+                });
+        });
+
+        options.OnRejected = async (context, ct) =>
+        {
+            context.HttpContext.Response.StatusCode = 429;
+            context.HttpContext.Response.ContentType = "application/json";
+            await context.HttpContext.Response.WriteAsync(
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    error = "Too many requests",
+                    message = "Maximum 10 orders per minute allowed."
+                }), ct);
+        };
+    });
+
+    builder.Services
+    .AddHealthChecks()
+    .AddDbContextCheck<OrderDbContext>(
+        name: "database",
+        tags: new[] { "ready" })
+    .AddRabbitMQ(
+        rabbitConnectionString: $"amqp://{builder.Configuration["RabbitMQ:Username"]}:{builder.Configuration["RabbitMQ:Password"]}@{builder.Configuration["RabbitMQ:Host"]}/",
+        name: "rabbitmq",
+        tags: new[] { "ready" })
+    .AddUrlGroup(
+        uri: new Uri($"{builder.Configuration["IdentityServer:Authority"]}/health"),
+        name: "identity",
+        failureStatus: Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded,
+        tags: new[] { "ready" });
+
+    // ── Prometheus Metrics ────────────────────────────────────────────────────
+    builder.Services.AddMetricServer(options =>
+    {
+        options.Port = 9091; // separate port from the API
+    });
+
+    // ── gRPC Client for InventoryService ──────────────────────────────────────
+    // Replace HTTP client with gRPC for faster, typed communication
+    var inventoryGrpcAddress = builder.Configuration["Services:InventoryGrpcService"]
+        ?? "http://inventory:8080";
+
+    builder.Services.AddGrpcClient<InventoryGrpc.InventoryGrpcClient>(options =>
+    {
+        options.Address = new Uri(inventoryGrpcAddress);
+    })
+    .ConfigureChannel(options =>
+    {
+        options.Credentials = Grpc.Core.ChannelCredentials.Insecure;
+    });
+    builder.Services.AddScoped<InventoryGrpcClient>();
+
+    // ── Redis Distributed Cache ───────────────────────────────────────────────
+    // Caches product data to reduce database load.
+    // TTL: 5 minutes for product lists, 5 minutes for individual products.
+    // Cache is invalidated when products are created, updated, or deleted.
+    var redisConnection = builder.Configuration["Redis:Connection"] ?? "redis:6379";
+
+    builder.Services.AddStackExchangeRedisCache(options =>
+    {
+        options.Configuration = redisConnection;
+        options.InstanceName = "shopeasy:";
+    });
+
+    // With this — abortConnect=false means it won't crash if Redis is unavailable:
+    builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+        ConnectionMultiplexer.Connect(
+            $"{redisConnection},abortConnect=false"));
+
+    builder.Services.AddScoped<CacheService>();
+    builder.Services.AddScoped<InventoryCacheService>();
+
+    var app = builder.Build();
+
+    app.UseMiddleware<CorrelationIdMiddleware>();
+
+    app.UseSwagger();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/swagger/v1/swagger.json", "v1");
+        options.RoutePrefix = string.Empty; // Swagger UI at root "/"
+    });
+
+    using (var scope = app.Services.CreateScope())
+    {
+        var db = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        try
+        {
+            logger.LogInformation("Applying database migrations...");
+            db.Database.Migrate();
+            logger.LogInformation("Database migrations applied.");
+        }
+        catch (Npgsql.PostgresException ex) when (ex.SqlState == "42P07")
+        {
+            // Table already exists — another instance ran migrations first
+            // This is safe to ignore in a multi-instance deployment
+            logger.LogWarning(
+                "Migration table already exists — another instance applied migrations first. Continuing.");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to apply database migrations");
+            throw;
+        }
+    }
+
+    app.UseSerilogRequestLogging(options =>
+    {
+        // Don't log health checks or metrics scrapes
+        options.GetLevel = (ctx, elapsed, ex) =>
+        {
+            if (ctx.Request.Path.StartsWithSegments("/health") ||
+                ctx.Request.Path.StartsWithSegments("/metrics"))
+                return Serilog.Events.LogEventLevel.Debug;
+            return Serilog.Events.LogEventLevel.Information;
+        };
+    });
+
+    app.UseRateLimiter();
+    app.UseAuthentication();
+    app.UseAuthorization();
+
+    // Expose /metrics endpoint for Prometheus scraping
+    app.UseHttpMetrics(options =>
+    {
+        options.AddCustomLabel("service", _ => "OrderService"); 
+    });
+    app.MapMetrics();
+
+    app.MapControllers();
+
+    // Liveness — is the process alive?
+    app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+    {
+        Predicate = _ => false, // no checks — if process is running, it's live
+        ResponseWriter = WriteHealthResponse
+    });
+
+    // Readiness — can it serve traffic?
+    app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+    {
+        Predicate = check => check.Tags.Contains("ready"),
+        ResponseWriter = WriteHealthResponse
+    });
+
+    // Legacy endpoint — keeps docker-compose healthcheck working
+    app.MapGet("/health", () => Results.Ok(new { status = "healthy" })).AllowAnonymous();
+
+    app.Run();
+}
+catch (Exception ex)
+{
+    Log.Fatal(ex, "Order Service terminated unexpectedly");
+}
+finally
+{
+    Log.CloseAndFlush();
+}
+static Task WriteHealthResponse(
+    HttpContext context,
+    Microsoft.Extensions.Diagnostics.HealthChecks.HealthReport report)
+{
+    context.Response.ContentType = "application/json";
+    var result = System.Text.Json.JsonSerializer.Serialize(new
+    {
+        status = report.Status.ToString(),
+        checks = report.Entries.Select(e => new
+        {
+            name = e.Key,
+            status = e.Value.Status.ToString(),
+            duration = e.Value.Duration.TotalMilliseconds + "ms",
+            error = e.Value.Exception?.Message
+        }),
+        totalDuration = report.TotalDuration.TotalMilliseconds + "ms"
+    });
+    return context.Response.WriteAsync(result);
+}

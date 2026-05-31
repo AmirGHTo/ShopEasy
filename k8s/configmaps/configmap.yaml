@@ -1,0 +1,15 @@
+﻿apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shopeasy-config
+  namespace: shopeasy
+data:
+  ASPNETCORE_URLS: "http://+:8080"
+  ASPNETCORE_ENVIRONMENT: "Production"
+  IdentityServer__Authority: "http://identity:8080"
+  RabbitMQ__Host: "rabbitmq"
+  RabbitMQ__Username: "guest"
+  Redis__Connection: "redis:6379"
+  Services__InventoryService: "http://inventory:8080"
+  Services__InventoryGrpcService: "http://inventory:8090"
+  DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2UNENCRYPTEDSUPPORT: "1"

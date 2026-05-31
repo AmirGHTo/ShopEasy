@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "ShopEasy.ProductService": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:1814;http://localhost:1822"
+    }
+  }
+}

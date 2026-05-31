@@ -1,0 +1,153 @@
+{
+  "title": "ShopEasy Overview",
+  "uid": "shopeasy-overview",
+  "panels": [
+    {
+      "id": 1,
+      "title": "HTTP Request Rate",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_received_total[1m])) by (service)",
+          "legendFormat": "{{service}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "HTTP Error Rate",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_received_total{code=~\"5..\"}[1m])) by (service)",
+          "legendFormat": "{{service}} errors"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Orders Placed",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(shopeasy_orders_placed_total{status=\"confirmed\"})",
+          "legendFormat": "Confirmed"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Outbox Pending",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 8
+      },
+      "targets": [
+        {
+          "expr": "shopeasy_outbox_pending_messages",
+          "legendFormat": "Pending"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Active Sagas",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 8
+      },
+      "targets": [
+        {
+          "expr": "shopeasy_sagas_active",
+          "legendFormat": "Active"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Cache Hit Rate",
+      "type": "gauge",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(shopeasy_inventory_cache_hits_total[5m]) / (rate(shopeasy_inventory_cache_hits_total[5m]) + rate(shopeasy_inventory_cache_misses_total[5m])) * 100",
+          "legendFormat": "Hit %"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": [ "lastNotNull" ] },
+        "minValue": 0,
+        "maxValue": 100
+      }
+    },
+    {
+      "id": 7,
+      "title": "Saga Duration (p95)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(shopeasy_saga_duration_seconds_bucket[5m])) by (le, result))",
+          "legendFormat": "p95 {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "HTTP Response Time (p95)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))",
+          "legendFormat": "p95 {{service}}"
+        }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  }
+}

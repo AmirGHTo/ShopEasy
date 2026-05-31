@@ -1,0 +1,98 @@
+1. OrderConfirmedSagaStarter creates a SagaState record
+2. SagaOrchestrator sends ReserveInventoryCommand
+3. InventoryService reserves stock (ReservedQty increases)
+4. InventoryService publishes InventoryReservedEvent
+5. Saga sends ProcessPaymentCommand
+6. PaymentService charges the customer
+7a. Payment succeeds → Saga sends CommitInventoryCommand
+    → Quantity actually decreases, ReservedQty back to 0
+    → Saga status = Completed ✅
+7b. Payment fails → Saga sends ReleaseInventoryCommand
+    → InventoryService releases the reservation
+    → ReservedQty back to 0, Quantity unchanged
+    → Saga status = Cancelled ✅
+*******************************************************
+The customer can never be charged without inventory being reduced. Inventory can never be permanently lost without payment succeeding. 
+The system always ends in a consistent state.
+*******************************************************
+Outbox: "What if RabbitMQ is temporarily unavailable?"
+  → Guarantees the OrderConfirmedEvent reaches the Saga
+  → No message is ever lost between the database and the broker
+
+Saga: "What if payment fails after inventory is already reserved?"
+  → Guarantees the system ends in a consistent state
+  → Automatically compensates if any step fails
+
+Outbox: "Save the event in your own database first, publish to the broker second — so a broker outage never causes data loss."
+Saga: "Break a distributed transaction into steps with compensating actions for each step, so failure at any point automatically rolls back what was done."
+
+*******************************************************
+**************************************************************************************************************
+**************************************************************************************************************
+**************************************************************************************************************
+**************************************************************************************************************
+**************************************************************************************************************
+*******************************************************
+
+
+
+The Priority Roadmap for Millions of Users
+
+Tier 1 — Must have before going live
+
+1. PostgreSQL (replace SQLite)          ← 2 hours
+   Why: SQLite cannot handle concurrent writes at scale
+
+2. Distributed outbox locking           ← 3 hours  
+   Why: Multiple service instances = duplicate deliveries
+
+3. gRPC for internal communication      ← 4 hours
+   Why: 3-5x faster than HTTP/JSON, strongly typed contracts
+
+4. CQRS + Read models                   ← 1 day
+   Why: Separate read/write concerns, eliminate stock check bottleneck
+
+Tier 2 — Required for production operations
+
+5. Kubernetes deployment                ← 2 days
+   Why: Auto-scaling, self-healing, rolling deployments
+
+6. Secrets management (Vault/Key Vault) ← 4 hours
+   Why: Credentials cannot be in code or config files
+
+7. Alerting rules in Grafana            ← 2 hours
+   Why: Know about problems before users do
+
+8. Distributed tracing correlation      ← 3 hours
+   Why: Link traces across async message boundaries
+
+Tier 3 — Scaling optimizations
+
+9.  Event sourcing                      ← 3 days
+    Why: Complete audit trail, temporal queries, event replay
+
+10. Message schema registry (Protobuf)  ← 2 days
+    Why: Enforce contracts between services at compile time
+
+11. CQRS with event sourcing            ← combines 4 + 9
+    Why: The complete pattern used by Netflix, Uber
+
+12. Saga timeout handling               ← 1 day
+    Why: What if InventoryService never responds?
+         Saga is stuck forever — needs timeout + compensation
+
+13. Optimistic concurrency              ← 4 hours
+    Why: Prevent lost updates when two instances update same record
+
+14. Bulkhead pattern                    ← 2 hours
+    Why: One slow service shouldn't exhaust thread pool of another
+
+
+
+
+
+
+
+
+
+

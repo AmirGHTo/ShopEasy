@@ -1,0 +1,80 @@
+@page
+@model ShopEasy.Identity.Pages.Account.LoginModel
+@{
+    ViewData["Title"] = "Sign In — ShopEasy";
+    Layout = null;
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@ViewData["Title"]</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+               background: #f0f4f8; display: flex; align-items: center;
+               justify-content: center; min-height: 100vh; }
+        .card { background: white; border-radius: 12px; padding: 40px;
+                width: 100%; max-width: 420px; box-shadow: 0 4px 24px rgba(0,0,0,.08); }
+        .logo { text-align: center; margin-bottom: 28px; }
+        .logo h1 { font-size: 28px; color: #2563eb; font-weight: 700; }
+        .logo p  { color: #64748b; font-size: 14px; margin-top: 4px; }
+        .error   { background: #fef2f2; border: 1px solid #fca5a5; border-radius: 8px;
+                   padding: 12px; color: #dc2626; margin-bottom: 20px; font-size: 14px; }
+        label    { display: block; font-size: 14px; font-weight: 500;
+                   color: #374151; margin-bottom: 6px; }
+        input[type=email], input[type=password] {
+                   width: 100%; padding: 10px 14px; border: 1px solid #d1d5db;
+                   border-radius: 8px; font-size: 15px; margin-bottom: 16px;
+                   transition: border-color .2s; }
+        input:focus { outline: none; border-color: #2563eb;
+                      box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
+        .remember { display: flex; align-items: center; gap: 8px; margin-bottom: 24px; }
+        .remember input { width: auto; margin: 0; }
+        .remember label { margin: 0; color: #6b7280; font-weight: 400; }
+        button { width: 100%; padding: 12px; background: #2563eb; color: white;
+                 border: none; border-radius: 8px; font-size: 16px; font-weight: 600;
+                 cursor: pointer; transition: background .2s; }
+        button:hover { background: #1d4ed8; }
+        .hint { margin-top: 20px; padding: 14px; background: #f8fafc;
+                border-radius: 8px; font-size: 13px; color: #64748b; }
+        .hint strong { color: #374151; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="logo">
+        <h1>ShopEasy</h1>
+        <p>Identity Provider — Sign in to continue</p>
+    </div>
+
+    @if (!string.IsNullOrEmpty(Model.ErrorMessage))
+    {
+        <div class="error">@Model.ErrorMessage</div>
+    }
+
+    <form method="post" asp-page="/Account/Login" asp-route-returnUrl="@Model.ReturnUrl">
+        <input type="hidden" asp-for="ReturnUrl" />
+        <label asp-for="Input.Email">Email address</label>
+        <input asp-for="Input.Email" type="email" autocomplete="email" placeholder="you@example.com" />
+
+        <label asp-for="Input.Password">Password</label>
+        <input asp-for="Input.Password" type="password" autocomplete="current-password" placeholder="••••••••" />
+
+        <div class="remember">
+            <input asp-for="Input.RememberMe" type="checkbox" id="remember" />
+            <label for="remember">Keep me signed in</label>
+        </div>
+
+        <button type="submit">Sign In</button>
+    </form>
+
+    <div class="hint">
+        <strong>Test accounts:</strong><br/>
+        alice@shopeasy.com / Alice1234! (admin)<br/>
+        bob@shopeasy.com / Bob1234! (customer)
+    </div>
+</div>
+</body>
+</html>

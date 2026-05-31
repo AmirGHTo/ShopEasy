@@ -1,0 +1,34 @@
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'shopeasy-gateway'
+    static_configs:
+      - targets: ['gateway:8080']
+    metrics_path: '/metrics'
+
+  - job_name: 'shopeasy-product'
+    static_configs:
+      - targets: ['product:8080']
+    metrics_path: '/metrics'
+
+  - job_name: 'shopeasy-order'
+    static_configs:
+      - targets: ['order:8080']
+    metrics_path: '/metrics'
+
+  - job_name: 'shopeasy-inventory'
+    static_configs:
+      - targets: ['inventory:8080']
+    metrics_path: '/metrics'
+
+  - job_name: 'shopeasy-payment'
+    static_configs:
+      - targets: ['payment:8080']
+    metrics_path: '/metrics'
+
+  - job_name: 'shopeasy-identity'
+    static_configs:
+      - targets: ['identity:8080']
+    metrics_path: '/metrics'
