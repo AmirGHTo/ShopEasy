@@ -41,6 +41,8 @@ public class SagaOrchestrator : BackgroundService
             .GetRequiredService<OrderDbContext>();
         var publishEndpoint = scope.ServiceProvider
             .GetRequiredService<IPublishEndpoint>();
+        var sagaLocking = scope.ServiceProvider
+            .GetRequiredService<ISagaLocking>();
 
         // Find sagas that need processing — not yet completed or cancelled
         var pendingSagas = await db.SagaStates
@@ -56,7 +58,7 @@ public class SagaOrchestrator : BackgroundService
         {
             try
             {
-                await ProcessSaga(saga, db, publishEndpoint, ct);
+                await ProcessSaga(saga, db, publishEndpoint, sagaLocking, ct);
             }
             catch (Exception ex)
             {
@@ -85,6 +87,7 @@ public class SagaOrchestrator : BackgroundService
         OrderSagaState saga,
         OrderDbContext db,
         IPublishEndpoint publishEndpoint,
+        ISagaLocking sagaLocking,
         CancellationToken ct)
     {
         _logger.LogInformation(
@@ -95,7 +98,7 @@ public class SagaOrchestrator : BackgroundService
         {
             // ── Step 1: Just started → send ReserveInventoryCommand ───────────
             case SagaStatus.Started:
-                await HandleStarted(saga, db, publishEndpoint, ct);
+                await HandleStarted(saga, db, publishEndpoint, sagaLocking, ct);
                 break;
 
             // ── Step 2: Inventory reserved → send ProcessPaymentCommand ───────
@@ -132,34 +135,59 @@ public class SagaOrchestrator : BackgroundService
         OrderSagaState saga,
         OrderDbContext db,
         IPublishEndpoint publishEndpoint,
+        ISagaLocking sagaLocking,
         CancellationToken ct)
     {
-        var items = JsonSerializer.Deserialize<List<OrderLineItem>>(saga.ItemsJson)!;
+        ReserveInventoryCommand command;
 
-        _logger.LogInformation(
-            "Saga {SagaId}: Sending ReserveInventoryCommand for Order {OrderId}",
-            saga.Id, saga.OrderId);
+        // Claim the saga: lock its row and re-check the state. Without this, two Order
+        // instances polling the same table would both start it, and a cancel arriving at the
+        // same moment would be overwritten by the orchestrator's stale copy.
+        await using (var transaction = await db.Database.BeginTransactionAsync(ct))
+        {
+            var locked = await sagaLocking.LockByOrderIdAsync(db, saga.OrderId, ct);
+            if (locked is null || locked.Status != SagaStatus.Started)
+            {
+                _logger.LogInformation(
+                    "Saga {SagaId}: no longer in Started state — skipping", saga.Id);
+                return;
+            }
 
-        // Save the new state BEFORE publishing: the reply can arrive within milliseconds and
-        // InventoryReservedConsumer only accepts it while the saga is ReservingInventory.
-        saga.Status = SagaStatus.ReservingInventory;
-        saga.UpdatedAt = DateTime.UtcNow;
-        await db.SaveChangesAsync(ct);
+            _logger.LogInformation(
+                "Saga {SagaId}: Sending ReserveInventoryCommand for Order {OrderId}",
+                locked.Id, locked.OrderId);
+
+            command = new ReserveInventoryCommand
+            {
+                OrderId = locked.OrderId,
+                Items = JsonSerializer.Deserialize<List<OrderLineItem>>(locked.ItemsJson)!
+            };
+
+            // Save the new state BEFORE publishing: the reply can arrive within milliseconds
+            // and InventoryReservedConsumer only accepts it while the saga is ReservingInventory.
+            locked.Status = SagaStatus.ReservingInventory;
+            locked.UpdatedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+        }
 
         try
         {
-            await publishEndpoint.Publish(new ReserveInventoryCommand
-            {
-                OrderId = saga.OrderId,
-                Items = items
-            }, ct);
+            await publishEndpoint.Publish(command, ct);
         }
         catch
         {
             // Command never left — go back to Started so the next poll retries it
-            saga.Status = SagaStatus.Started;
-            saga.UpdatedAt = DateTime.UtcNow;
-            await db.SaveChangesAsync(CancellationToken.None);
+            // (unless something else, e.g. a cancel, has moved the saga on in the meantime)
+            await using var transaction = await db.Database.BeginTransactionAsync(CancellationToken.None);
+            var locked = await sagaLocking.LockByOrderIdAsync(db, saga.OrderId, CancellationToken.None);
+            if (locked is not null && locked.Status == SagaStatus.ReservingInventory)
+            {
+                locked.Status = SagaStatus.Started;
+                locked.UpdatedAt = DateTime.UtcNow;
+                await db.SaveChangesAsync(CancellationToken.None);
+                await transaction.CommitAsync(CancellationToken.None);
+            }
             throw;
         }
     }

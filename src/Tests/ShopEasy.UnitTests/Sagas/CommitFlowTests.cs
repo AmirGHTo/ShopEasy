@@ -19,6 +19,7 @@ public class CommitFlowTests : IDisposable
     private readonly OrderDbContext _db;
     private readonly IPublishEndpoint _publish = Substitute.For<IPublishEndpoint>();
     private readonly OrderReadModelUpdater _readModel;
+    private readonly ISagaLocking _locking = new InMemorySagaLocking();
 
     public CommitFlowTests()
     {
@@ -82,7 +83,7 @@ public class CommitFlowTests : IDisposable
     // ── InventoryCommittedConsumer ───────────────────────────────────────────
 
     private InventoryCommittedConsumer Committed() =>
-        new(_db, _readModel, NullLogger<InventoryCommittedConsumer>.Instance);
+        new(_db, _locking, _readModel, NullLogger<InventoryCommittedConsumer>.Instance);
 
     [Fact]
     public async Task InventoryCommitted_WhenCompleting_CompletesTheSagaAndConfirmsTheOrder()
@@ -122,7 +123,7 @@ public class CommitFlowTests : IDisposable
     // ── InventoryCommitFailedConsumer ────────────────────────────────────────
 
     private InventoryCommitFailedConsumer CommitFailed() =>
-        new(_db, _publish, _readModel, NullLogger<InventoryCommitFailedConsumer>.Instance);
+        new(_db, _locking, _publish, _readModel, NullLogger<InventoryCommitFailedConsumer>.Instance);
 
     [Fact]
     public async Task InventoryCommitFailed_WhenCompleting_RefundsAndCancelsTheOrder()
@@ -176,7 +177,7 @@ public class CommitFlowTests : IDisposable
     // ── PaymentSucceededConsumer ─────────────────────────────────────────────
 
     private PaymentSucceededConsumer PaymentSucceeded() =>
-        new(_db, _publish, _readModel, NullLogger<PaymentSucceededConsumer>.Instance);
+        new(_db, _locking, _publish, _readModel, NullLogger<PaymentSucceededConsumer>.Instance);
 
     private static PaymentSucceededEvent Paid(Guid orderId) =>
         new() { OrderId = orderId, PaymentId = Guid.NewGuid(), Amount = 50m };
@@ -241,7 +242,7 @@ public class CommitFlowTests : IDisposable
     // ── PaymentFailedConsumer ────────────────────────────────────────────────
 
     private PaymentFailedConsumer PaymentFailed() =>
-        new(_db, _publish, _readModel, NullLogger<PaymentFailedConsumer>.Instance);
+        new(_db, _locking, _publish, _readModel, NullLogger<PaymentFailedConsumer>.Instance);
 
     [Fact]
     public async Task PaymentFailed_WhileProcessingPayment_ReleasesTheInventory()
@@ -278,7 +279,7 @@ public class CommitFlowTests : IDisposable
     // ── InventoryReleasedConsumer ────────────────────────────────────────────
 
     private InventoryReleasedConsumer Released() =>
-        new(_db, _readModel, NullLogger<InventoryReleasedConsumer>.Instance);
+        new(_db, _locking, _readModel, NullLogger<InventoryReleasedConsumer>.Instance);
 
     [Fact]
     public async Task InventoryReleased_WhileReleasing_CancelsTheOrder()
@@ -306,7 +307,7 @@ public class CommitFlowTests : IDisposable
     // ── InventoryReservedConsumer (zombie / duplicate handling) ──────────────
 
     private InventoryReservedConsumer Reserved() =>
-        new(_db, _publish, NullLogger<InventoryReservedConsumer>.Instance);
+        new(_db, _locking, _publish, NullLogger<InventoryReservedConsumer>.Instance);
 
     [Fact]
     public async Task InventoryReserved_ForACompletedSaga_MustNotReleaseTheCommittedStock()

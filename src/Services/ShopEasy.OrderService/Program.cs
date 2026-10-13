@@ -74,6 +74,9 @@ try
     builder.Services.AddAuthorization();
 
     // ── Token Service (for Client Credentials / M2M calls) ───────────────────
+    // Row-level locking (SELECT ... FOR UPDATE) for every saga state transition
+    builder.Services.AddSingleton<ISagaLocking, PostgresSagaLocking>();
+
     builder.Services.AddSingleton<ITokenService, TokenService>();
 
     // ── HTTP Client for IdP (used by TokenService to request service tokens) ──

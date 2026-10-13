@@ -39,6 +39,7 @@ public class SagaTimeoutService(
     public async Task CheckForTimedOutSagasPublic(
         OrderDbContext db,
         IPublishEndpoint publishEndpoint,
+        ISagaLocking sagaLocking,
         CancellationToken ct)
     {
         var timeoutThreshold = DateTime.UtcNow - _sagaTimeout;
@@ -54,7 +55,7 @@ public class SagaTimeoutService(
         if (!timedOutSagas.Any()) return;
 
         foreach (var saga in timedOutSagas)
-            await HandleTimedOutSaga(saga, db, publishEndpoint, ct);
+            await HandleTimedOutSaga(saga, db, publishEndpoint, sagaLocking, ct);
     }
 
     private async Task CheckForTimedOutSagas(CancellationToken ct)
@@ -64,6 +65,8 @@ public class SagaTimeoutService(
             .GetRequiredService<OrderDbContext>();
         var publishEndpoint = scope.ServiceProvider
             .GetRequiredService<IPublishEndpoint>();
+        var sagaLocking = scope.ServiceProvider
+            .GetRequiredService<ISagaLocking>();
 
         var timeoutThreshold = DateTime.UtcNow - _sagaTimeout;
 
@@ -83,7 +86,7 @@ public class SagaTimeoutService(
 
         foreach (var saga in timedOutSagas)
         {
-            await HandleTimedOutSaga(saga, db, publishEndpoint, ct);
+            await HandleTimedOutSaga(saga, db, publishEndpoint, sagaLocking, ct);
         }
     }
 
@@ -91,17 +94,28 @@ public class SagaTimeoutService(
         OrderSagaState saga,
         OrderDbContext db,
         IPublishEndpoint publishEndpoint,
+        ISagaLocking sagaLocking,
         CancellationToken ct)
     {
-        // Re-read with lock to prevent race with event consumers
+        // Re-read WITH a row lock: an event consumer (or a cancel) may be changing this
+        // saga right now, and we must act on its outcome, not on our stale scan result.
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
         try
         {
-
-            var lockedSaga = await db.SagaStates.FirstOrDefaultAsync(s => s.OrderId == saga.OrderId);
+            var lockedSaga = await sagaLocking.LockByOrderIdAsync(db, saga.OrderId, ct);
 
             if (lockedSaga is null)
             {
+                await transaction.RollbackAsync(ct);
+                return;
+            }
+
+            // The saga made progress between our scan and acquiring the lock — not timed out
+            if (lockedSaga.UpdatedAt >= DateTime.UtcNow - _sagaTimeout)
+            {
+                logger.LogDebug(
+                    "Saga {SagaId} progressed while waiting for the lock — no longer timed out",
+                    saga.Id);
                 await transaction.RollbackAsync(ct);
                 return;
             }
