@@ -257,6 +257,13 @@ Every service exposes `/health`, `/health/ready`, and `/health/live`. Used by Do
 ```bash
 git clone <your-repo-url>
 cd ShopEasy
+
+# Create your local config — every secret lives in .env (git-ignored), never in the repo
+cp .env.example .env
+#   → edit .env and replace every "change-me-*" value
+#   → for local demos also set SEED_DEMO_USERS=true, SEED_ADMIN_PASSWORD, SEED_CUSTOMER_PASSWORD
+#     and EXPOSE_ACCESS_TOKEN=true (needed for the Swagger "Authorize" flow)
+
 docker-compose up --build
 ```
 
@@ -288,14 +295,14 @@ docker-compose down -v
 
 ### 1. Log in
 
-Open `http://localhost:5000` and log in. Seed test user:
+Open `http://localhost:5000` and log in. Demo users are only created when `SEED_DEMO_USERS=true` in your `.env`:
 
 ```
-Email:    alice@shopeasy.com
-Password: Pass123$
+alice@shopeasy.com  → admin     (password = SEED_ADMIN_PASSWORD)
+bob@shopeasy.com    → customer  (password = SEED_CUSTOMER_PASSWORD)
 ```
 
-(Alice is an admin.)
+In production leave seeding off and create users through your own onboarding flow.
 
 ### 2. Place an order
 
@@ -346,19 +353,19 @@ All reachable from the landing page at `http://localhost:5000`:
 | Tool | URL | Credentials |
 |---|---|---|
 | **Developer Portal** | http://localhost:5000 | — |
-| Outbox Monitor | http://localhost:5000/outbox | — |
-| **Saga Monitor** | http://localhost:5000/sagas | log in as Alice |
-| Dead Letter Monitor | http://localhost:5000/deadletters | — |
-| RabbitMQ Management | http://localhost:15672 | guest / guest |
+| Outbox Monitor | http://localhost:5000/outbox | log in as an admin |
+| **Saga Monitor** | http://localhost:5000/sagas | log in as an admin |
+| Dead Letter Monitor | http://localhost:5000/deadletters | log in as an admin |
+| RabbitMQ Management | http://localhost:15672 | `RABBITMQ_USER` / `RABBITMQ_PASSWORD` from `.env` |
 | Jaeger (tracing) | http://localhost:16686 | — |
 | Prometheus | http://localhost:9090 | — |
-| Grafana (dashboards) | http://localhost:3000 | admin / admin |
+| Grafana (dashboards) | http://localhost:3000 | `admin` / `GRAFANA_ADMIN_PASSWORD` from `.env` |
 | Seq (logs) | http://localhost:5341 | — |
 | Redis Insight | http://localhost:5540 | — |
-| pgAdmin | http://localhost:5050 | admin@shopeasy.com / admin |
+| pgAdmin | http://localhost:5050 | `admin@shopeasy.com` / `PGADMIN_PASSWORD` from `.env` |
 | Service Swagger | http://localhost:5101–5104 | — |
 
-**pgAdmin connection** (to inspect databases): host `postgres`, port `5432`, user `shopeasy`, password `ShopEasy_Pass123!`.
+**pgAdmin connection** (to inspect databases): host `postgres`, port `5432`, user `shopeasy`, password = `POSTGRES_PASSWORD` from your `.env`.
 
 ### Testing failure scenarios
 
@@ -438,7 +445,9 @@ docker build -t shopeasy-gateway:latest   -f src/Gateway/ShopEasy.Gateway/Docker
 
 # 3. Apply infrastructure first
 kubectl apply -f k8s/namespace/
-kubectl apply -f k8s/secrets/
+#    Create your real secrets from the template (secrets.yaml is git-ignored):
+cp k8s/secrets/secrets.example.yaml k8s/secrets/secrets.yaml   # then replace every CHANGE_ME
+kubectl apply -f k8s/secrets/secrets.yaml
 kubectl apply -f k8s/configmaps/
 kubectl apply -f k8s/postgres/
 kubectl apply -f k8s/rabbitmq/

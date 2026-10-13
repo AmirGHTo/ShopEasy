@@ -27,7 +27,6 @@ public class OutboxController(
     #region outbox monitor
 
     [HttpGet("pending")]
-    [AllowAnonymous]
     public async Task<IActionResult> GetPending()
     {
         const int maxRetries = 5;
@@ -90,43 +89,11 @@ public class OutboxController(
         return Ok(new { count = delivered.Count, items = delivered });
     }
 
-    [HttpGet("debug")]
-    [AllowAnonymous]
-    public async Task<IActionResult> Debug()
-    {
-        var tables = await _db.Database
-            .SqlQueryRaw<string>(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-            .ToListAsync();
-
-        var all = await _db.OutboxEntries
-            .OrderByDescending(e => e.CreatedAt)
-            .Take(10)
-            .ToListAsync();
-
-        return Ok(new
-        {
-            tables,
-            total = all.Count,
-            pending = all.Count(e => e.DeliveredAt == null),
-            delivered = all.Count(e => e.DeliveredAt != null),
-            entries = all.Select(e => new
-            {
-                e.Id,
-                e.EventType,
-                e.CreatedAt,
-                e.DeliveredAt,
-                e.RetryCount
-            })
-        });
-    }
-
     #endregion
 
     #region saga monitor
 
     [HttpGet("sagas")]
-    [AllowAnonymous]
     public async Task<IActionResult> GetSagas()
     {
         var sagas = await _db.SagaStates
@@ -161,7 +128,6 @@ public class OutboxController(
     // ── GET /api/outbox/deadletters ───────────────────────────────────────────
     // Shows all error queues and their message counts
     [HttpGet("deadletters")]
-    [AllowAnonymous]
     public async Task<IActionResult> GetDeadLetters()
     {
         var queues = await _deadLetterMonitor.GetAllErrorQueues();
@@ -188,8 +154,8 @@ public class OutboxController(
         try
         {
             var host = _configuration["RabbitMQ:Host"] ?? "rabbitmq";
-            var user = _configuration["RabbitMQ:Username"] ?? "guest";
-            var pass = _configuration["RabbitMQ:Password"] ?? "guest";
+            var user = _configuration["RabbitMQ:Username"] ?? throw new InvalidOperationException("RabbitMQ:Username is not configured.");
+            var pass = _configuration["RabbitMQ:Password"] ?? throw new InvalidOperationException("RabbitMQ:Password is not configured.");
             var auth = Convert.ToBase64String(
                 System.Text.Encoding.ASCII.GetBytes($"{user}:{pass}"));
 

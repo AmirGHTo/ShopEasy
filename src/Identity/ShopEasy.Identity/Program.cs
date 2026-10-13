@@ -89,7 +89,7 @@ try
         .AddInMemoryIdentityResources(IdentityServerConfig.IdentityResources)
         .AddInMemoryApiScopes(IdentityServerConfig.ApiScopes)
         .AddInMemoryApiResources(IdentityServerConfig.ApiResources)
-        .AddInMemoryClients(IdentityServerConfig.Clients)
+        .AddInMemoryClients(IdentityServerConfig.GetClients(builder.Configuration))
         .AddAspNetIdentity<ApplicationUser>()
         .AddProfileService<CustomProfileService>();
     // Note: AddDeveloperSigningCredential is for development only.
@@ -134,7 +134,9 @@ try
         {
             logger.LogInformation("Applying database migrations...");
             db.Database.Migrate();
-            await DatabaseSeeder.SeedUsersAsync(scope.ServiceProvider);
+            // Demo users are opt-in (Seed:Enabled=true) — never seed known credentials in production
+            if (app.Configuration.GetValue<bool>("Seed:Enabled"))
+                await DatabaseSeeder.SeedUsersAsync(scope.ServiceProvider);
             logger.LogInformation("Database migrations applied.");
         }
         catch (Exception ex)

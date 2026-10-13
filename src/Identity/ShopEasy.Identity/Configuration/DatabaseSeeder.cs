@@ -5,13 +5,20 @@ namespace ShopEasy.Identity.Configuration;
 
 public static class DatabaseSeeder
 {
-    // Seed test users:
-    //   alice@shopeasy.com / Alice1234! → admin role
-    //   bob@shopeasy.com   / Bob1234!   → customer role
+    // Seeds demo users for local development (only called when Seed:Enabled=true):
+    //   alice@shopeasy.com → admin role,   password from Seed:AdminPassword
+    //   bob@shopeasy.com   → customer role, password from Seed:CustomerPassword
     public static async Task SeedUsersAsync(IServiceProvider services)
     {
         var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
         var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
+        var config      = services.GetRequiredService<IConfiguration>();
+
+        var adminPassword = config["Seed:AdminPassword"];
+        var customerPassword = config["Seed:CustomerPassword"];
+        if (string.IsNullOrWhiteSpace(adminPassword) || string.IsNullOrWhiteSpace(customerPassword))
+            throw new InvalidOperationException(
+                "Seed:Enabled is true but Seed:AdminPassword / Seed:CustomerPassword are not set.");
 
         // Ensure roles exist
         foreach (var role in new[] { "admin", "customer" })
@@ -23,7 +30,7 @@ public static class DatabaseSeeder
         // Seed Alice — admin user
         await EnsureUser(userManager, roleManager,
             email:     "alice@shopeasy.com",
-            password:  "Alice1234!",
+            password:  adminPassword,
             firstName: "Alice",
             lastName:  "Admin",
             role:      "admin");
@@ -31,7 +38,7 @@ public static class DatabaseSeeder
         // Seed Bob — regular customer
         await EnsureUser(userManager, roleManager,
             email:     "bob@shopeasy.com",
-            password:  "Bob1234!",
+            password:  customerPassword,
             firstName: "Bob",
             lastName:  "Customer",
             role:      "customer");

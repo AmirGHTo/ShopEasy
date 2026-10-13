@@ -35,6 +35,8 @@ try
          .WriteTo.Seq("http://seq:5341", restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Information));
 
     var identityAuthority = builder.Configuration["IdentityServer:Authority"] ?? "http://identity:8080";
+    // Browser-facing URL of the IdP (the Authority is the internal Docker/k8s address)
+    var identityPublicUrl = builder.Configuration["IdentityServer:PublicUrl"] ?? "http://localhost:5001";
 
     // ── Authentication: OIDC + Cookie (BFF pattern) ───────────────────────────
     builder.Services
@@ -61,7 +63,8 @@ try
         {
             options.Authority = identityAuthority;
             options.ClientId = "shopeasy-gateway";
-            options.ClientSecret = "gateway-secret";
+            options.ClientSecret = builder.Configuration["Oidc:ClientSecret"]
+                ?? throw new InvalidOperationException("Oidc:ClientSecret is not configured.");
             options.ResponseType = "code";
             options.RequireHttpsMetadata = false;
 
@@ -89,14 +92,14 @@ try
                 {
                     ctx.ProtocolMessage.IssuerAddress =
                         ctx.ProtocolMessage.IssuerAddress
-                            .Replace("http://identity:8080", "http://localhost:5001");
+                            .Replace(identityAuthority, identityPublicUrl);
                     return Task.CompletedTask;
                 },
                 OnRedirectToIdentityProviderForSignOut = ctx =>
                 {
                     ctx.ProtocolMessage.IssuerAddress =
                         ctx.ProtocolMessage.IssuerAddress
-                            .Replace("http://identity:8080", "http://localhost:5001");
+                            .Replace(identityAuthority, identityPublicUrl);
                     return Task.CompletedTask;
                 }
             };
@@ -278,9 +281,10 @@ try
             return Serilog.Events.LogEventLevel.Information;
         };
     });
-    app.UseRateLimiter();
     app.UseAuthentication();
     app.UseAuthorization();
+    // After authentication so the "authenticated"/"orders" policies can partition by user
+    app.UseRateLimiter();
 
     #region pages 
 
@@ -323,14 +327,19 @@ try
         });
     }).AllowAnonymous().RequireRateLimiting("anonymous");
     // ── Token (dev only) ──────────────────────────────────────────────────────
-    app.MapGet("/account/token", async (HttpContext ctx) =>
+    // The BFF keeps tokens server-side; exposing the raw JWT to the browser is
+    // only meant for testing Swagger locally, so it is opt-in via configuration.
+    if (builder.Configuration.GetValue<bool>("Features:ExposeAccessToken"))
     {
-        if (ctx.User.Identity?.IsAuthenticated != true)
-            return Results.Unauthorized();
+        app.MapGet("/account/token", async (HttpContext ctx) =>
+        {
+            if (ctx.User.Identity?.IsAuthenticated != true)
+                return Results.Unauthorized();
 
-        var token = await ctx.GetTokenAsync("access_token");
-        return Results.Ok(new { access_token = token });
-    }).AllowAnonymous().RequireRateLimiting("anonymous");
+            var token = await ctx.GetTokenAsync("access_token");
+            return Results.Ok(new { access_token = token });
+        }).AllowAnonymous().RequireRateLimiting("anonymous");
+    }
 
 
     // Public endpoints — anonymous rate limit
@@ -370,7 +379,7 @@ try
         <h3>How to test protected endpoints</h3>
         <ol>
             <li>Login at <a href="/account/login">/account/login</a>
-                (alice@shopeasy.com / Alice1234! or bob@shopeasy.com / Bob1234!)</li>
+                (demo users are only created when <code>SEED_DEMO_USERS=true</code> in <code>.env</code>)</li>
             <li>Get your token at <a href="/account/token">/account/token</a></li>
             <li>Copy the <code>access_token</code> value</li>
             <li>Open any Swagger UI below → click <strong>Authorize</strong> → paste the token</li>
@@ -596,7 +605,7 @@ setInterval(load,5000);
 </script>
 </body>
 </html>
-""", "text/html")).AllowAnonymous().RequireRateLimiting("authenticated");
+""", "text/html")).RequireAuthorization().RequireRateLimiting("authenticated");
     app.MapGet("/sagas", () => Results.Content("""
 <!DOCTYPE html>
 <html lang="en">
@@ -894,7 +903,7 @@ setInterval(load, 3000);
 </script>
 </body>
 </html>
-""", "text/html")).AllowAnonymous().RequireRateLimiting("authenticated");
+""", "text/html")).RequireAuthorization().RequireRateLimiting("authenticated");
 
     app.MapGet("/deadletters", () => Results.Content("""
 <!DOCTYPE html>
@@ -1042,7 +1051,7 @@ setInterval(load, 15000);
 </script>
 </body>
 </html>
-""", "text/html")).AllowAnonymous();
+""", "text/html")).RequireAuthorization().RequireRateLimiting("authenticated");
 
     #endregion
 

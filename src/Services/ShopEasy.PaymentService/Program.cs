@@ -77,8 +77,8 @@ try
         {
             cfg.Host(builder.Configuration["RabbitMQ:Host"] ?? "rabbitmq", "/", h =>
             {
-                h.Username(builder.Configuration["RabbitMQ:Username"] ?? "guest");
-                h.Password(builder.Configuration["RabbitMQ:Password"] ?? "guest");
+                h.Username(builder.Configuration["RabbitMQ:Username"] ?? throw new InvalidOperationException("RabbitMQ:Username is not configured."));
+                h.Password(builder.Configuration["RabbitMQ:Password"] ?? throw new InvalidOperationException("RabbitMQ:Password is not configured."));
             });
 
             // ── Global retry policy ───────────────────────────────────────────────

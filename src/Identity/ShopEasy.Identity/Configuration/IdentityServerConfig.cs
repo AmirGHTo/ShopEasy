@@ -47,8 +47,16 @@ public static class IdentityServerConfig
         };
 
     // Clients are registered applications that can request tokens
-    public static IEnumerable<Client> Clients =>
-        new[]
+    public static IEnumerable<Client> GetClients(IConfiguration configuration)
+    {
+        // Secrets are never hardcoded — they come from configuration (env vars / secret store)
+        var gatewaySecret = configuration["Clients:Gateway:Secret"]
+            ?? throw new InvalidOperationException("Clients:Gateway:Secret is not configured.");
+        var orderServiceSecret = configuration["Clients:OrderService:Secret"]
+            ?? throw new InvalidOperationException("Clients:OrderService:Secret is not configured.");
+        var gatewayUrl = (configuration["Clients:Gateway:PublicUrl"] ?? "http://localhost:5000").TrimEnd('/');
+
+        return new[]
         {
             // ─────────────────────────────────────────────────────────
             // Client 1: The API Gateway (acting as BFF for the React SPA)
@@ -58,7 +66,7 @@ public static class IdentityServerConfig
             {
                 ClientId = "shopeasy-gateway",
                 ClientName = "ShopEasy Web Gateway (BFF)",
-                ClientSecrets = { new Secret("gateway-secret".Sha256()) },
+                ClientSecrets = { new Secret(gatewaySecret.Sha256()) },
 
                 AllowedGrantTypes = GrantTypes.Code,
 
@@ -66,13 +74,13 @@ public static class IdentityServerConfig
 
                    RedirectUris =
     {
-        "http://localhost:5000/signin-oidc",    // browser on host machine
+        $"{gatewayUrl}/signin-oidc",    // browser-facing gateway URL
         "http://gateway:8080/signin-oidc"       // internal Docker (future use)
     },
 
     PostLogoutRedirectUris =
     {
-        "http://localhost:5000/signout-callback-oidc",
+        $"{gatewayUrl}/signout-callback-oidc",
         "http://gateway:8080/signout-callback-oidc"
     },
 
@@ -136,7 +144,7 @@ public static class IdentityServerConfig
             {
                 ClientId = "order-service",
                 ClientName = "ShopEasy Order Service (M2M)",
-                ClientSecrets = { new Secret("order-service-secret".Sha256()) },
+                ClientSecrets = { new Secret(orderServiceSecret.Sha256()) },
 
                 AllowedGrantTypes = GrantTypes.ClientCredentials,
 
@@ -150,4 +158,5 @@ public static class IdentityServerConfig
                 AccessTokenLifetime = 900, // 15 min for service tokens
             },
         };
+    }
 }
