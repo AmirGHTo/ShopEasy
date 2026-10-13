@@ -1,4 +1,4 @@
-﻿using MassTransit;
+using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.InventoryService.Data;
 using ShopEasy.Shared.Contracts;
@@ -6,79 +6,138 @@ using ShopEasy.Shared.Services;
 
 namespace ShopEasy.InventoryService.Consumers;
 
+// Turns a reservation into a real stock deduction once payment succeeded, and reports the
+// result back to the saga (InventoryCommittedEvent / InventoryCommitFailedEvent).
+//
+// Idempotent: the order's ledger rows (checked under the row locks) decide what to do, so a
+// duplicate or retried command never deducts stock twice — it just re-sends the result.
+//   already committed            → success again, no change
+//   reservation was released     → InventoryCommitFailedEvent (the saga refunds the payment)
+//   no reservation at all        → InventoryCommitFailedEvent
+// Transient errors (database down, ...) throw, so MassTransit retries the message.
 public class CommitInventoryConsumer(
     InventoryDbContext db,
+    IInventoryLocking locking,
     CacheService cache,
     ILogger<CommitInventoryConsumer> logger) : IConsumer<CommitInventoryCommand>
 {
     public async Task Consume(ConsumeContext<CommitInventoryCommand> context)
     {
-        var cmd = context.Message;
-        logger.LogInformation("Committing inventory for Order {OrderId}", cmd.OrderId);
+        var orderId = context.Message.OrderId;
+        var ct = context.CancellationToken;
+        logger.LogInformation("Committing inventory for Order {OrderId}", orderId);
 
-        var reservations = await db.StockTransactions
-            .Where(t => t.OrderId == cmd.OrderId &&
-                        t.Reason.StartsWith("Reserved for"))
-            .ToListAsync();
+        string? failureReason = null;
+        var committed = false;
+        var affectedProductIds = new List<Guid>();
 
-        if (!reservations.Any())
-        {
-            logger.LogWarning(
-                "No reservations to commit for Order {OrderId}", cmd.OrderId);
-            return;
-        }
-
-        await using var transaction = await db.Database.BeginTransactionAsync();
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
         try
         {
-            var affectedProductIds = new List<Guid>();
+            // 1. Which products did this order reserve? (unlocked read — only decides what to lock)
+            var reservedReason = StockReasons.Reserved(orderId);
+            var productIds = await db.StockTransactions.AsNoTracking()
+                .Where(t => t.OrderId == orderId && t.Reason == reservedReason)
+                .Select(t => t.ProductId)
+                .Distinct()
+                .ToListAsync(ct);
 
-            foreach (var reservation in reservations)
+            if (productIds.Count == 0)
             {
-                var inventoryItem = await db.InventoryItems
-                    .FirstOrDefaultAsync(i => i.ProductId == reservation.ProductId);
+                failureReason = "No reservation found for this order";
+            }
+            else
+            {
+                // 2. Lock the rows, then read the order's ledger state under the lock
+                var items = await locking.LockItemsAsync(db, productIds, ct);
+                var rows = await db.StockTransactions.AsNoTracking()
+                    .Where(t => t.OrderId == orderId)
+                    .ToListAsync(ct);
+                var state = OrderStockState.From(orderId, rows);
 
-                if (inventoryItem is null) continue;
-
-                var qty = Math.Abs(reservation.QuantityChange);
-
-                inventoryItem.Quantity -= qty;
-                inventoryItem.ReservedQty = Math.Max(0, inventoryItem.ReservedQty - qty);
-                inventoryItem.UpdatedAt = DateTime.UtcNow;
-
-                db.StockTransactions.Add(new StockTransaction
+                if (state.FullyCommitted)
                 {
-                    Id = Guid.NewGuid(),
-                    ProductId = reservation.ProductId,
-                    QuantityChange = -qty,
-                    Reason = $"Committed for Order {cmd.OrderId}",
-                    OrderId = cmd.OrderId,
-                    CreatedAt = DateTime.UtcNow
-                });
+                    logger.LogWarning(
+                        "Order {OrderId} was already committed — re-confirming", orderId);
+                }
+                else if (state.AnyReleased)
+                {
+                    failureReason = "The reservation was already released";
+                }
+                else
+                {
+                    var now = DateTime.UtcNow;
+                    var toCommit = state.ReservedQuantity
+                        .Where(r => !state.Committed.Contains(r.Key))
+                        .ToList();
 
-                affectedProductIds.Add(reservation.ProductId);
+                    if (toCommit.Any(r => items.All(i => i.ProductId != r.Key)))
+                    {
+                        failureReason = "Inventory record missing for a reserved product";
+                    }
+                    else
+                    {
+                        foreach (var (productId, qty) in toCommit)
+                        {
+                            var item = items.First(i => i.ProductId == productId);
 
-                logger.LogInformation(
-                    "Committed {Qty} units for Product {ProductId}. New quantity: {New}",
-                    qty, reservation.ProductId, inventoryItem.Quantity);
+                            item.Quantity = Math.Max(0, item.Quantity - qty);
+                            item.ReservedQty = Math.Max(0, item.ReservedQty - qty);
+                            item.UpdatedAt = now;
+
+                            db.StockTransactions.Add(new StockTransaction
+                            {
+                                Id = Guid.NewGuid(),
+                                ProductId = productId,
+                                QuantityChange = -qty,
+                                Reason = StockReasons.Committed(orderId),
+                                OrderId = orderId,
+                                CreatedAt = now
+                            });
+
+                            affectedProductIds.Add(productId);
+
+                            logger.LogInformation(
+                                "Committed {Qty} units for Product {ProductId}. New quantity: {New}",
+                                qty, productId, item.Quantity);
+                        }
+
+                        await db.SaveChangesAsync(ct);
+                        await transaction.CommitAsync(ct);
+                        committed = true;
+                    }
+                }
             }
 
-            await db.SaveChangesAsync();
-            await transaction.CommitAsync();
-
-            // Invalidate cache for all affected products
-            foreach (var productId in affectedProductIds)
-                await cache.InvalidateAsync(CacheKeys.Inventory(productId));
-            await cache.InvalidateAsync(CacheKeys.InventoryAll);
-
-            logger.LogInformation("Inventory committed for Order {OrderId}", cmd.OrderId);
+            // Nothing was changed — release the row locks
+            if (!committed)
+                await transaction.RollbackAsync(ct);
         }
         catch (Exception ex)
         {
-            await transaction.RollbackAsync();
-            logger.LogError(ex,
-                "Failed to commit inventory for Order {OrderId}", cmd.OrderId);
+            await transaction.RollbackAsync(CancellationToken.None);
+            logger.LogError(ex, "Failed to commit inventory for Order {OrderId}", orderId);
             throw;
         }
+
+        if (failureReason is not null)
+        {
+            logger.LogError(
+                "Cannot commit inventory for Order {OrderId}: {Reason}", orderId, failureReason);
+            await context.Publish(new InventoryCommitFailedEvent
+            {
+                OrderId = orderId,
+                Reason = failureReason
+            });
+            return;
+        }
+
+        foreach (var productId in affectedProductIds)
+            await cache.InvalidateAsync(CacheKeys.Inventory(productId));
+        if (committed)
+            await cache.InvalidateAsync(CacheKeys.InventoryAll);
+
+        logger.LogInformation("Inventory committed for Order {OrderId}", orderId);
+        await context.Publish(new InventoryCommittedEvent { OrderId = orderId });
     }
 }

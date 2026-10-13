@@ -14,17 +14,20 @@ namespace ShopEasy.InventoryService.Controllers;
 public class InventoryController : ControllerBase
 {
     private readonly InventoryDbContext _db;
+    private readonly IInventoryLocking _locking;
     private readonly CacheService _cache;
     private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<InventoryController> _logger;
 
     public InventoryController(
         InventoryDbContext db,
+        IInventoryLocking locking,
         CacheService cache,
         IConnectionMultiplexer redis,
         ILogger<InventoryController> logger)
     {
         _db = db;
+        _locking = locking;
         _cache = cache;
         _redis = redis;
         _logger = logger;
@@ -110,7 +113,10 @@ public class InventoryController : ControllerBase
     public async Task<IActionResult> Adjust(
         Guid productId, [FromBody] AdjustStockRequest request)
     {
-        var item = await _db.InventoryItems.FirstOrDefaultAsync(i => i.ProductId == productId);
+        // Lock the row so the adjustment cannot interleave with a reservation / commit
+        // (otherwise one of the two updates would silently overwrite the other).
+        await using var transaction = await _db.Database.BeginTransactionAsync();
+        var item = (await _locking.LockItemsAsync(_db, new[] { productId })).FirstOrDefault();
         if (item is null) return NotFound();
 
         var previousQty = item.Quantity;
@@ -128,6 +134,7 @@ public class InventoryController : ControllerBase
         });
 
         await _db.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         // Invalidate both the specific product cache and the full list cache
         await _cache.InvalidateAsync(CacheKeys.Inventory(productId));

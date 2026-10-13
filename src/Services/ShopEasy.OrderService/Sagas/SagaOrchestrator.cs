@@ -112,9 +112,12 @@ public class SagaOrchestrator : BackgroundService
                     "Saga {SagaId} waiting for payment result", saga.Id);
                 break;
 
-            // ── Step 4: Completing → update order status ──────────────────────
+            // ── Step 4: Completing → wait for the inventory commit result ──────
+            // InventoryCommittedConsumer completes the saga (or InventoryCommitFailedConsumer
+            // refunds and fails it). SagaTimeoutService re-sends the commit if nothing arrives.
             case SagaStatus.Completing:
-                await HandleCompleting(saga, db, ct);
+                _logger.LogDebug(
+                    "Saga {SagaId} waiting for inventory commit result", saga.Id);
                 break;
 
             // ── Step 5: Releasing inventory → compensating transaction ─────────
@@ -137,37 +140,27 @@ public class SagaOrchestrator : BackgroundService
             "Saga {SagaId}: Sending ReserveInventoryCommand for Order {OrderId}",
             saga.Id, saga.OrderId);
 
-        await publishEndpoint.Publish(new ReserveInventoryCommand
-        {
-            OrderId = saga.OrderId,
-            Items = items
-        }, ct);
-
+        // Save the new state BEFORE publishing: the reply can arrive within milliseconds and
+        // InventoryReservedConsumer only accepts it while the saga is ReservingInventory.
         saga.Status = SagaStatus.ReservingInventory;
         saga.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
-    }
 
-    private async Task HandleCompleting(
-        OrderSagaState saga,
-        OrderDbContext db,
-        CancellationToken ct)
-    {
-        // Update the order status to Confirmed
-        var order = await db.Orders.FindAsync(new object[] { saga.OrderId }, ct);
-        if (order is not null)
+        try
         {
-            order.Status = OrderStatus.Confirmed;
-            order.UpdatedAt = DateTime.UtcNow;
+            await publishEndpoint.Publish(new ReserveInventoryCommand
+            {
+                OrderId = saga.OrderId,
+                Items = items
+            }, ct);
         }
-
-        saga.Status = SagaStatus.Completed;
-        saga.UpdatedAt = DateTime.UtcNow;
-
-        await db.SaveChangesAsync(ct);
-
-        _logger.LogInformation(
-            "Saga {SagaId}: Order {OrderId} completed successfully ✅",
-            saga.Id, saga.OrderId);
+        catch
+        {
+            // Command never left — go back to Started so the next poll retries it
+            saga.Status = SagaStatus.Started;
+            saga.UpdatedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync(CancellationToken.None);
+            throw;
+        }
     }
 }

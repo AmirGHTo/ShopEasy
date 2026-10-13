@@ -113,6 +113,9 @@ try
         options.Port = 9091; // separate port from the API
     });
 
+    // Row-level locking (SELECT ... FOR UPDATE) used by every stock-changing code path
+    builder.Services.AddSingleton<IInventoryLocking, PostgresInventoryLocking>();
+
     builder.Services.AddMassTransit(x =>
     {
         x.AddConsumer<ReserveInventoryConsumer>();
