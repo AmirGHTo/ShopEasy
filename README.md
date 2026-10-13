@@ -1,8 +1,6 @@
 # ShopEasy — Production-Grade Microservices E-Commerce Platform
 
-A complete, production-hardened e-commerce backend built with **.NET 8** and **C#**, demonstrating the full spectrum of microservices patterns: distributed transactions, event-driven messaging, CQRS, resilience, observability, and container orchestration.
-
-This project is built for learning and interview preparation, but every pattern is implemented to production standards — not toy examples.
+An e-commerce backend built with **.NET 8** and **C#** as independent microservices: distributed transactions (saga + outbox), event-driven messaging, CQRS, resilience, observability, and container orchestration.
 
 ---
 
@@ -24,8 +22,7 @@ This project is built for learning and interview preparation, but every pattern 
 14. [Kubernetes Deployment](#kubernetes-deployment)
 15. [Project Structure](#project-structure)
 16. [Troubleshooting](#troubleshooting)
-17. [Interview Talking Points](#interview-talking-points)
-18. [Production Hardening Roadmap & Known Limitations](#production-hardening-roadmap--known-limitations)
+17. [Production Hardening Roadmap & Known Limitations](#production-hardening-roadmap--known-limitations)
 
 ---
 
@@ -33,7 +30,7 @@ This project is built for learning and interview preparation, but every pattern 
 
 ShopEasy is an online store backend split into independent microservices. A customer can browse products, place an order, and have that order automatically validated, paid for, and fulfilled — with full failure recovery if anything goes wrong along the way.
 
-The interesting part is **what happens behind a single "Place Order" click**: a distributed transaction spans four services (Order, Inventory, Payment, and back to Order), coordinated by a saga, with automatic compensation, refunds, and timeout handling if any step fails.
+The core workflow is **what happens behind a single "Place Order" request**: a distributed transaction spans four services (Order, Inventory, Payment, and back to Order), coordinated by a saga, with automatic compensation, refunds, and timeout handling if any step fails.
 
 ---
 
@@ -812,27 +809,6 @@ ShopEasy/
 
 ---
 
-## Interview Talking Points
-
-A quick map of "which pattern solves which problem," useful for explaining the project:
-
-- **"How do you handle a transaction across services?"** → Saga (orchestration) with per-state compensation.
-- **"How do you guarantee an event is published when the DB write succeeds?"** → Outbox pattern (event written in the same transaction).
-- **"How do you stop clients tampering with prices?"** → The client sends only product id + quantity; the Order service looks up name and price from the Product service and ignores anything else.
-- **"What if a dependency is down while taking an order?"** → Fail closed: reject with 503 + `Retry-After` rather than accept an untrusted price; tight timeouts, retries and a circuit breaker keep it fast.
-- **"How do you stop two instances overselling the last item?"** → Reserve/commit/release lock the product rows with `SELECT … FOR UPDATE` (in a fixed order, so no deadlocks) and make their duplicate checks under that lock.
-- **"What if the same message is delivered twice?"** → Consumers derive what already happened from their own data (saga state, per-order ledger rows) and just re-send the result; duplicates never deduct stock twice or refund a finished order.
-- **"How do you avoid double-publishing when scaled out?"** → `SELECT FOR UPDATE SKIP LOCKED`.
-- **"What about duplicate messages?"** → Idempotent consumers + processed-event tracking.
-- **"What if a service dies mid-saga?"** → Timeout service detects stuck sagas and compensates.
-- **"What if a payment arrives after you already cancelled?"** → Zombie-message guard issues a refund.
-- **"How do you make reads fast?"** → CQRS denormalized read model.
-- **"Strong or eventual consistency for stock?"** → Hybrid: cached fast-path for acceptance, with the saga's row-locked reservation in the Inventory service as the authoritative check.
-- **"How do you debug a request across services?"** → Correlation ID + Jaeger traces + Seq logs.
-- **"How do you scale?"** → Stateless Order service, distributed outbox lock, Docker DNS load-balancing / Kubernetes HPA.
-
----
-
 ## Production Hardening Roadmap & Known Limitations
 
 This project is being hardened step by step. Status:
@@ -863,8 +839,4 @@ This project is being hardened step by step. Status:
 
 ## License
 
-MIT — use it freely for learning and reference.
-
----
-
-*Built as a deep-dive into production microservices patterns with .NET 8, Docker, and Kubernetes.*
+MIT
