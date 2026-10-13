@@ -3,7 +3,7 @@ Open http://localhost:5050
 Login:
 
 Email: admin@shopeasy.com
-Password: admin
+Password: <PGADMIN_PASSWORD from your .env>
 
 Add the server:
 
@@ -14,7 +14,7 @@ Connection tab:
 Host: postgres
 Port: 5432
 Username: shopeasy
-Password: ShopEasy_Pass123!
+Password: <POSTGRES_PASSWORD from your .env>
 
 
 Click Save

@@ -1,4 +1,4 @@
-﻿apiVersion: apps/v1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: gateway
@@ -26,6 +26,11 @@ spec:
               value: "http://identity:8080"
             - name: IdentityServer__PublicUrl
               value: "http://localhost:30001"
+            - name: Oidc__ClientSecret
+              valueFrom:
+                secretKeyRef:
+                  name: shopeasy-secrets
+                  key: gateway-client-secret
             - name: ReverseProxy__Clusters__orders-cluster__Destinations__primary__Address
               value: "http://order:8080"
             - name: ReverseProxy__Clusters__products-cluster__Destinations__primary__Address

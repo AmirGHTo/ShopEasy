@@ -1,4 +1,4 @@
-﻿apiVersion: apps/v1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: rabbitmq
@@ -21,11 +21,20 @@ spec:
             - containerPort: 15672
           env:
             - name: RABBITMQ_DEFAULT_USER
-              value: guest
+              valueFrom:
+                secretKeyRef:
+                  name: shopeasy-secrets
+                  key: rabbitmq-user
             - name: RABBITMQ_DEFAULT_PASS
-              value: guest
+              valueFrom:
+                secretKeyRef:
+                  name: shopeasy-secrets
+                  key: rabbitmq-password
             - name: RABBITMQ_ERLANG_COOKIE
-              value: SHOPEASY_SECRET_COOKIE_12345
+              valueFrom:
+                secretKeyRef:
+                  name: shopeasy-secrets
+                  key: rabbitmq-erlang-cookie
           readinessProbe:
             exec:
               command: ["rabbitmq-diagnostics", "ping"]

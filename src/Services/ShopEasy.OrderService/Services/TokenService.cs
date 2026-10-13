@@ -55,7 +55,8 @@ public class TokenService : ITokenService
                 {
                     ["grant_type"]    = "client_credentials",
                     ["client_id"]     = _config["ServiceAuth:ClientId"]     ?? "order-service",
-                    ["client_secret"] = _config["ServiceAuth:ClientSecret"] ?? "order-service-secret",
+                    ["client_secret"] = _config["ServiceAuth:ClientSecret"]
+                                    ?? throw new InvalidOperationException("ServiceAuth:ClientSecret is not configured."),
                     ["scope"]         = "inventory.read inventory.write payment.charge"
                 }));
 

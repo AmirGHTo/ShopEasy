@@ -1,0 +1,35 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+publish/
+*.dll
+*.pdb
+
+# IDE / user-specific files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.rsuser
+
+# Secrets and generated key material — never commit these
+.env
+.env.*
+!.env.example
+**/keys/
+*.pfx
+*.snk
+appsettings.*.local.json
+appsettings.Local.json
+k8s/secrets/secrets.yaml
+
+# Logs, coverage, test results
+*.log
+TestResults/
+coverage/
+*.trx
+
+# OS
+.DS_Store
+Thumbs.db

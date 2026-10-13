@@ -133,8 +133,8 @@ public class OutboxDeliveryService(
         {
             var client = _httpClientFactory.CreateClient();
             var host = _config["RabbitMQ:Host"] ?? "rabbitmq";
-            var user = _config["RabbitMQ:Username"] ?? "guest";
-            var pass = _config["RabbitMQ:Password"] ?? "guest";
+            var user = _config["RabbitMQ:Username"] ?? throw new InvalidOperationException("RabbitMQ:Username is not configured.");
+            var pass = _config["RabbitMQ:Password"] ?? throw new InvalidOperationException("RabbitMQ:Password is not configured.");
             var auth = Convert.ToBase64String(
                 System.Text.Encoding.ASCII.GetBytes($"{user}:{pass}"));
 

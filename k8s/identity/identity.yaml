@@ -1,4 +1,4 @@
-﻿apiVersion: apps/v1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: identity
@@ -27,6 +27,21 @@ spec:
                 secretKeyRef:
                   name: shopeasy-secrets
                   key: identity-db-connection
+            - name: Clients__Gateway__Secret
+              valueFrom:
+                secretKeyRef:
+                  name: shopeasy-secrets
+                  key: gateway-client-secret
+            - name: Clients__OrderService__Secret
+              valueFrom:
+                secretKeyRef:
+                  name: shopeasy-secrets
+                  key: order-client-secret
+            - name: Seed__Enabled
+              value: "false"
+          volumeMounts:
+            - name: identity-keys
+              mountPath: /app/keys
           readinessProbe:
             httpGet:
               path: /health
@@ -39,6 +54,22 @@ spec:
               port: 8080
             initialDelaySeconds: 40
             periodSeconds: 20
+      volumes:
+        - name: identity-keys
+          persistentVolumeClaim:
+            claimName: identity-keys-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: identity-keys-pvc
+  namespace: shopeasy
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Mi
 ---
 apiVersion: v1
 kind: Service
