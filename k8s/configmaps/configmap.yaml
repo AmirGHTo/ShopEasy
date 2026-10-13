@@ -1,4 +1,4 @@
-﻿apiVersion: v1
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: shopeasy-config
@@ -8,7 +8,6 @@ data:
   ASPNETCORE_ENVIRONMENT: "Production"
   IdentityServer__Authority: "http://identity:8080"
   RabbitMQ__Host: "rabbitmq"
-  RabbitMQ__Username: "guest"
   Redis__Connection: "redis:6379"
   Services__InventoryService: "http://inventory:8080"
   Services__InventoryGrpcService: "http://inventory:8090"

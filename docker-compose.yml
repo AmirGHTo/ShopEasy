@@ -10,7 +10,7 @@ services:
       - "5432:5432"
     environment:
       POSTGRES_USER:     shopeasy
-      POSTGRES_PASSWORD: ShopEasy_Pass123!
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB:       shopeasy
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -31,7 +31,7 @@ services:
       - "5050:80"
     environment:
       PGADMIN_DEFAULT_EMAIL:    admin@shopeasy.com
-      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:?Set PGADMIN_PASSWORD in .env}
     networks:
       - shopeasy-net
     depends_on:
@@ -67,8 +67,8 @@ services:
       - "3000:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_AUTH_ANONYMOUS_ENABLED: "${GRAFANA_ANONYMOUS_ENABLED:-false}"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning
@@ -107,9 +107,9 @@ services:
       - "5672:5672"
       - "15672:15672"
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
-      RABBITMQ_ERLANG_COOKIE: "SHOPEASY_SECRET_COOKIE_12345"
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?Set RABBITMQ_USER in .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?Set RABBITMQ_ERLANG_COOKIE in .env}
     tmpfs:
       - /var/lib/rabbitmq
     healthcheck:
@@ -143,7 +143,16 @@ services:
       - "5001:8080"
     environment:
       ASPNETCORE_URLS: http://+:8080
-      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_identity;Username=shopeasy;Password=ShopEasy_Pass123!"
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_identity;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
+      Clients__Gateway__Secret: ${GATEWAY_CLIENT_SECRET:?Set GATEWAY_CLIENT_SECRET in .env}
+      Clients__OrderService__Secret: ${ORDER_SERVICE_CLIENT_SECRET:?Set ORDER_SERVICE_CLIENT_SECRET in .env}
+      # Demo users are only created when Seed__Enabled is true (local development)
+      Seed__Enabled: "${SEED_DEMO_USERS:-false}"
+      Seed__AdminPassword: ${SEED_ADMIN_PASSWORD:-}
+      Seed__CustomerPassword: ${SEED_CUSTOMER_PASSWORD:-}
+    volumes:
+      # Persist IdentityServer signing keys so tokens survive container restarts
+      - identity-keys:/app/keys
     depends_on:
       postgres:
         condition: service_healthy
@@ -166,7 +175,7 @@ services:
       - "5101:8080"
     environment:
       ASPNETCORE_URLS: http://+:8080
-      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_products;Username=shopeasy;Password=ShopEasy_Pass123!"
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_products;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
       IdentityServer__Authority: "http://identity:8080"
       Redis__Connection: "redis:6379"
     depends_on:
@@ -198,11 +207,11 @@ services:
       ASPNETCORE_HTTP_PORTS: ""   # disable default
         # Force HTTP/2 support
       DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2UNENCRYPTEDSUPPORT: "1"
-      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_inventory;Username=shopeasy;Password=ShopEasy_Pass123!"
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_inventory;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
       IdentityServer__Authority: "http://identity:8080"
       RabbitMQ__Host: rabbitmq
-      RabbitMQ__Username: guest
-      RabbitMQ__Password: guest
+      RabbitMQ__Username: ${RABBITMQ_USER}
+      RabbitMQ__Password: ${RABBITMQ_PASSWORD}
       Redis__Connection: "redis:6379"
     depends_on:
       postgres:
@@ -233,11 +242,11 @@ services:
     environment:
       ASPNETCORE_URLS: http://+:8080
       Testing__ForcePaymentSuccess: "true"
-      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_payments;Username=shopeasy;Password=ShopEasy_Pass123!"
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_payments;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
       IdentityServer__Authority: "http://identity:8080"
       RabbitMQ__Host: rabbitmq
-      RabbitMQ__Username: guest
-      RabbitMQ__Password: guest
+      RabbitMQ__Username: ${RABBITMQ_USER}
+      RabbitMQ__Password: ${RABBITMQ_PASSWORD}
     depends_on:
       postgres:
         condition: service_healthy
@@ -267,13 +276,13 @@ services:
       Services__InventoryService:     "http://inventory:8080"
       Services__InventoryGrpcService: "http://inventory:8090"
       DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2UNENCRYPTEDSUPPORT: "1"
-      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_orders;Username=shopeasy;Password=ShopEasy_Pass123!"
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_orders;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
       IdentityServer__Authority: "http://identity:8080"
       ServiceAuth__ClientId: "order-service"
-      ServiceAuth__ClientSecret: "order-service-secret"
+      ServiceAuth__ClientSecret: ${ORDER_SERVICE_CLIENT_SECRET:?Set ORDER_SERVICE_CLIENT_SECRET in .env}
       RabbitMQ__Host: rabbitmq
-      RabbitMQ__Username: guest
-      RabbitMQ__Password: guest
+      RabbitMQ__Username: ${RABBITMQ_USER}
+      RabbitMQ__Password: ${RABBITMQ_PASSWORD}
     depends_on:
       postgres:
         condition: service_healthy
@@ -303,6 +312,10 @@ services:
     environment:
       ASPNETCORE_URLS: http://+:8080
       IdentityServer__Authority: "http://identity:8080"
+      IdentityServer__PublicUrl: "http://localhost:5001"
+      Oidc__ClientSecret: ${GATEWAY_CLIENT_SECRET:?Set GATEWAY_CLIENT_SECRET in .env}
+      # Exposes GET /account/token (raw access token) — local development only
+      Features__ExposeAccessToken: "${EXPOSE_ACCESS_TOKEN:-false}"
       ReverseProxy__Clusters__products-cluster__Destinations__primary__Address: "http://product:8080"
       ReverseProxy__Clusters__orders-cluster__Destinations__primary__Address: "http://order:8080"
       ReverseProxy__Clusters__inventory-cluster__Destinations__primary__Address: "http://inventory:8080"
@@ -324,6 +337,7 @@ services:
 # ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   postgres-data:
+  identity-keys:
 
 # ── Network ───────────────────────────────────────────────────────────────────
 networks:

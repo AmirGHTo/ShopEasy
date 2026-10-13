@@ -1,4 +1,4 @@
-﻿apiVersion: apps/v1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: order
@@ -23,6 +23,16 @@ spec:
             - configMapRef:
                 name: shopeasy-config
           env:
+            - name: RabbitMQ__Username
+              valueFrom:
+                secretKeyRef:
+                  name: shopeasy-secrets
+                  key: rabbitmq-user
+            - name: RabbitMQ__Password
+              valueFrom:
+                secretKeyRef:
+                  name: shopeasy-secrets
+                  key: rabbitmq-password
             - name: ConnectionStrings__DefaultConnection
               valueFrom:
                 secretKeyRef:
