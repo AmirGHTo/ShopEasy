@@ -1,8 +1,8 @@
 ﻿using FluentAssertions;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
-using Npgsql;
 using NSubstitute;
 using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.Sagas;
@@ -16,15 +16,14 @@ public class SagaOrchestratorTests : IDisposable
 {
     private readonly OrderDbContext _db;
     private readonly IPublishEndpoint _publishEndpoint;
-    private readonly NpgsqlConnection _connection;
 
     public SagaOrchestratorTests()
     {
-        _connection = new NpgsqlConnection("Data Source=:memory:");
-        _connection.Open();
-
+        // Fresh in-memory database per test. The consumers open transactions,
+        // which the InMemory provider does not support, so ignore that warning.
         var options = new DbContextOptionsBuilder<OrderDbContext>()
-            .UseNpgsql(_connection)
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
             .Options;
 
         _db = new OrderDbContext(options);
@@ -36,7 +35,6 @@ public class SagaOrchestratorTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        _connection.Dispose();
     }
 
     // ── OrderConfirmedSagaStarter Tests ───────────────────────────────────────

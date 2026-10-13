@@ -392,14 +392,14 @@ To reliably force a successful payment for the refund test, set `Testing__ForceP
 ## Testing
 
 ```bash
-# Unit tests (saga state machine, compensation, timeouts, idempotency, outbox)
-dotnet test tests/ShopEasy.UnitTests
+# Unit tests (saga starter / inventory-reserved consumer, outbox entries)
+dotnet test src/Tests/ShopEasy.UnitTests
 
 # Integration tests (run with the stack up)
-dotnet test tests/ShopEasy.IntegrationTests
+dotnet test src/Tests/ShopEasy.IntegrationTests
 ```
 
-**Unit test coverage (31 tests):** every saga state transition, the full compensation path, the zombie-message guard, idempotency guards, timeout handling for every stuck state, and edge cases (non-existent saga, zero-amount order). Tests use the EF Core InMemory provider with a fresh database per test for isolation.
+**Unit tests:** 6 active tests covering the saga starter (including idempotency), the inventory-reserved consumer, and outbox entry state. They use the EF Core InMemory provider with a fresh database per test. The larger saga state-machine suite (`Sagas/SagaStateTransitionTests.cs`) is currently commented out and needs to be updated for the current consumer constructors; the payment-succeeded/failed consumer tests in `SagaOrchestratorTests.cs` are likewise disabled. InMemory cannot verify PostgreSQL-specific behaviour (`FOR UPDATE SKIP LOCKED`, row locks), so those paths need Testcontainers-based tests.
 
 ---
 
@@ -519,7 +519,7 @@ ShopEasy/
 │       │   └── Consumers/         # reserve / commit / release
 │       └── ShopEasy.PaymentService/
 │           └── Consumers/         # process / refund
-└── tests/
+└── src/Tests/
     ├── ShopEasy.UnitTests/
     └── ShopEasy.IntegrationTests/
 ```
