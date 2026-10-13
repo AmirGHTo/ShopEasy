@@ -104,6 +104,30 @@ try
             options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(30);
         });
 
+    // ── Typed HTTP Client for ProductService (server-side price lookup) ───────
+    // PlaceOrder never trusts client-supplied prices: it asks the Product service.
+    // Tight timeouts because a customer is waiting; if the catalog is unavailable
+    // the order is rejected with 503 (see OrderCommandsController).
+    builder.Services.AddHttpClient<IProductCatalogClient, ProductCatalogClient>(client =>
+        {
+            client.BaseAddress = new Uri(
+                builder.Configuration["Services:ProductService"] ?? "http://product:8080");
+        })
+        .AddHttpMessageHandler<CorrelationIdHandler>()
+        .AddStandardResilienceHandler(options =>
+        {
+            options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(3);
+            options.Retry.MaxRetryAttempts = 2;
+            options.Retry.Delay = TimeSpan.FromMilliseconds(200);
+
+            options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(30);
+            options.CircuitBreaker.FailureRatio = 0.5;
+            options.CircuitBreaker.MinimumThroughput = 5;
+            options.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(15);
+
+            options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(10);
+        });
+
     builder.Services.AddTransient<CorrelationIdHandler>();
     builder.Services.AddScoped<OrderReadModelUpdater>();
     // Track when the bus connects so outbox knows consumers are ready
