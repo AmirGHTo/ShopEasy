@@ -21,13 +21,17 @@ namespace ShopEasy.OrderService.Controllers;
 
 public class OrderCommandsController(
     OrderDbContext db,
-    ILogger<OrderCommandsController> logger, InventoryCacheService inventoryCache, OrderReadModelUpdater readModelUpdater) : ControllerBase
+    ILogger<OrderCommandsController> logger, InventoryCacheService inventoryCache, OrderReadModelUpdater readModelUpdater,
+    IProductCatalogClient productCatalog) : ControllerBase
 {
     private readonly OrderDbContext _db = db;
     private readonly ILogger<OrderCommandsController> _logger = logger;
     private readonly InventoryCacheService _inventoryCache = inventoryCache;
+    private readonly IProductCatalogClient _productCatalog = productCatalog;
 
     // ── POST /api/orders ──────────────────────────────────────────────────────
+    // The client only chooses WHAT to buy (productId + quantity). Product names and
+    // prices are always taken from the Product service — never from the request body.
     [HttpPost]
     [EnableRateLimiting("create-order")]
     public async Task<IActionResult> PlaceOrder([FromBody] PlaceOrderRequest request)
@@ -35,24 +39,73 @@ public class OrderCommandsController(
         var userId = User.FindFirst("sub")?.Value!;
         var userEmail = User.FindFirst("email")?.Value ?? "";
 
+        // ── Step 0: Validate the request itself (shape, limits, duplicates) ───
+        var validation = OrderRequestValidator.Validate(request);
+        if (!validation.IsValid)
+        {
+            _logger.LogWarning(
+                "Order rejected for User {UserId}: invalid request — {Errors}",
+                userId, string.Join("; ", validation.Errors));
+            return BadRequest(new
+            {
+                message = "Order could not be placed.",
+                errors = validation.Errors
+            });
+        }
+
+        // ── Step 0b: Resolve authoritative names and prices ───────────────────
+        // If the Product service cannot answer we reject the order (HTTP 503) rather
+        // than guess a price: charging a stale or client-supplied price is worse than
+        // asking the caller to retry.
+        IReadOnlyDictionary<Guid, CatalogProduct?> catalog;
+        try
+        {
+            catalog = await _productCatalog.GetProductsAsync(
+                validation.Lines.Select(l => l.ProductId), HttpContext.RequestAborted);
+        }
+        catch (ProductCatalogUnavailableException ex)
+        {
+            _logger.LogError(ex,
+                "Order rejected for User {UserId}: Product service unavailable", userId);
+            Response.Headers["Retry-After"] = "5";
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+            {
+                message = "Product catalog is temporarily unavailable. Please retry shortly.",
+                errors = Array.Empty<string>()
+            });
+        }
+
+        var resolution = OrderLineResolver.Resolve(validation.Lines, catalog);
+        if (!resolution.IsValid)
+        {
+            _logger.LogWarning(
+                "Order rejected for User {UserId}: {Errors}",
+                userId, string.Join("; ", resolution.Errors));
+            return BadRequest(new
+            {
+                message = "Order could not be placed.",
+                errors = resolution.Errors
+            });
+        }
+
         _logger.LogInformation(
             "User {UserId} placing order with {ItemCount} items",
-            userId, request.Items.Count);
+            userId, resolution.Lines.Count);
 
         // ── Step 1: Validate stock via cache (eventual consistency) ───────────
         // Layer 1: Redis cache hit    → ~1ms,   30s TTL
         // Layer 2: Redis cache miss   → ~150ms, gRPC → DB
         // Layer 3: gRPC down          → stale cache, 5min TTL
         // Layer 4: Everything down    → reject order
-        // Layer 5: Saga reservation   → always strong (SELECT FOR UPDATE)
+        // Layer 5: Saga reservation   → authoritative check in InventoryService (row locking planned)
         var stockErrors = new List<string>();
         var hasStaleData = false;
 
-        var productIds = request.Items.Select(i => i.ProductId).ToList();
+        var productIds = resolution.Lines.Select(l => l.ProductId).ToList();
         var stockItems = await _inventoryCache.GetStockBatchAsync(
             productIds, HttpContext.RequestAborted);
 
-        foreach (var item in request.Items)
+        foreach (var item in resolution.Lines)
         {
             var stock = stockItems.FirstOrDefault(s => s.ProductId == item.ProductId);
 
@@ -92,13 +145,13 @@ public class OrderCommandsController(
                 "Saga will verify actual stock.", userId);
 
         // ── Step 2: Build the order ───────────────────────────────────────────
-        var orderItems = request.Items.Select(i => new OrderItem
+        var orderItems = resolution.Lines.Select(l => new OrderItem
         {
             Id = Guid.NewGuid(),
-            ProductId = i.ProductId,
-            ProductName = i.ProductName,
-            Quantity = i.Quantity,
-            UnitPrice = i.UnitPrice,
+            ProductId = l.ProductId,
+            ProductName = l.ProductName,   // from the Product service
+            Quantity = l.Quantity,
+            UnitPrice = l.UnitPrice,       // from the Product service
         }).ToList();
 
         var order = new Order
@@ -107,7 +160,7 @@ public class OrderCommandsController(
             UserId = userId,
             UserEmail = userEmail,
             Status = OrderStatus.Pending,
-            Notes = request.Notes,
+            Notes = request.Notes?.Trim(),
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
             Items = orderItems
@@ -209,12 +262,22 @@ public class OrderCommandsController(
     };
 }
 
-public record PlaceOrderRequest(
-    List<OrderItemRequest> Items,
-    string? Notes);
+// Request body for POST /api/orders.
+// Items is nullable so that a missing/null list reaches OrderRequestValidator and
+// produces a clean 400 message instead of a framework-generated one.
+public record PlaceOrderRequest
+{
+    public List<OrderItemRequest?>? Items { get; init; }
+    public string? Notes { get; init; }
+}
 
-public record OrderItemRequest(
-    Guid ProductId,
-    string ProductName,
-    int Quantity,
-    decimal UnitPrice);
+// Only ProductId and Quantity are used.
+// ProductName and UnitPrice are still accepted so existing clients keep working,
+// but they are IGNORED: the Product service is the source of truth for both.
+public record OrderItemRequest
+{
+    public Guid ProductId { get; init; }
+    public int Quantity { get; init; }
+    public string? ProductName { get; init; }
+    public decimal? UnitPrice { get; init; }
+}

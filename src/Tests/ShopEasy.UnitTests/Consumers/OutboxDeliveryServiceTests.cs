@@ -1,6 +1,6 @@
 ﻿using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using ShopEasy.OrderService.Data;
 using Xunit;
 
@@ -9,17 +9,13 @@ namespace ShopEasy.UnitTests.Consumers;
 public class OutboxEntryTests : IDisposable
 {
     private readonly OrderDbContext _db;
-    private readonly NpgsqlConnection _connection;
 
     public OutboxEntryTests()
     {
-        // Keep connection open for the lifetime of the test
-        // In-memory SQLite wipes data when connection closes
-        _connection = new NpgsqlConnection("Data Source=:memory:");
-        _connection.Open();
-
+        // Fresh in-memory database per test
         var options = new DbContextOptionsBuilder<OrderDbContext>()
-            .UseNpgsql(_connection)
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
             .Options;
 
         _db = new OrderDbContext(options);
@@ -29,7 +25,6 @@ public class OutboxEntryTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        _connection.Dispose();
     }
 
     [Fact]

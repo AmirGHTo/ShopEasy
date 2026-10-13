@@ -14,14 +14,17 @@ This project is built for learning and interview preparation, but every pattern 
 4. [Technology Stack](#technology-stack)
 5. [Patterns & Mechanisms Explained](#patterns--mechanisms-explained)
 6. [Getting Started](#getting-started)
-7. [How to Use It](#how-to-use-it)
-8. [Developer Portal & Monitoring](#developer-portal--monitoring)
-9. [Testing](#testing)
-10. [Horizontal Scaling](#horizontal-scaling)
-11. [Kubernetes Deployment](#kubernetes-deployment)
-12. [Project Structure](#project-structure)
-13. [Troubleshooting](#troubleshooting)
-14. [Interview Talking Points](#interview-talking-points)
+7. [Configuration & Secrets](#configuration--secrets)
+8. [How to Use It](#how-to-use-it)
+9. [Order API](#order-api)
+10. [Developer Portal & Monitoring](#developer-portal--monitoring)
+11. [Testing](#testing)
+12. [Horizontal Scaling](#horizontal-scaling)
+13. [Kubernetes Deployment](#kubernetes-deployment)
+14. [Project Structure](#project-structure)
+15. [Troubleshooting](#troubleshooting)
+16. [Interview Talking Points](#interview-talking-points)
+17. [Production Hardening Roadmap & Known Limitations](#production-hardening-roadmap--known-limitations)
 
 ---
 
@@ -66,7 +69,7 @@ The interesting part is **what happens behind a single "Place Order" click**: a 
 
 **Two communication styles:**
 
-- **Synchronous** — Gateway → services over HTTP; Order → Inventory over gRPC (fast, typed, binary).
+- **Synchronous** — Gateway → services over HTTP; Order → Product over HTTP (authoritative price lookup when an order is placed); Order → Inventory over gRPC (fast, typed, binary).
 - **Asynchronous** — services publish/consume events through RabbitMQ. This is how the saga orchestrates the order lifecycle without services being tightly coupled.
 
 ---
@@ -78,7 +81,7 @@ The interesting part is **what happens behind a single "Place Order" click**: a 
 | **Identity** | 5001 | OAuth2 / OpenID Connect provider (Duende IdentityServer). Issues JWTs. |
 | **Gateway** | 5000 | Single entry point. YARP reverse proxy + Backend-for-Frontend. Handles auth, rate limiting, routing, and hosts the developer monitoring portal. |
 | **Product** | 5101 | Product catalog CRUD. API-versioned (v1/v2). Redis-cached. |
-| **Order** | 5102 | Order placement and orchestration. Owns the saga, outbox, and CQRS read model. Horizontally scalable. |
+| **Order** | 5102 | Order placement and orchestration. Validates requests, prices orders from the Product service, and owns the saga, outbox, and CQRS read model. Horizontally scalable. |
 | **Inventory** | 5103 (REST) / 5105→8090 (gRPC) | Stock levels, reservation, commit, release. Exposes both REST and gRPC. |
 | **Payment** | 5104 | Payment processing and refunds (simulated provider). |
 
@@ -204,7 +207,7 @@ The stock check before accepting an order uses a **layered hybrid** approach:
 - **Layer 2** — gRPC to Inventory on cache miss (~150ms, strong)
 - **Layer 3** — stale cache fallback (5min TTL) if Inventory is down, so orders still flow
 - **Layer 4** — reject only if no data at all
-- **Layer 5** — the saga's `ReserveInventory` does the *real* check with `SELECT FOR UPDATE` (always strong)
+- **Layer 5** — the saga's `ReserveInventory` does the authoritative check inside the Inventory service's database transaction. (Row-level locking so that concurrent reservations across several Inventory instances cannot oversell is on the [roadmap](#production-hardening-roadmap--known-limitations).)
 
 This decouples order acceptance from the Inventory service being online, while the saga still prevents overselling. This is the industry-standard approach for high-volume commodity e-commerce.
 
@@ -242,6 +245,12 @@ Every service exposes `/health`, `/health/ready`, and `/health/live`. Used by Do
 - **Traces** — OpenTelemetry exports spans to Jaeger; you can see a request fan out across services on a timeline.
 - **Metrics** — custom Prometheus counters (`orders_placed_total`, `outbox_pending_messages`, `sagas_active`, `saga_duration_seconds`, `inventory_cache_hits_total`) visualized in Grafana.
 
+### 20. Server-Side Pricing & Request Validation
+
+A client must never decide what it pays. `POST /api/orders` only accepts **what to buy** (`productId` + `quantity`); the product **name and unit price are always looked up from the Product service** and any `unitPrice` / `productName` sent by the client are ignored. The request is also validated (non-empty, size limits, quantity range, duplicate products merged) before anything is written.
+
+**Design decision — what if the Product service is down?** The order is **rejected with HTTP 503** (`Retry-After: 5`), not accepted with a cached or client-supplied price. A stale or guessed price ends up on a payment, which is far more expensive to fix than asking the caller to retry. The lookup uses tight timeouts, 2 retries and a circuit breaker so a failing Product service fails fast instead of hanging customers. See the [Order API](#order-api) for the exact rules and responses.
+
 ---
 
 ## Getting Started
@@ -269,6 +278,8 @@ docker-compose up --build
 
 First build takes a few minutes. When it settles, every service will have run its database migrations automatically against PostgreSQL.
 
+> Every setting and secret is explained in [Configuration & Secrets](#configuration--secrets).
+
 ### Verify it's up
 
 Open the developer portal:
@@ -288,6 +299,103 @@ To also wipe the database volume:
 ```bash
 docker-compose down -v
 ```
+
+### Database migrations
+
+Each service applies its EF Core migrations automatically at start-up. To change a schema, add a **new** migration from that service's folder (never delete and re-create `InitialCreate` on a database that holds data):
+
+```bash
+cd src/Services/ShopEasy.OrderService      # or ShopEasy.ProductService / InventoryService / PaymentService
+dotnet ef migrations add <DescriptiveName> --output-dir Data/Migrations
+# Identity lives in src/Identity/ShopEasy.Identity with the same command
+```
+
+This needs the `dotnet-ef` tool (`dotnet tool install --global dotnet-ef`) and a configured connection string (see *Running a service outside Docker* above).
+
+---
+
+## Configuration & Secrets
+
+No secret lives in the repository. Docker Compose reads them from a local, git-ignored **`.env`** file; Kubernetes reads them from a Secret you create from a template.
+
+### Docker Compose: the `.env` file
+
+```bash
+cp .env.example .env     # Windows cmd: copy .env.example .env
+```
+
+`docker-compose` refuses to start (and names the missing variable) if a required value is not set. Validate your file with `docker-compose config > /dev/null` (`> nul` on Windows).
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `POSTGRES_PASSWORD` | yes | Password of the `shopeasy` Postgres user. Also embedded in every service connection string, so **avoid `;` and `$`**. |
+| `RABBITMQ_USER` / `RABBITMQ_PASSWORD` | yes | RabbitMQ credentials used by the broker and by Order, Inventory and Payment. |
+| `RABBITMQ_ERLANG_COOKIE` | yes | Shared secret for RabbitMQ node clustering. Any long random string. |
+| `GATEWAY_CLIENT_SECRET` | yes | OAuth2 client secret: Identity registers it, the Gateway presents it. |
+| `ORDER_SERVICE_CLIENT_SECRET` | yes | OAuth2 client secret for the Order service's machine-to-machine token. |
+| `PGADMIN_PASSWORD` | yes | pgAdmin login password (user `admin@shopeasy.com`). |
+| `GRAFANA_ADMIN_PASSWORD` | yes | Grafana `admin` password. |
+| `GRAFANA_ANONYMOUS_ENABLED` | no (`false`) | Allow read-only anonymous Grafana access. Keep `false` outside your laptop. |
+| `SEED_DEMO_USERS` | no (`false`) | `true` creates `alice@shopeasy.com` (admin) and `bob@shopeasy.com` (customer) at Identity startup. **Local development only.** |
+| `SEED_ADMIN_PASSWORD` / `SEED_CUSTOMER_PASSWORD` | only if seeding | Passwords for the demo users. Must satisfy the Identity policy: at least 8 characters with an uppercase letter, a lowercase letter and a digit. |
+| `EXPOSE_ACCESS_TOKEN` | no (`false`) | `true` enables `GET /account/token` on the gateway, which returns the raw JWT so you can paste it into Swagger's *Authorize* button. Off by default because the BFF pattern exists to keep tokens out of the browser. |
+
+Generate strong random values, e.g. `openssl rand -base64 24`, or in PowerShell: `-join ((48..57)+(65..90)+(97..122) | Get-Random -Count 32 | % {[char]$_})`.
+
+**Changing `POSTGRES_PASSWORD` after the first run:** Postgres only reads it when it creates an empty data volume. Either keep the old password, or wipe local data with `docker-compose down -v` and start again.
+
+### Service configuration keys
+
+Services read standard ASP.NET Core configuration, so every key can be an environment variable (`:` becomes `__`). Compose and the k8s manifests already set these; this is the reference if you deploy somewhere else.
+
+| Key | Service | Notes |
+|---|---|---|
+| `ConnectionStrings__DefaultConnection` | all with a DB | **Required.** Each service has its own database. No default. |
+| `IdentityServer__Authority` | all APIs, Gateway | Internal URL of Identity, e.g. `http://identity:8080`. |
+| `IdentityServer__PublicUrl` | Gateway | Browser-facing Identity URL (used for login redirects), e.g. `http://localhost:5001`. |
+| `Oidc__ClientSecret` | Gateway | **Required.** Must equal `Clients__Gateway__Secret`. |
+| `Clients__Gateway__Secret`, `Clients__OrderService__Secret` | Identity | **Required.** Secrets of the registered OAuth2 clients. |
+| `Clients__Gateway__PublicUrl` | Identity | Browser-facing gateway URL for redirect URIs. Default `http://localhost:5000`. |
+| `Seed__Enabled`, `Seed__AdminPassword`, `Seed__CustomerPassword` | Identity | Demo users, see above. Default off. |
+| `Features__ExposeAccessToken` | Gateway | Enables `/account/token`. Default off. |
+| `RabbitMQ__Host`, `RabbitMQ__Username`, `RabbitMQ__Password` | Order, Inventory, Payment | Username and password are **required** (no `guest` fallback). |
+| `ServiceAuth__ClientId`, `ServiceAuth__ClientSecret` | Order | **Required** when the service token is used. |
+| `Services__ProductService` | Order | Product service base URL used for price lookup. Default `http://product:8080`. |
+| `Services__InventoryService`, `Services__InventoryGrpcService` | Order | Inventory REST and gRPC URLs. |
+| `Redis__Connection` | Product, Inventory, Order | Redis endpoint, e.g. `redis:6379`. |
+| `Telemetry__Endpoint` | all | OTLP endpoint (Jaeger), default `http://jaeger:4317`. |
+| `Testing__ForcePaymentSuccess` | Payment | Test-only: forces simulated payments to succeed. |
+
+### Kubernetes
+
+```bash
+cp k8s/secrets/secrets.example.yaml k8s/secrets/secrets.yaml   # secrets.yaml is git-ignored
+# replace every CHANGE_ME (connection strings must embed the same postgres password)
+kubectl apply -f k8s/secrets/secrets.yaml
+```
+
+For real clusters prefer an external secret store (External Secrets, Sealed Secrets, Vault) over a plain `Secret`.
+
+### Running a service outside Docker (e.g. from Visual Studio)
+
+The `appsettings*.json` files intentionally contain no connection strings or credentials. To run one service directly, supply them yourself, for example:
+
+```bash
+cd src/Services/ShopEasy.OrderService
+dotnet user-secrets init
+dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Host=localhost;Database=shopeasy_orders;Username=shopeasy;Password=<POSTGRES_PASSWORD>"
+dotnet user-secrets set "RabbitMQ:Username" "<RABBITMQ_USER>"
+dotnet user-secrets set "RabbitMQ:Password" "<RABBITMQ_PASSWORD>"
+```
+
+(and point `RabbitMQ:Host`, `IdentityServer:Authority`, `Redis:Connection` at `localhost` or the published container ports.)
+
+### Security notes
+
+- **Monitoring pages and APIs need a login.** `/outbox`, `/sagas` and `/deadletters` on the gateway redirect to the login page, and `/api/outbox/*` on the Order service requires the `admin` role. Swagger UIs and metrics ports are still open in this project; put them behind your network controls in production.
+- **IdentityServer signing keys** are generated at runtime and stored in a persistent volume (`identity-keys` in Compose, a PVC in Kubernetes) so tokens survive restarts. They are no longer committed to git. Running several Identity replicas needs shared key storage (database or a key vault), which is on the roadmap.
+- **Secrets that were committed in the early history** of this repository (database password, client secrets, a signing key) must be treated as compromised: rotate them anywhere they were used.
+- **Never enable** `SEED_DEMO_USERS`, `EXPOSE_ACCESS_TOKEN` or `GRAFANA_ANONYMOUS_ENABLED` on anything reachable from the internet.
 
 ---
 
@@ -314,17 +422,15 @@ fetch('/api/orders', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
     items: [{
-      productId:   '00000000-0000-0000-0000-000000000005',
-      productName: '4K Webcam',
-      quantity:    1,
-      unitPrice:   89.99
+      productId: '00000000-0000-0000-0000-000000000005',
+      quantity:  1
     }],
     notes: 'my first order'
   })
 }).then(r => r.json()).then(console.log)
 ```
 
-Seeded product `...0005` is "4K Webcam" with quantity 100.
+You only send **what** to buy. The product name and price (`89.99` for the seeded "4K Webcam", which has 100 in stock) are filled in by the server from the Product service. Any `productName` / `unitPrice` you add to an item is ignored. See the [Order API](#order-api) for all rules and error responses.
 
 ### 3. Watch the saga play out
 
@@ -343,6 +449,63 @@ fetch('/api/orders').then(r => r.json()).then(console.log)
 ```
 
 This reads from the denormalized `OrderSummaries` table — fast, no joins.
+
+---
+
+## Order API
+
+All endpoints require a logged-in user (cookie via the gateway, or a Bearer token directly against the Order service).
+
+| Method & path | Description |
+|---|---|
+| `POST /api/orders` | Place an order. Rate limited to 10 per minute per user. |
+| `GET /api/orders?status=&page=&pageSize=` | List the current user's orders (CQRS read model). `pageSize` is clamped to 1-50. |
+| `GET /api/orders/{orderId}` | One of the current user's orders. |
+| `GET /api/orders/status-counts` | Order counts per status for the current user. |
+| `DELETE /api/orders/{id}` | Cancel an order (owner or admin). **Known limitation:** this currently only changes the order status; it does not release stock or refund a payment yet (see the [roadmap](#production-hardening-roadmap--known-limitations)). |
+
+### `POST /api/orders`
+
+```json
+{
+  "items": [
+    { "productId": "00000000-0000-0000-0000-000000000005", "quantity": 2 }
+  ],
+  "notes": "leave at the door"
+}
+```
+
+| Field | Rules |
+|---|---|
+| `items` | Required, 1 to **50** entries. |
+| `items[].productId` | Required GUID of an existing, active product. |
+| `items[].quantity` | Whole number from 1 to **100**. |
+| `items[].productName`, `items[].unitPrice` | **Ignored.** Accepted only so older clients keep working. The server uses the Product service's name and price. |
+| `notes` | Optional, at most **500** characters (trimmed). |
+
+The same `productId` appearing in several items is **merged into one line** (quantities added); the merged quantity must still be at most 100.
+
+**How an order is processed:** validate the request, look up every product in the Product service (name, price, active flag), check stock (Redis/gRPC, see pattern 11), then save the order and its outbox event in one transaction and return `201`. The saga then reserves stock and takes payment asynchronously.
+
+| Status | Meaning |
+|---|---|
+| `201 Created` | Order accepted (status `Pending`; the saga finishes it asynchronously). The body contains the order with the **server-side** prices and `totalAmount`. |
+| `400 Bad Request` | Invalid request, unknown product, inactive product, or insufficient stock. Body: `{ "message": "Order could not be placed.", "errors": ["..."] }` with every problem listed. |
+| `401 Unauthorized` | Not logged in / invalid token. |
+| `429 Too Many Requests` | Order rate limit exceeded. Through the gateway the response includes a `Retry-After` header. |
+| `503 Service Unavailable` | The Product service could not be reached or answered in time, so the price cannot be trusted. **The order is rejected, nothing is saved.** The response has `Retry-After: 5`; retrying is safe. |
+
+Example `400`:
+
+```json
+{
+  "message": "Order could not be placed.",
+  "errors": [
+    "Item 1: quantity must be at least 1.",
+    "Product 3f2c0c1e-0000-0000-0000-000000000099 does not exist."
+  ]
+}
+```
 
 ---
 
@@ -392,14 +555,14 @@ To reliably force a successful payment for the refund test, set `Testing__ForceP
 ## Testing
 
 ```bash
-# Unit tests (saga state machine, compensation, timeouts, idempotency, outbox)
-dotnet test tests/ShopEasy.UnitTests
+# Unit tests (saga starter / inventory-reserved consumer, outbox entries)
+dotnet test src/Tests/ShopEasy.UnitTests
 
 # Integration tests (run with the stack up)
-dotnet test tests/ShopEasy.IntegrationTests
+dotnet test src/Tests/ShopEasy.IntegrationTests
 ```
 
-**Unit test coverage (31 tests):** every saga state transition, the full compensation path, the zombie-message guard, idempotency guards, timeout handling for every stuck state, and edge cases (non-existent saga, zero-amount order). Tests use the EF Core InMemory provider with a fresh database per test for isolation.
+**Unit tests:** 35 active test methods. 6 cover the saga starter (including idempotency), the inventory-reserved consumer and outbox entry state; 29 cover order placement: request validation and limits (`Orders/OrderRequestValidatorTests`), server-side price/name resolution (`OrderLineResolverTests`) and the Product service client including 404, 5xx, network failure and malformed responses (`ProductCatalogClientTests`). They use the EF Core InMemory provider with a fresh database per test. The larger saga state-machine suite (`Sagas/SagaStateTransitionTests.cs`) is currently commented out and needs to be updated for the current consumer constructors; the payment-succeeded/failed consumer tests in `SagaOrchestratorTests.cs` are likewise disabled. InMemory cannot verify PostgreSQL-specific behaviour (`FOR UPDATE SKIP LOCKED`, row locks), so those paths need Testcontainers-based tests.
 
 ---
 
@@ -492,6 +655,7 @@ kubectl delete namespace shopeasy
 ```
 ShopEasy/
 ├── docker-compose.yml
+├── .env.example                   # copy to .env (git-ignored) — all secrets live there
 ├── postgres-init.sql              # creates the 5 databases
 ├── prometheus.yml
 ├── grafana/provisioning/          # auto-provisioned dashboards
@@ -511,7 +675,8 @@ ShopEasy/
 │       ├── ShopEasy.ProductService/
 │       ├── ShopEasy.OrderService/
 │       │   ├── Sagas/             # orchestrator + consumers
-│       │   ├── Services/          # outbox, timeout, gRPC client, inventory cache
+│       │   ├── Services/          # outbox, timeout, gRPC client, inventory cache,
+│       │   │                      #   product catalog client, order request validation/pricing
 │       │   ├── ReadModels/        # CQRS OrderSummary
 │       │   └── Controllers/       # Commands + Queries (CQRS split)
 │       ├── ShopEasy.InventoryService/
@@ -519,7 +684,7 @@ ShopEasy/
 │       │   └── Consumers/         # reserve / commit / release
 │       └── ShopEasy.PaymentService/
 │           └── Consumers/         # process / refund
-└── tests/
+└── src/Tests/
     ├── ShopEasy.UnitTests/
     └── ShopEasy.IntegrationTests/
 ```
@@ -538,6 +703,18 @@ ShopEasy/
 
 **`docker-compose --scale` fails with "container name" warning** — the Order service must not have a fixed `container_name` and must expose a dynamic port (`- "8080"`, not `- "5102:8080"`).
 
+**`docker-compose up` fails with "Set X in .env"** — a required variable is missing from your `.env`. Compare it with `.env.example`.
+
+**Services cannot log in to Postgres after you edited `.env`** — Postgres only applies `POSTGRES_PASSWORD` when it first creates the data volume. Restore the old password, or wipe local data with `docker-compose down -v`.
+
+**`/sagas`, `/outbox` or `/deadletters` redirect to a login page** — expected: they require a login (as an admin to see data). Seed demo users with `SEED_DEMO_USERS=true` in `.env`.
+
+**`/account/token` returns 404** — it is disabled unless `EXPOSE_ACCESS_TOKEN=true` in `.env` (local development only).
+
+**`POST /api/orders` returns 503 "Product catalog is temporarily unavailable"** — the Order service could not get a price from the Product service (down, slow, or its circuit breaker is open). Check `docker-compose ps product` and its logs, then retry; nothing was saved.
+
+**`POST /api/orders` returns 400 "Product ... does not exist" / "no longer available"** — the `productId` is not in the Product catalog, or the product was deactivated. List valid ids with `GET /api/v1/products`.
+
 **Redis down crashes EF migrations** — the Redis connection string uses `abortConnect=false` and the multiplexer is registered so startup doesn't depend on Redis being up.
 
 ---
@@ -548,14 +725,42 @@ A quick map of "which pattern solves which problem," useful for explaining the p
 
 - **"How do you handle a transaction across services?"** → Saga (orchestration) with per-state compensation.
 - **"How do you guarantee an event is published when the DB write succeeds?"** → Outbox pattern (event written in the same transaction).
+- **"How do you stop clients tampering with prices?"** → The client sends only product id + quantity; the Order service looks up name and price from the Product service and ignores anything else.
+- **"What if a dependency is down while taking an order?"** → Fail closed: reject with 503 + `Retry-After` rather than accept an untrusted price; tight timeouts, retries and a circuit breaker keep it fast.
 - **"How do you avoid double-publishing when scaled out?"** → `SELECT FOR UPDATE SKIP LOCKED`.
 - **"What about duplicate messages?"** → Idempotent consumers + processed-event tracking.
 - **"What if a service dies mid-saga?"** → Timeout service detects stuck sagas and compensates.
 - **"What if a payment arrives after you already cancelled?"** → Zombie-message guard issues a refund.
 - **"How do you make reads fast?"** → CQRS denormalized read model.
-- **"Strong or eventual consistency for stock?"** → Hybrid: cached fast-path + saga's `SELECT FOR UPDATE` for the authoritative check.
+- **"Strong or eventual consistency for stock?"** → Hybrid: cached fast-path for acceptance, with the saga's reservation in the Inventory service as the authoritative check (row-level locking is on the roadmap).
 - **"How do you debug a request across services?"** → Correlation ID + Jaeger traces + Seq logs.
 - **"How do you scale?"** → Stateless Order service, distributed outbox lock, Docker DNS load-balancing / Kubernetes HPA.
+
+---
+
+## Production Hardening Roadmap & Known Limitations
+
+This project is being hardened step by step. Status:
+
+| # | Step | Status |
+|---|---|---|
+| 1 | Repo hygiene: `.gitignore`, `.dockerignore`, no build output / IDE files / keys in git | Done |
+| 2 | Secrets out of the repo (`.env`, k8s Secret template), monitoring endpoints behind auth, no hardcoded credentials | Done |
+| 3 | Server-side pricing and request validation on `POST /api/orders` | Done |
+| 4 | Inventory correctness: row locking on reserve, idempotent commit/release, saga waits for commit result | Planned |
+| 5 | Order cancellation that goes through the saga (release stock, refund) | Planned |
+| 6 | Replace RabbitMQ management-API polling with a bus-ready check; use the MassTransit outbox for Payment/Inventory events | Planned |
+| 7 | Observability fixes (per-service log names, correlation across messages, MassTransit/EF tracing), CI (GitHub Actions), Testcontainers tests, re-enable the commented-out saga tests | Planned |
+| 8 | Dockerfile (non-root, slim image) and Kubernetes hardening (pinned image tags, shared Identity key storage, network policies) | Planned |
+
+**Known limitations today** (documented so nobody is surprised):
+
+- Concurrent reservations in several Inventory instances can oversell: reserve has no row lock yet.
+- Inventory commit and release are not idempotent; a duplicate commit would deduct stock twice.
+- `DELETE /api/orders/{id}` does not compensate (stock stays reserved, a payment is not refunded).
+- The saga marks an order complete without waiting for the inventory commit result.
+- Migrations run at service start-up; with several replicas the race is only handled for the Order service.
+- Swagger UIs and Prometheus metrics ports are unauthenticated.
 
 ---
 

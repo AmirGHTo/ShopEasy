@@ -11,7 +11,7 @@ namespace ShopEasy.OrderService.Services;
 //   Layer 2: Redis cache miss   → ~150ms, strong (gRPC → DB)
 //   Layer 3: gRPC down          → stale cache (5min TTL)
 //   Layer 4: Everything down    → reject order
-//   Layer 5: Saga reservation   → always strong (SELECT FOR UPDATE)
+//   Layer 5: Saga reservation   → authoritative check in InventoryService (row locking planned)
 public class InventoryCacheService(
     CacheService cache,
     InventoryGrpcClient grpcClient,
