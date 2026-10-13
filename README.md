@@ -17,14 +17,15 @@ This project is built for learning and interview preparation, but every pattern 
 7. [Configuration & Secrets](#configuration--secrets)
 8. [How to Use It](#how-to-use-it)
 9. [Order API](#order-api)
-10. [Developer Portal & Monitoring](#developer-portal--monitoring)
-11. [Testing](#testing)
-12. [Horizontal Scaling](#horizontal-scaling)
-13. [Kubernetes Deployment](#kubernetes-deployment)
-14. [Project Structure](#project-structure)
-15. [Troubleshooting](#troubleshooting)
-16. [Interview Talking Points](#interview-talking-points)
-17. [Production Hardening Roadmap & Known Limitations](#production-hardening-roadmap--known-limitations)
+10. [Inventory Stock Model](#inventory-stock-model)
+11. [Developer Portal & Monitoring](#developer-portal--monitoring)
+12. [Testing](#testing)
+13. [Horizontal Scaling](#horizontal-scaling)
+14. [Kubernetes Deployment](#kubernetes-deployment)
+15. [Project Structure](#project-structure)
+16. [Troubleshooting](#troubleshooting)
+17. [Interview Talking Points](#interview-talking-points)
+18. [Production Hardening Roadmap & Known Limitations](#production-hardening-roadmap--known-limitations)
 
 ---
 
@@ -154,11 +155,15 @@ A "Place Order" is a **distributed transaction** across Order, Inventory, and Pa
 
 **Happy path:**
 ```
-OrderConfirmed → ReserveInventory → ProcessPayment → CommitInventory → Completed
+OrderConfirmed → ReserveInventory → ProcessPayment → CommitInventory → InventoryCommitted → Completed
 ```
 
 **Saga states:** `Started → ReservingInventory → ProcessingPayment → Completing → Completed`
 (or the compensation branch: `→ ReleasingInventory → Cancelled/Failed`)
+
+The saga only becomes `Completed` (and the order `Confirmed`) when the Inventory service has **confirmed the stock commit** with an `InventoryCommittedEvent`. While it waits it is in `Completing`; if no answer arrives the timeout service re-sends the commit (safe, because commit is idempotent).
+
+Each handler only acts when the saga is in the state its event is valid for. A duplicate or late event is ignored (or compensated), never allowed to move an order backwards. The saga state is always saved **before** the next command is published, so a fast reply can never arrive while the saga still shows the old state.
 
 **Compensation matrix — every failure has a defined recovery:**
 
@@ -168,7 +173,9 @@ OrderConfirmed → ReserveInventory → ProcessPayment → CommitInventory → C
 | Payment declined | reserved | not charged | Release inventory → Cancel |
 | Timeout waiting for payment | reserved | not charged | Release inventory → Cancel |
 | Late payment after cancel | released | charged | **Refund** → stay Cancelled |
-| Commit fails after payment | reserved | charged | Retry commit (never auto-fail) |
+| Commit fails transiently after payment (DB hiccup) | reserved | charged | Message retried, then re-sent by the timeout service (commit is idempotent) |
+| Commit impossible after payment (reservation missing or already released) | not committed | charged | **Refund** → Failed / order Cancelled |
+| Duplicate "payment succeeded" event | unchanged | charged | Ignored — never refunds an order that is completing or completed |
 
 ### 5. Outbox Pattern
 
@@ -182,11 +189,16 @@ When the Order service runs as **multiple instances**, they'd all try to publish
 
 ### 7. Idempotent Consumers
 
-Every message consumer checks whether it has already processed a given event (via a `ProcessedEvents` table or a saga-state guard) before acting. RabbitMQ guarantees *at-least-once* delivery, meaning duplicates happen. Idempotency makes reprocessing harmless.
+Every message consumer must be safe to run twice, because RabbitMQ guarantees only *at-least-once* delivery. How each one does it:
+
+- **Saga handlers** check the saga's current state (see pattern 4).
+- **Inventory reserve** records a `ProcessedEvents` row per order, checked while the stock rows are locked.
+- **Inventory commit / release** read the order's own ledger rows (`StockTransactions` for that order: reserved / committed / released) under the row locks, so a duplicate is detected exactly and only re-sends its result event. See [Inventory Stock Model](#inventory-stock-model).
+- **Payment** keeps a `ProcessedEvents` row per order.
 
 ### 8. Zombie Message Guard
 
-A subtle distributed-systems bug: a payment command sent *before* a saga timed out can arrive *after* the saga was already cancelled. Without a guard, this "zombie" message would complete a cancelled order. Each consumer re-reads the saga state inside a locked transaction and, if the saga is already terminal, issues a compensating action (refund / release) instead of proceeding.
+A subtle distributed-systems bug: a payment command sent *before* a saga timed out can arrive *after* the saga was already cancelled. Without a guard, this "zombie" message would complete a cancelled order. Each consumer re-reads the saga state inside a transaction and, if the saga has already given up on the order, issues a compensating action (refund / release) instead of proceeding. Duplicates of events for orders that are completing or completed are ignored instead (a duplicate must never refund a paid, finished order).
 
 ### 9. Saga Timeout Handling
 
@@ -207,7 +219,7 @@ The stock check before accepting an order uses a **layered hybrid** approach:
 - **Layer 2** — gRPC to Inventory on cache miss (~150ms, strong)
 - **Layer 3** — stale cache fallback (5min TTL) if Inventory is down, so orders still flow
 - **Layer 4** — reject only if no data at all
-- **Layer 5** — the saga's `ReserveInventory` does the authoritative check inside the Inventory service's database transaction. (Row-level locking so that concurrent reservations across several Inventory instances cannot oversell is on the [roadmap](#production-hardening-roadmap--known-limitations).)
+- **Layer 5** — the saga's `ReserveInventory` does the authoritative check inside the Inventory service's database transaction, with the stock rows locked (`SELECT … FOR UPDATE`), so concurrent reservations — on any Inventory instance — are serialized per product and cannot oversell. See [Inventory Stock Model](#inventory-stock-model).
 
 This decouples order acceptance from the Inventory service being online, while the saga still prevents overselling. This is the industry-standard approach for high-volume commodity e-commerce.
 
@@ -489,7 +501,7 @@ The same `productId` appearing in several items is **merged into one line** (qua
 
 | Status | Meaning |
 |---|---|
-| `201 Created` | Order accepted (status `Pending`; the saga finishes it asynchronously). The body contains the order with the **server-side** prices and `totalAmount`. |
+| `201 Created` | Order accepted (status `Pending`). The saga then reserves stock, takes payment and commits the stock asynchronously; the order becomes `Confirmed` once all of that succeeded, or `Cancelled` if any step failed (stock short, payment declined, ...). The body contains the order with the **server-side** prices and `totalAmount`. |
 | `400 Bad Request` | Invalid request, unknown product, inactive product, or insufficient stock. Body: `{ "message": "Order could not be placed.", "errors": ["..."] }` with every problem listed. |
 | `401 Unauthorized` | Not logged in / invalid token. |
 | `429 Too Many Requests` | Order rate limit exceeded. Through the gateway the response includes a `Retry-After` header. |
@@ -506,6 +518,82 @@ Example `400`:
   ]
 }
 ```
+
+---
+
+## Inventory Stock Model
+
+Each product has two numbers in the Inventory database:
+
+| Field | Meaning |
+|---|---|
+| `Quantity` | Units physically in stock. Only decreases when an order is **committed** (or an admin adjusts stock). |
+| `ReservedQty` | Units held for orders that are still in flight. |
+| `AvailableQuantity` | `Quantity − ReservedQty` — what a new order can still reserve. |
+
+Every change is also written to the `StockTransactions` ledger. For an order the ledger holds up to three kinds of rows, recognised by their exact `Reason` text (`Data/StockReasons.cs`): *Reserved for Order …*, *Committed for Order …*, *Released reservation for Order …*.
+
+**Lifecycle of one order's stock**
+
+```
+reserve  → ReservedQty += n                      (Quantity unchanged)
+   ├── commit  (payment succeeded) → Quantity −= n, ReservedQty −= n   → InventoryCommittedEvent
+   │           └── impossible (no reservation / already released)      → InventoryCommitFailedEvent → saga refunds + cancels
+   └── release (payment failed / timeout)       → ReservedQty −= n     → InventoryReleasedEvent
+```
+
+**Concurrency — no overselling.** Reserve, commit, release and the admin *adjust* endpoint all run in a database transaction and first lock the affected product rows with `SELECT … FOR UPDATE`, always in `ProductId` order (so two operations touching several products cannot deadlock). Two Inventory instances therefore cannot both read "1 left" and both reserve it: the second waits for the first, then sees the updated stock. The locking lives behind `IInventoryLocking` (`Data/InventoryLocking.cs`).
+
+**Idempotency — safe to run twice.** The state checks happen *under* those locks, so even two copies of a message processed at the same moment cannot both act:
+
+| Command | Duplicate / odd case | Result |
+|---|---|---|
+| Reserve | Order already reserved | No second reservation; `InventoryReservedEvent` re-sent |
+| Reserve | Not enough stock / unknown product / quantity ≤ 0 | Nothing reserved; `InventoryReservationFailedEvent` |
+| Reserve | Same product on several lines | Reserved once with the total |
+| Commit | Already committed | No second deduction; `InventoryCommittedEvent` re-sent |
+| Commit | Reservation was released, or never existed | `InventoryCommitFailedEvent` |
+| Release | Already released | No second release; `InventoryReleasedEvent` re-sent |
+| Release | Already **committed** | Refused (stock is already deducted); nothing published, error logged |
+| Release | Nothing was reserved | `InventoryReleasedEvent` (nothing to undo) so the saga can finish |
+
+Transient failures (database unavailable, ...) are *not* reported as events: the message is retried and ends up in the `*_error` queue if it keeps failing (see Dead Letter Queues).
+
+**Messages**
+
+| Message | Direction | Queue / consumer |
+|---|---|---|
+| `ReserveInventoryCommand`, `CommitInventoryCommand`, `ReleaseInventoryCommand` | Order → Inventory | `inventory-reserve`, `inventory-commit`, `inventory-release` |
+| `InventoryReservedEvent`, `InventoryReservationFailedEvent`, `InventoryReleasedEvent` | Inventory → Order | `order-saga-inventory-reserved`, `-failed`, `-released` |
+| `InventoryCommittedEvent`, `InventoryCommitFailedEvent` | Inventory → Order | `order-saga-inventory-committed`, `order-saga-inventory-commit-failed` |
+
+### Checking the concurrency behaviour yourself
+
+Unit tests cover the logic (idempotency, state checks, quantity maths) with an in-memory database, but they cannot prove the row locks — that needs a real PostgreSQL (planned: Testcontainers). To see it with the running stack, log in as the admin at `http://localhost:5000` and paste this into the browser console. It leaves exactly 5 *Standing Desks* in stock and then places 10 orders for one desk each, all at the same moment (the order rate limit is 10 per minute, so run it once a minute):
+
+```javascript
+const id = '00000000-0000-0000-0000-000000000003';          // Standing Desk
+const json = { 'Content-Type': 'application/json' };
+
+// 1. set stock to exactly 5
+const inv = await (await fetch(`/api/inventory/${id}`)).json();
+await fetch(`/api/inventory/${id}/adjust`, { method: 'POST', headers: json,
+  body: JSON.stringify({ quantityChange: 5 - inv.quantity, reason: 'concurrency test' }) });
+
+// 2. 10 simultaneous orders for 1 desk each
+const statuses = await Promise.all(Array.from({ length: 10 }, () =>
+  fetch('/api/orders', { method: 'POST', headers: json,
+    body: JSON.stringify({ items: [{ productId: id, quantity: 1 }] }) }).then(r => r.status)));
+console.log('HTTP statuses', statuses);
+
+// 3. wait for the sagas to finish, then look at the result
+await new Promise(r => setTimeout(r, 20000));
+console.log('stock', await (await fetch(`/api/inventory/${id}`)).json());
+const orders = await (await fetch('/api/orders?pageSize=50')).json();
+console.log(orders.items.filter(o => o.itemsSummary.includes('Standing')).map(o => o.statusName));
+```
+
+Expected: **at most 5 orders end up `Confirmed`**, the rest `Cancelled` (their `failureReason` says "Insufficient stock…"), and the stock ends at `quantity: 0, reservedQty: 0` — never negative, never more than 5 sold. (Some orders may already be rejected with `400` at acceptance time, based on the cached stock level; that is fine.) Payments succeed in the default Compose setup because `Testing__ForcePaymentSuccess` is on for the Payment service.
 
 ---
 
@@ -562,7 +650,7 @@ dotnet test src/Tests/ShopEasy.UnitTests
 dotnet test src/Tests/ShopEasy.IntegrationTests
 ```
 
-**Unit tests:** 35 active test methods. 6 cover the saga starter (including idempotency), the inventory-reserved consumer and outbox entry state; 29 cover order placement: request validation and limits (`Orders/OrderRequestValidatorTests`), server-side price/name resolution (`OrderLineResolverTests`) and the Product service client including 404, 5xx, network failure and malformed responses (`ProductCatalogClientTests`). They use the EF Core InMemory provider with a fresh database per test. The larger saga state-machine suite (`Sagas/SagaStateTransitionTests.cs`) is currently commented out and needs to be updated for the current consumer constructors; the payment-succeeded/failed consumer tests in `SagaOrchestratorTests.cs` are likewise disabled. InMemory cannot verify PostgreSQL-specific behaviour (`FOR UPDATE SKIP LOCKED`, row locks), so those paths need Testcontainers-based tests.
+**Unit tests:** 70 active test methods. 6 cover the saga starter (including idempotency), the inventory-reserved consumer and outbox entry state. 16 (`Sagas/CommitFlowTests`) cover the saga's commit flow: completion only after `InventoryCommittedEvent`, refund on `InventoryCommitFailedEvent`, and that duplicate or late events never refund, cancel or release a finished order. 19 (`Inventory/*`) cover the Inventory consumers: reserve, commit and release including duplicates, out-of-order messages, shortages and multi-product orders. 29 cover order placement: request validation and limits (`Orders/OrderRequestValidatorTests`), server-side price/name resolution (`OrderLineResolverTests`) and the Product service client including 404, 5xx, network failure and malformed responses (`ProductCatalogClientTests`). They use the EF Core InMemory provider with a fresh database per test. The larger saga state-machine suite (`Sagas/SagaStateTransitionTests.cs`) is currently commented out and needs to be updated for the current consumer constructors; the payment-succeeded/failed consumer tests in `SagaOrchestratorTests.cs` are likewise disabled. InMemory cannot verify PostgreSQL-specific behaviour (`FOR UPDATE SKIP LOCKED`, row locks): the Inventory tests swap the real `PostgresInventoryLocking` for a plain query, so the locking itself is checked manually (see *Checking the concurrency behaviour yourself*) until Testcontainers-based tests exist.
 
 ---
 
@@ -681,6 +769,7 @@ ShopEasy/
 │       │   └── Controllers/       # Commands + Queries (CQRS split)
 │       ├── ShopEasy.InventoryService/
 │       │   ├── Grpc/              # gRPC service implementation
+│       │   ├── Data/              # DbContext, StockReasons (ledger kinds), InventoryLocking (FOR UPDATE)
 │       │   └── Consumers/         # reserve / commit / release
 │       └── ShopEasy.PaymentService/
 │           └── Consumers/         # process / refund
@@ -715,6 +804,10 @@ ShopEasy/
 
 **`POST /api/orders` returns 400 "Product ... does not exist" / "no longer available"** — the `productId` is not in the Product catalog, or the product was deactivated. List valid ids with `GET /api/v1/products`.
 
+**An order stays `Pending` and the saga sits in `Completing`** — payment succeeded and the saga is waiting for the Inventory service to confirm the stock commit. Check that the `inventory` container is up and that `inventory-commit` / `inventory-commit_error` in the RabbitMQ UI are empty. The timeout service re-sends the commit every ~2 minutes; the commit is idempotent, so this is safe.
+
+**An order was `Cancelled` and refunded although payment had succeeded** — the Inventory service reported `InventoryCommitFailedEvent`: the reservation had been released (for example by a timeout) before the commit arrived. The saga ends in `Failed`, the order is cancelled and the payment is refunded. The reason is on the saga (`/sagas`) and in the order's `failureReason`.
+
 **Redis down crashes EF migrations** — the Redis connection string uses `abortConnect=false` and the multiplexer is registered so startup doesn't depend on Redis being up.
 
 ---
@@ -727,12 +820,14 @@ A quick map of "which pattern solves which problem," useful for explaining the p
 - **"How do you guarantee an event is published when the DB write succeeds?"** → Outbox pattern (event written in the same transaction).
 - **"How do you stop clients tampering with prices?"** → The client sends only product id + quantity; the Order service looks up name and price from the Product service and ignores anything else.
 - **"What if a dependency is down while taking an order?"** → Fail closed: reject with 503 + `Retry-After` rather than accept an untrusted price; tight timeouts, retries and a circuit breaker keep it fast.
+- **"How do you stop two instances overselling the last item?"** → Reserve/commit/release lock the product rows with `SELECT … FOR UPDATE` (in a fixed order, so no deadlocks) and make their duplicate checks under that lock.
+- **"What if the same message is delivered twice?"** → Consumers derive what already happened from their own data (saga state, per-order ledger rows) and just re-send the result; duplicates never deduct stock twice or refund a finished order.
 - **"How do you avoid double-publishing when scaled out?"** → `SELECT FOR UPDATE SKIP LOCKED`.
 - **"What about duplicate messages?"** → Idempotent consumers + processed-event tracking.
 - **"What if a service dies mid-saga?"** → Timeout service detects stuck sagas and compensates.
 - **"What if a payment arrives after you already cancelled?"** → Zombie-message guard issues a refund.
 - **"How do you make reads fast?"** → CQRS denormalized read model.
-- **"Strong or eventual consistency for stock?"** → Hybrid: cached fast-path for acceptance, with the saga's reservation in the Inventory service as the authoritative check (row-level locking is on the roadmap).
+- **"Strong or eventual consistency for stock?"** → Hybrid: cached fast-path for acceptance, with the saga's row-locked reservation in the Inventory service as the authoritative check.
 - **"How do you debug a request across services?"** → Correlation ID + Jaeger traces + Seq logs.
 - **"How do you scale?"** → Stateless Order service, distributed outbox lock, Docker DNS load-balancing / Kubernetes HPA.
 
@@ -747,7 +842,7 @@ This project is being hardened step by step. Status:
 | 1 | Repo hygiene: `.gitignore`, `.dockerignore`, no build output / IDE files / keys in git | Done |
 | 2 | Secrets out of the repo (`.env`, k8s Secret template), monitoring endpoints behind auth, no hardcoded credentials | Done |
 | 3 | Server-side pricing and request validation on `POST /api/orders` | Done |
-| 4 | Inventory correctness: row locking on reserve, idempotent commit/release, saga waits for commit result | Planned |
+| 4 | Inventory correctness: row locking on reserve/commit/release/adjust, idempotent commit and release, saga waits for the commit result (refunds if the commit is impossible) | Done |
 | 5 | Order cancellation that goes through the saga (release stock, refund) | Planned |
 | 6 | Replace RabbitMQ management-API polling with a bus-ready check; use the MassTransit outbox for Payment/Inventory events | Planned |
 | 7 | Observability fixes (per-service log names, correlation across messages, MassTransit/EF tracing), CI (GitHub Actions), Testcontainers tests, re-enable the commented-out saga tests | Planned |
@@ -755,10 +850,12 @@ This project is being hardened step by step. Status:
 
 **Known limitations today** (documented so nobody is surprised):
 
-- Concurrent reservations in several Inventory instances can oversell: reserve has no row lock yet.
-- Inventory commit and release are not idempotent; a duplicate commit would deduct stock twice.
 - `DELETE /api/orders/{id}` does not compensate (stock stays reserved, a payment is not refunded).
-- The saga marks an order complete without waiting for the inventory commit result.
+- Saga handlers and the timeout service do not lock the saga row. Two events for the same order processed at the exact same instant (for example a payment result racing the timeout) can still interleave. The Inventory service's idempotent commit/release and the refund paths make the common cases safe, and an impossible combination is logged as `MANUAL INTERVENTION REQUIRED`, but a proper fix is row locking or optimistic concurrency on the saga table.
+- With several Order instances, each saga orchestrator polls the same table, so the same saga can be started twice. Inventory's idempotent reserve makes this harmless, but it is wasted work.
+- Payment and Inventory publish their result events *after* committing their database transaction (no transactional outbox yet): a crash between the two is recovered by the message being redelivered and the idempotent consumer re-publishing, not by an outbox.
+- Inventory endpoints process one message at a time per instance (`ConcurrentMessageLimit = 1`). Correctness no longer depends on it (row locks do), so it can be raised for throughput.
+- `InventoryDbContext` has no unique database constraint on the ledger; idempotency relies on the row locks.
 - Migrations run at service start-up; with several replicas the race is only handled for the Order service.
 - Swagger UIs and Prometheus metrics ports are unauthenticated.
 

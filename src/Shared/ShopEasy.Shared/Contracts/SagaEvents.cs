@@ -19,6 +19,21 @@ public record InventoryReleasedEvent
     public Guid OrderId { get; init; }
 }
 
+// InventoryService → Saga: the reservation was committed (stock actually deducted)
+public record InventoryCommittedEvent
+{
+    public Guid OrderId { get; init; }
+}
+
+// InventoryService → Saga: the reservation can never be committed
+// (it does not exist or was already released). Payment has been taken, so the saga
+// must refund and cancel. Transient errors are NOT reported this way — they are retried.
+public record InventoryCommitFailedEvent
+{
+    public Guid OrderId { get; init; }
+    public string Reason { get; init; } = default!;
+}
+
 // PaymentService → Saga: payment succeeded
 public record PaymentSucceededEvent
 {

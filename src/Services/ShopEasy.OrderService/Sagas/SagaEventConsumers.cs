@@ -1,4 +1,4 @@
-﻿using MassTransit;
+using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.Metrics;
@@ -6,6 +6,13 @@ using ShopEasy.OrderService.ReadModels;
 using ShopEasy.Shared.Contracts;
 
 namespace ShopEasy.OrderService.Sagas;
+
+// Saga event handlers. Conventions used by all of them:
+//  * A handler only acts when the saga is in the state that event is valid for. Anything else
+//    is a duplicate (at-least-once delivery) or a late message and is ignored or compensated.
+//  * State is saved BEFORE the next command is published, so a fast reply can never arrive
+//    while the saga still shows the old state. If the publish then fails, the saga's timeout
+//    service compensates (cancel / re-send commit) instead of the order silently stalling.
 
 // ── Inventory reserved → move to payment ─────────────────────────────────────
 public class InventoryReservedConsumer(
@@ -16,6 +23,7 @@ public class InventoryReservedConsumer(
     public async Task Consume(ConsumeContext<InventoryReservedEvent> context)
     {
         var evt = context.Message;
+        ProcessPaymentCommand? paymentCommand = null;
 
         await using var transaction = await db.Database.BeginTransactionAsync();
         try
@@ -28,10 +36,10 @@ public class InventoryReservedConsumer(
                 return;
             }
 
-            // Zombie guard — saga already in terminal state
+            // Zombie guard — the saga already gave up on this order, so this (late)
+            // reservation must be given back.
             if (saga.Status == SagaStatus.Cancelled ||
-                saga.Status == SagaStatus.Failed ||
-                saga.Status == SagaStatus.Completed)
+                saga.Status == SagaStatus.Failed)
             {
                 logger.LogWarning(
                     "Saga {SagaId}: received InventoryReservedEvent for Order {OrderId} " +
@@ -48,9 +56,9 @@ public class InventoryReservedConsumer(
             }
 
             // ── Idempotency guard ─────────────────────────────────────────────
-            // If saga already moved past ReservingInventory, this is a duplicate
-            // event — skip silently. This happens when the message is redelivered
-            // after the first successful processing.
+            // If saga already moved past ReservingInventory (including Completed — its
+            // reservation is the committed one and must NOT be released), this is a
+            // duplicate event — skip silently.
             if (saga.Status != SagaStatus.ReservingInventory)
             {
                 logger.LogWarning(
@@ -62,18 +70,14 @@ public class InventoryReservedConsumer(
                 return;
             }
 
-            logger.LogInformation(
-                "Saga {SagaId}: Inventory reserved → sending ProcessPaymentCommand",
-                saga.Id);
-
-            await publishEndpoint.Publish(new ProcessPaymentCommand
+            paymentCommand = new ProcessPaymentCommand
             {
                 OrderId = saga.OrderId,
                 UserId = saga.UserId,
                 UserEmail = saga.UserEmail,
                 Amount = saga.TotalAmount,
                 Currency = "USD"
-            }, context.CancellationToken);
+            };
 
             saga.Status = SagaStatus.ProcessingPayment;
             saga.UpdatedAt = DateTime.UtcNow;
@@ -88,12 +92,19 @@ public class InventoryReservedConsumer(
                 evt.OrderId);
             throw;
         }
+
+        logger.LogInformation(
+            "Saga for Order {OrderId}: inventory reserved → sending ProcessPaymentCommand",
+            evt.OrderId);
+
+        await publishEndpoint.Publish(paymentCommand!, context.CancellationToken);
     }
 }
 
 // ── Inventory reservation failed → cancel saga ────────────────────────────────
 public class InventoryReservationFailedConsumer(
     OrderDbContext db,
+    OrderReadModelUpdater readModelUpdater,
     ILogger<InventoryReservationFailedConsumer> logger)
     : IConsumer<InventoryReservationFailedEvent>
 {
@@ -104,6 +115,16 @@ public class InventoryReservationFailedConsumer(
             .FirstOrDefaultAsync(s => s.OrderId == evt.OrderId);
 
         if (saga is null) return;
+
+        // Started: the reply can overtake the orchestrator's own state update
+        if (saga.Status != SagaStatus.ReservingInventory &&
+            saga.Status != SagaStatus.Started)
+        {
+            logger.LogWarning(
+                "Saga {SagaId}: ignoring InventoryReservationFailedEvent in state {Status}",
+                saga.Id, saga.Status);
+            return;
+        }
 
         logger.LogWarning(
             "Saga {SagaId}: Inventory reservation failed — {Reason}. Cancelling.",
@@ -121,9 +142,14 @@ public class InventoryReservationFailedConsumer(
         saga.FailureReason = evt.Reason;
         saga.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
+
+        await readModelUpdater.UpdateStatusAsync(
+            saga.OrderId, OrderStatus.Cancelled, failureReason: evt.Reason);
+        OrderMetrics.RecordSagaCancelled(DateTime.UtcNow - saga.CreatedAt);
     }
 }
 
+// ── Payment succeeded → commit the reservation ────────────────────────────────
 public class PaymentSucceededConsumer(
     OrderDbContext db,
     IPublishEndpoint publishEndpoint,
@@ -134,12 +160,12 @@ public class PaymentSucceededConsumer(
     public async Task Consume(ConsumeContext<PaymentSucceededEvent> context)
     {
         var evt = context.Message;
+        CommitInventoryCommand? commitCommand = null;
 
         // Use a transaction to prevent race condition with timeout service
         await using var transaction = await db.Database.BeginTransactionAsync();
         try
         {
-            // Lock the row while reading — prevents concurrent updates
             var saga = await db.SagaStates.FirstOrDefaultAsync(s => s.OrderId == evt.OrderId);
 
             if (saga is null)
@@ -148,11 +174,24 @@ public class PaymentSucceededConsumer(
                 return;
             }
 
-            // Guard — check AFTER acquiring lock
+            // Duplicate delivery — payment was already handled. This must NOT trigger a
+            // refund: the customer paid for an order that is completing/completed.
+            if (saga.Status == SagaStatus.Completing ||
+                saga.Status == SagaStatus.Completed)
+            {
+                logger.LogWarning(
+                    "Saga {SagaId}: duplicate PaymentSucceededEvent for Order {OrderId} " +
+                    "(saga already {Status}) — ignoring.",
+                    saga.Id, evt.OrderId, saga.Status);
+
+                await transaction.RollbackAsync();
+                return;
+            }
+
+            // Late payment — the saga already gave up on this order, refund the customer
             if (saga.Status == SagaStatus.Cancelled ||
                 saga.Status == SagaStatus.Failed ||
-                saga.Status == SagaStatus.Completed ||
-                saga.Status == SagaStatus.ReleasingInventory) // ← add this
+                saga.Status == SagaStatus.ReleasingInventory)
             {
                 logger.LogWarning(
                     "Saga {SagaId}: received PaymentSucceededEvent for Order {OrderId} " +
@@ -170,25 +209,12 @@ public class PaymentSucceededConsumer(
                 return;
             }
 
-            logger.LogInformation(
-                "Saga {SagaId}: Payment succeeded → committing inventory",
-                saga.Id);
-
-            await publishEndpoint.Publish(new CommitInventoryCommand
-            {
-                OrderId = saga.OrderId
-            }, context.CancellationToken);
+            commitCommand = new CommitInventoryCommand { OrderId = saga.OrderId };
 
             saga.Status = SagaStatus.Completing;
             saga.UpdatedAt = DateTime.UtcNow;
             await db.SaveChangesAsync();
             await transaction.CommitAsync();
-
-            await readModelUpdater.UpdateStatusAsync(
-                saga.OrderId,
-                OrderStatus.Confirmed,
-                paymentStatus: "Succeeded");
-
         }
         catch (Exception ex)
         {
@@ -198,12 +224,153 @@ public class PaymentSucceededConsumer(
                 evt.OrderId);
             throw;
         }
+
+        logger.LogInformation(
+            "Saga for Order {OrderId}: payment succeeded → committing inventory",
+            evt.OrderId);
+
+        // The order is only Completed once InventoryCommittedEvent arrives
+        // (InventoryCommittedConsumer). If this publish is lost, SagaTimeoutService
+        // re-sends the (idempotent) commit command.
+        await publishEndpoint.Publish(commitCommand!, context.CancellationToken);
+
+        await readModelUpdater.UpdateStatusAsync(
+            evt.OrderId,
+            OrderStatus.Pending,
+            paymentStatus: "Succeeded");
     }
 }
 
+// ── Inventory committed → order is complete ───────────────────────────────────
+public class InventoryCommittedConsumer(
+    OrderDbContext db,
+    OrderReadModelUpdater readModelUpdater,
+    ILogger<InventoryCommittedConsumer> logger)
+    : IConsumer<InventoryCommittedEvent>
+{
+    public async Task Consume(ConsumeContext<InventoryCommittedEvent> context)
+    {
+        var evt = context.Message;
+        var saga = await db.SagaStates
+            .FirstOrDefaultAsync(s => s.OrderId == evt.OrderId);
 
-    // ── Payment failed → release inventory (compensate) ───────────────────────────
-    public class PaymentFailedConsumer(
+        if (saga is null) return;
+
+        if (saga.Status == SagaStatus.Completed)
+        {
+            logger.LogWarning(
+                "Saga {SagaId}: duplicate InventoryCommittedEvent — already completed",
+                saga.Id);
+            return;
+        }
+
+        if (saga.Status != SagaStatus.Completing)
+        {
+            // Stock was deducted and the customer was charged, but the saga had already
+            // moved to a cancelling/failed state. Do not guess: needs a human.
+            logger.LogCritical(
+                "Saga {SagaId}: inventory was committed for Order {OrderId} but the saga is in " +
+                "state {Status}. Payment was taken and stock deducted — MANUAL INTERVENTION REQUIRED.",
+                saga.Id, evt.OrderId, saga.Status);
+            return;
+        }
+
+        var order = await db.Orders.FindAsync(saga.OrderId);
+        if (order is not null)
+        {
+            order.Status = OrderStatus.Confirmed;
+            order.UpdatedAt = DateTime.UtcNow;
+        }
+
+        saga.Status = SagaStatus.Completed;
+        saga.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+
+        await readModelUpdater.UpdateStatusAsync(
+            saga.OrderId,
+            OrderStatus.Confirmed,
+            paymentStatus: "Succeeded");
+        OrderMetrics.RecordSagaCompleted(DateTime.UtcNow - saga.CreatedAt);
+
+        logger.LogInformation(
+            "Saga {SagaId}: Order {OrderId} completed successfully ✅",
+            saga.Id, saga.OrderId);
+    }
+}
+
+// ── Inventory commit impossible → refund and cancel ───────────────────────────
+// The reservation is missing or was already released, so the order cannot be fulfilled.
+// A commit is only ever requested after the payment succeeded, so the customer must be
+// refunded whatever state the saga is in.
+public class InventoryCommitFailedConsumer(
+    OrderDbContext db,
+    IPublishEndpoint publishEndpoint,
+    OrderReadModelUpdater readModelUpdater,
+    ILogger<InventoryCommitFailedConsumer> logger)
+    : IConsumer<InventoryCommitFailedEvent>
+{
+    public async Task Consume(ConsumeContext<InventoryCommitFailedEvent> context)
+    {
+        var evt = context.Message;
+        var saga = await db.SagaStates
+            .FirstOrDefaultAsync(s => s.OrderId == evt.OrderId);
+
+        if (saga is null) return;
+
+        if (saga.Status == SagaStatus.Completed)
+        {
+            logger.LogWarning(
+                "Saga {SagaId}: ignoring InventoryCommitFailedEvent — order already completed",
+                saga.Id);
+            return;
+        }
+
+        var refund = new RefundPaymentCommand
+        {
+            OrderId = saga.OrderId,
+            Reason = $"Inventory could not be committed: {evt.Reason}"
+        };
+
+        if (saga.Status != SagaStatus.Completing)
+        {
+            // Already cancelling / cancelled / failed — just make sure the customer gets
+            // their money back (refunds are idempotent).
+            logger.LogWarning(
+                "Saga {SagaId}: inventory commit failed ({Reason}) while saga is {Status} — " +
+                "refunding payment.", saga.Id, evt.Reason, saga.Status);
+            await publishEndpoint.Publish(refund, context.CancellationToken);
+            return;
+        }
+
+        logger.LogError(
+            "Saga {SagaId}: inventory commit failed ({Reason}) after payment — " +
+            "refunding and cancelling Order {OrderId}.", saga.Id, evt.Reason, saga.OrderId);
+
+        var order = await db.Orders.FindAsync(saga.OrderId);
+        if (order is not null)
+        {
+            order.Status = OrderStatus.Cancelled;
+            order.UpdatedAt = DateTime.UtcNow;
+        }
+
+        saga.Status = SagaStatus.Failed;
+        saga.FailureReason = $"Inventory commit failed: {evt.Reason}";
+        saga.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+
+        await publishEndpoint.Publish(refund, context.CancellationToken);
+
+        await readModelUpdater.UpdateStatusAsync(
+            saga.OrderId,
+            OrderStatus.Cancelled,
+            paymentStatus: "Refunding",
+            failureReason: saga.FailureReason);
+        OrderMetrics.RecordSagaFailed();
+    }
+}
+
+// ── Payment failed → release inventory (compensate) ───────────────────────────
+public class PaymentFailedConsumer(
     OrderDbContext db,
     IPublishEndpoint publishEndpoint,
     OrderReadModelUpdater readModelUpdater,
@@ -218,23 +385,32 @@ public class PaymentSucceededConsumer(
 
         if (saga is null) return;
 
+        // Only valid while we are waiting for the payment result. Anything else is a
+        // duplicate or a late result after the saga already timed out and compensated.
+        if (saga.Status != SagaStatus.ProcessingPayment)
+        {
+            logger.LogWarning(
+                "Saga {SagaId}: ignoring PaymentFailedEvent in state {Status}",
+                saga.Id, saga.Status);
+            return;
+        }
+
         logger.LogWarning(
             "Saga {SagaId}: Payment failed ({Reason}) → releasing inventory",
             saga.Id, evt.Reason);
-
-        // Send compensating command to release the inventory reservation
-        await publishEndpoint.Publish(new ReleaseInventoryCommand
-        {
-            OrderId = saga.OrderId
-        });
 
         saga.Status = SagaStatus.ReleasingInventory;
         saga.FailureReason = evt.Reason;
         saga.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
 
-        await readModelUpdater.UpdateStatusAsync(saga.OrderId, OrderStatus.Pending, failureReason: evt.Reason);
+        // Send the compensating command to release the inventory reservation
+        await publishEndpoint.Publish(new ReleaseInventoryCommand
+        {
+            OrderId = saga.OrderId
+        }, context.CancellationToken);
 
+        await readModelUpdater.UpdateStatusAsync(saga.OrderId, OrderStatus.Pending, failureReason: evt.Reason);
     }
 }
 
@@ -253,6 +429,17 @@ public class InventoryReleasedConsumer(
 
         if (saga is null) return;
 
+        // Only the compensation we asked for can cancel the saga. A release confirmation
+        // for a saga that is in any other state (e.g. the late-reservation release sent by
+        // the zombie guard, or a duplicate) must not touch the order.
+        if (saga.Status != SagaStatus.ReleasingInventory)
+        {
+            logger.LogInformation(
+                "Saga {SagaId}: ignoring InventoryReleasedEvent in state {Status}",
+                saga.Id, saga.Status);
+            return;
+        }
+
         logger.LogInformation(
             "Saga {SagaId}: Inventory released → saga cancelled",
             saga.Id);
@@ -269,7 +456,6 @@ public class InventoryReleasedConsumer(
         saga.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
 
-
         // After saga moves to Cancelled:
         await readModelUpdater.UpdateStatusAsync(
             saga.OrderId,
@@ -277,8 +463,6 @@ public class InventoryReleasedConsumer(
             paymentStatus: saga.FailureReason?.Contains("payment") == true
                 ? "Failed" : null);
 
-        // In InventoryReleasedConsumer after saga cancelled:
-        var duration = DateTime.UtcNow - saga.CreatedAt;
-        OrderMetrics.RecordSagaCancelled(duration);
+        OrderMetrics.RecordSagaCancelled(DateTime.UtcNow - saga.CreatedAt);
     }
 }

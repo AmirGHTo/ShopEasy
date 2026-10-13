@@ -21,7 +21,11 @@ public class DeadLetterMonitor : BackgroundService
         "inventory-release_error",
         "payment-process_error",
         "order-saga-starter_error",
+        "payment-refund_error",
         "order-saga-inventory-reserved_error",
+        "order-saga-inventory-failed_error",
+        "order-saga-inventory-committed_error",
+        "order-saga-inventory-commit-failed_error",
         "order-saga-payment-succeeded_error",
         "order-saga-payment-failed_error",
         "order-saga-inventory-released_error"

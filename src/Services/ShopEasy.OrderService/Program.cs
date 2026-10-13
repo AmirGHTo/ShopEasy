@@ -143,6 +143,8 @@ try
         x.AddConsumer<PaymentSucceededConsumer>();
         x.AddConsumer<PaymentFailedConsumer>();
         x.AddConsumer<InventoryReleasedConsumer>();
+        x.AddConsumer<InventoryCommittedConsumer>();
+        x.AddConsumer<InventoryCommitFailedConsumer>();
 
         x.UsingRabbitMq((ctx, cfg) =>
         {
@@ -233,6 +235,29 @@ try
                     b.Durable = true;
                 });
                 e.ConfigureConsumer<InventoryReleasedConsumer>(ctx);
+            });
+
+            // Inventory reports the result of CommitInventoryCommand
+            cfg.ReceiveEndpoint("order-saga-inventory-committed", e =>
+            {
+                e.ConfigureConsumeTopology = false;
+                e.Bind("ShopEasy.Shared.Contracts:InventoryCommittedEvent", b =>
+                {
+                    b.ExchangeType = "fanout";
+                    b.Durable = true;
+                });
+                e.ConfigureConsumer<InventoryCommittedConsumer>(ctx);
+            });
+
+            cfg.ReceiveEndpoint("order-saga-inventory-commit-failed", e =>
+            {
+                e.ConfigureConsumeTopology = false;
+                e.Bind("ShopEasy.Shared.Contracts:InventoryCommitFailedEvent", b =>
+                {
+                    b.ExchangeType = "fanout";
+                    b.Durable = true;
+                });
+                e.ConfigureConsumer<InventoryCommitFailedConsumer>(ctx);
             });
         });
     });

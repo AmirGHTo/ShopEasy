@@ -18,5 +18,6 @@
 
 	<ItemGroup>
 	  <ProjectReference Include="..\..\Services\ShopEasy.OrderService\ShopEasy.OrderService.csproj" />
+	  <ProjectReference Include="..\..\Services\ShopEasy.InventoryService\ShopEasy.InventoryService.csproj" />
 	</ItemGroup>
 </Project>
