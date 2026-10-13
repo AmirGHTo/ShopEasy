@@ -373,7 +373,7 @@ try
 </head>
 <body>
     <h1>ShopEasy Dev Portal</h1>
-    <p class="subtitle">Microservices Reference System — Development Tools</p>
+    <p class="subtitle">Development &amp; operations tools</p>
 
     <div class="auth">
         <h3>How to test protected endpoints</h3>

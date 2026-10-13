@@ -114,6 +114,7 @@ public class SagaOrchestratorTests : IDisposable
         var context = CreateConsumeContext(new InventoryReservedEvent { OrderId = orderId });
         var consumer = new InventoryReservedConsumer(
             _db,
+            new InMemorySagaLocking(),
             _publishEndpoint,
             NullLogger<InventoryReservedConsumer>.Instance);
 
@@ -138,6 +139,7 @@ public class SagaOrchestratorTests : IDisposable
             new InventoryReservedEvent { OrderId = Guid.NewGuid() });
         var consumer = new InventoryReservedConsumer(
             _db,
+            new InMemorySagaLocking(),
             _publishEndpoint,
             NullLogger<InventoryReservedConsumer>.Instance);
 
