@@ -300,6 +300,18 @@ To also wipe the database volume:
 docker-compose down -v
 ```
 
+### Database migrations
+
+Each service applies its EF Core migrations automatically at start-up. To change a schema, add a **new** migration from that service's folder (never delete and re-create `InitialCreate` on a database that holds data):
+
+```bash
+cd src/Services/ShopEasy.OrderService      # or ShopEasy.ProductService / InventoryService / PaymentService
+dotnet ef migrations add <DescriptiveName> --output-dir Data/Migrations
+# Identity lives in src/Identity/ShopEasy.Identity with the same command
+```
+
+This needs the `dotnet-ef` tool (`dotnet tool install --global dotnet-ef`) and a configured connection string (see *Running a service outside Docker* above).
+
 ---
 
 ## Configuration & Secrets
