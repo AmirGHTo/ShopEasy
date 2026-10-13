@@ -133,6 +133,7 @@ try
 
     builder.Services.AddTransient<CorrelationIdHandler>();
     builder.Services.AddScoped<OrderReadModelUpdater>();
+    builder.Services.AddScoped<OrderCancellationService>();
     // Track when the bus connects so outbox knows consumers are ready
     builder.Services.AddSingleton<BusReadySignal>();
     builder.Services.AddSingleton<IBusObserver, BusObserver>();

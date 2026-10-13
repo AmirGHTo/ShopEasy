@@ -19,6 +19,7 @@ public class SagaTimeoutService(
     private readonly ILogger<SagaTimeoutService> _logger = logger;
     private readonly TimeSpan _checkInterval = TimeSpan.FromSeconds(30);
     private readonly TimeSpan _sagaTimeout = TimeSpan.FromMinutes(2);
+    private const int MaxReleaseAttempts = 3;
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
@@ -174,8 +175,24 @@ public class SagaTimeoutService(
                 break;
 
             case SagaStatus.ReleasingInventory:
-                await CancelOrder(saga, db,
-                    "Timed out during inventory release compensation");
+                // The release command (or its confirmation) got lost. Re-send it — release is
+                // idempotent — and only give up, flagging it for a human, after a few attempts.
+                if (saga.RetryCount < MaxReleaseAttempts)
+                {
+                    await publishEndpoint.Publish(
+                        new ReleaseInventoryCommand { OrderId = saga.OrderId }, ct);
+                    saga.RetryCount++;
+                    saga.UpdatedAt = DateTime.UtcNow;
+                }
+                else
+                {
+                    logger.LogCritical(
+                        "Saga {SagaId}: inventory release for Order {OrderId} was not confirmed after " +
+                        "{Attempts} attempts. Reserved stock may be leaked — MANUAL INTERVENTION REQUIRED.",
+                        saga.Id, saga.OrderId, saga.RetryCount);
+                    await CancelOrder(saga, db,
+                        "Timed out during inventory release compensation");
+                }
                 break;
 
             case SagaStatus.Completing:
@@ -211,6 +228,16 @@ public class SagaTimeoutService(
         {
             order.Status = OrderStatus.Cancelled;
             order.UpdatedAt = DateTime.UtcNow;
+        }
+
+        // Keep the read model (what the customer sees) in sync
+        var summary = await db.OrderSummaries.FirstOrDefaultAsync(s => s.OrderId == saga.OrderId);
+        if (summary is not null)
+        {
+            summary.StatusName = OrderStatus.Cancelled.ToString();
+            summary.StatusCode = (int)OrderStatus.Cancelled;
+            summary.FailureReason = reason;
+            summary.UpdatedAt = DateTime.UtcNow;
         }
 
         // Mark saga as failed

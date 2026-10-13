@@ -22,7 +22,8 @@ namespace ShopEasy.OrderService.Controllers;
 public class OrderCommandsController(
     OrderDbContext db,
     ILogger<OrderCommandsController> logger, InventoryCacheService inventoryCache, OrderReadModelUpdater readModelUpdater,
-    IProductCatalogClient productCatalog) : ControllerBase
+    IProductCatalogClient productCatalog,
+    OrderCancellationService cancellation) : ControllerBase
 {
     private readonly OrderDbContext _db = db;
     private readonly ILogger<OrderCommandsController> _logger = logger;
@@ -216,28 +217,32 @@ public class OrderCommandsController(
     }
 
     // ── DELETE /api/orders/{id} ───────────────────────────────────────────────
+    // Cancels the order through the saga (see OrderCancellationService):
+    //   204 cancelled / already cancelled · 202 accepted, stock release + refund in progress
+    //   404 unknown order (or someone else's) · 409 too late: payment taken, order completing/completed
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Cancel(Guid id)
     {
         var userId = User.FindFirst("sub")?.Value;
-        var isAdmin = User.IsInRole("admin");
+        if (userId is null) return Unauthorized();
 
-        var order = await _db.Orders.FindAsync(id);
-        if (order is null) return NotFound();
-        if (!isAdmin && order.UserId != userId) return Forbid();
+        var result = await cancellation.CancelAsync(
+            id, userId, User.IsInRole("admin"), HttpContext.RequestAborted);
 
-        if (order.Status == OrderStatus.Shipped ||
-            order.Status == OrderStatus.Delivered)
-            return BadRequest(new
-            {
-                message = "Cannot cancel an order that has already shipped."
-            });
+        switch (result.Outcome)
+        {
+            case CancelOutcome.NotFound:
+                return NotFound();
 
-        order.Status = OrderStatus.Cancelled;
-        order.UpdatedAt = DateTime.UtcNow;
-        await _db.SaveChangesAsync();
+            case CancelOutcome.NotCancellable:
+                return Conflict(new { message = result.Message });
 
-        return NoContent();
+            case CancelOutcome.Cancelling:
+                return Accepted(new { status = "Cancelling", message = result.Message });
+
+            default: // Cancelled, AlreadyCancelled
+                return NoContent();
+        }
     }
 
     private static object MapToResponse(Order o) => new
