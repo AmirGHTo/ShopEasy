@@ -5,9 +5,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
-	  <PackageReference Include="Google.Protobuf" Version="3.34.1" />
+	  <PackageReference Include="Google.Protobuf" Version="3.36.2" />
 	  <PackageReference Include="Grpc.AspNetCore" Version="2.80.0" />
-	  <PackageReference Include="Grpc.Net.Client" Version="2.80.0" />
+	  <PackageReference Include="Grpc.Net.Client" Version="2.84.0" />
 	  <PackageReference Include="Grpc.Tools" Version="2.80.0">
 	    <PrivateAssets>all</PrivateAssets>
 	    <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -19,8 +19,8 @@
 	  <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="8.0.27" />
 	  <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="8.9.1" />
 	  <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
-	  <PackageReference Include="Serilog.AspNetCore" Version="8.0.2" />
-	  <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
+	  <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+	  <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
 	  <PackageReference Include="Serilog.Sinks.Seq" Version="9.1.0" />
 	  <PackageReference Include="AspNetCore.HealthChecks.NpgSql" Version="8.0.2" />
 	  <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.19.1" />
@@ -29,7 +29,7 @@
 	  <PackageReference Include="Swashbuckle.AspNetCore" Version="6.7.3" />
 	  <PackageReference Include="OpenTelemetry.Exporter.Console" Version="1.19.1" />
 	  <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="8.0.8" />
-	  <PackageReference Include="AspNetCore.HealthChecks.Rabbitmq" Version="8.0.1" />
+	  <PackageReference Include="AspNetCore.HealthChecks.Rabbitmq" Version="8.0.2" />
 	  <PackageReference Include="AspNetCore.HealthChecks.Uris" Version="8.0.1" />
 	  <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
 	  <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.19.1" />
