@@ -5,6 +5,7 @@ using Serilog.Core;
 using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.Sagas;
 using ShopEasy.Shared.Contracts;
+using ShopEasy.Shared.Messaging;
 
 namespace ShopEasy.OrderService.Services;
 
@@ -98,6 +99,9 @@ public class SagaTimeoutService(
         ISagaLocking sagaLocking,
         CancellationToken ct)
     {
+        // Same trace as the request that placed the order (there is no request here)
+        using var correlation = CorrelationContext.Push(saga.CorrelationId);
+
         // Re-read WITH a row lock: an event consumer (or a cancel) may be changing this
         // saga right now, and we must act on its outcome, not on our stale scan result.
         await using var transaction = await db.Database.BeginTransactionAsync(ct);

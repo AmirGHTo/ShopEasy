@@ -10,18 +10,15 @@ using Serilog.Events;
 using ShopEasy.InventoryService.Consumers;
 using ShopEasy.InventoryService.Data;
 using ShopEasy.InventoryService.Grpc;
+using ShopEasy.Shared.Logging;
+using ShopEasy.Shared.Messaging;
 using ShopEasy.Shared.Middleware;
 using ShopEasy.Shared.Services;
 using StackExchange.Redis;
 using System.IdentityModel.Tokens.Jwt;
 
 Log.Logger = new LoggerConfiguration()
-    .MinimumLevel.Information()
-    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-    .Enrich.FromLogContext()
-    .Enrich.WithProperty("Service", "ShopEasy.InventoryService")
-    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [OrderService] {Message:lj}{NewLine}{Exception}")
-    .WriteTo.Seq("http://seq:5341")
+    .ConfigureShopEasy("ShopEasy.InventoryService")
     .CreateBootstrapLogger();
 
 try
@@ -45,13 +42,7 @@ try
 
 
     builder.Host.UseSerilog((ctx, _, cfg) => cfg
-      .MinimumLevel.Information()
-      .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-      .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
-      .Enrich.FromLogContext()
-      .Enrich.WithProperty("Service", "ShopEasy.InventoryService")
-      .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [OrderService] {Message:lj}{NewLine}{Exception}")
-      .WriteTo.Seq("http://seq:5341", restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Information));
+        .ConfigureShopEasy("ShopEasy.InventoryService", ctx.Configuration, ctx.HostingEnvironment.EnvironmentName));
 
     builder.Services.AddGrpc(options =>
     {
@@ -62,6 +53,8 @@ try
     .WithTracing(tracing => tracing
         .SetResourceBuilder(ResourceBuilder.CreateDefault()
             .AddService("ShopEasy.InventoryService"))
+        .AddSource("MassTransit") // a span per message published / consumed, linked across RabbitMQ
+        .AddSource("Npgsql") // a span per database command
         .AddAspNetCoreInstrumentation(options =>
         {
             options.Filter = ctx =>
@@ -116,6 +109,12 @@ try
     // Row-level locking (SELECT ... FOR UPDATE) used by every stock-changing code path
     builder.Services.AddSingleton<IInventoryLocking, PostgresInventoryLocking>();
 
+    // Carry the correlation id across RabbitMQ: stamp it on outgoing messages, restore it (and
+    // the OrderId) for the logs of the consumer that receives them
+    builder.Services.AddScoped(typeof(CorrelationConsumeFilter<>));
+    builder.Services.AddScoped(typeof(CorrelationPublishFilter<>));
+    builder.Services.AddScoped(typeof(CorrelationSendFilter<>));
+
     builder.Services.AddMassTransit(x =>
     {
         x.AddConsumer<ReserveInventoryConsumer>();
@@ -146,6 +145,11 @@ try
                 h.Username(builder.Configuration["RabbitMQ:Username"] ?? throw new InvalidOperationException("RabbitMQ:Username is not configured."));
                 h.Password(builder.Configuration["RabbitMQ:Password"] ?? throw new InvalidOperationException("RabbitMQ:Password is not configured."));
             });
+
+            // First, so the correlation scope also covers the retries and the outbox below
+            cfg.UseConsumeFilter(typeof(CorrelationConsumeFilter<>), ctx);
+            cfg.UsePublishFilter(typeof(CorrelationPublishFilter<>), ctx);
+            cfg.UseSendFilter(typeof(CorrelationSendFilter<>), ctx);
 
             // ── Global retry policy ───────────────────────────────────────────────
             // Retry 3 times with exponential backoff before moving to error queue

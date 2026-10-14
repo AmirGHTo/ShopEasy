@@ -22,6 +22,9 @@ spec:
           env:
             - name: ASPNETCORE_URLS
               value: "http://+:8080"
+            # Seq is part of the Compose stack only; empty = console logs only (see the ConfigMap)
+            - name: Seq__ServerUrl
+              value: ""
             - name: ConnectionStrings__DefaultConnection
               valueFrom:
                 secretKeyRef:

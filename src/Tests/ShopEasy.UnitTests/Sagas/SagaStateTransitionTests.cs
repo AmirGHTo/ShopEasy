@@ -1,919 +1,446 @@
-﻿//using FluentAssertions;
-//using MassTransit;
-//using Microsoft.EntityFrameworkCore;
-//using Microsoft.EntityFrameworkCore.Diagnostics;
-//using Microsoft.Extensions.DependencyInjection;
-//using Microsoft.Extensions.Logging.Abstractions;
-//using NSubstitute;
-//using ShopEasy.OrderService.Data;
-//using ShopEasy.OrderService.Sagas;
-//using ShopEasy.OrderService.Services;
-//using ShopEasy.Shared.Contracts;
-//using System.Text.Json;
-//using Xunit;
-
-//namespace ShopEasy.UnitTests.Sagas;
-
-//// ═══════════════════════════════════════════════════════════════════════════
-//// SAGA STATE MACHINE TESTS
-//// Tests every state transition in the saga orchestrator
-//// ═══════════════════════════════════════════════════════════════════════════
-
-//public class SagaStateTransitionTests : IDisposable
-//{
-//    private readonly OrderDbContext _db;
-//    private readonly IPublishEndpoint _publishEndpoint;
-
-//    public SagaStateTransitionTests()
-//    {
-//        var options = new DbContextOptionsBuilder<OrderDbContext>()
-//            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
-//            .ConfigureWarnings(w =>
-//                w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
-//            .Options;
-
-//        _db = new OrderDbContext(options);
-//        _publishEndpoint = Substitute.For<IPublishEndpoint>();
-//    }
-
-
-//    // ── Happy Path ──────────────────────────────────────────────────────────
-
-//    [Fact]
-//    public async Task HappyPath_OrderConfirmed_CreatesSagaInStartedState()
-//    {
-//        // Arrange
-//        var orderId = Guid.NewGuid();
-//        var consumer = new OrderConfirmedSagaStarter(_db,
-//            NullLogger<OrderConfirmedSagaStarter>.Instance);
-
-//        // Act
-//        await consumer.Consume(CreateContext(new OrderConfirmedEvent
-//        {
-//            OrderId = orderId,
-//            UserId = "user-1",
-//            UserEmail = "user@test.com",
-//            TotalAmount = 100m,
-//            ConfirmedAt = DateTime.UtcNow,
-//            Items = new List<OrderLineItem>
-//            {
-//                new() { ProductId = Guid.NewGuid(), ProductName = "Widget",
-//                        Quantity = 2, UnitPrice = 50m }
-//            }
-//        }));
-
-//        // Assert
-//        var saga = await _db.SagaStates.FirstOrDefaultAsync(s => s.OrderId == orderId);
-//        saga.Should().NotBeNull();
-//        saga!.Status.Should().Be(SagaStatus.Started);
-//        saga.TotalAmount.Should().Be(100m);
-//        saga.UserId.Should().Be("user-1");
-//    }
-
-//    [Fact]
-//    public async Task HappyPath_InventoryReserved_TransitionsToProcessingPayment()
-//    {
-//        // Arrange
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.ReservingInventory);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var consumer = new InventoryReservedConsumer(_db, _publishEndpoint,
-//            NullLogger<InventoryReservedConsumer>.Instance);
-
-//        // Act
-//        await consumer.Consume(CreateContext(
-//            new InventoryReservedEvent { OrderId = orderId }));
-
-//        // Assert
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.ProcessingPayment);
-
-//        await _publishEndpoint.Received(1).Publish(
-//            Arg.Is<ProcessPaymentCommand>(c =>
-//                c.OrderId == orderId && c.Amount == saga.TotalAmount),
-//            Arg.Any<CancellationToken>());
-//    }
-
-//    [Fact]
-//    public async Task HappyPath_PaymentSucceeded_TransitionsToCompleting()
-//    {
-//        // Arrange
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.ProcessingPayment);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var consumer = new PaymentSucceededConsumer(_db, _publishEndpoint,
-//            NullLogger<PaymentSucceededConsumer>.Instance);
-
-//        // Act
-//        await consumer.Consume(CreateContext(new PaymentSucceededEvent
-//        {
-//            OrderId = orderId,
-//            PaymentId = Guid.NewGuid(),
-//            Amount = 100m
-//        }));
-
-//        // Assert
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.Completing);
-
-//        await _publishEndpoint.Received(1).Publish(
-//            Arg.Is<CommitInventoryCommand>(c => c.OrderId == orderId),
-//            Arg.Any<CancellationToken>());
-//    }
-
-//    [Fact]
-//    public async Task HappyPath_InventoryReleased_TransitionsToCancelled()
-//    {
-//        // Arrange
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.ReleasingInventory);
-//        saga.FailureReason = "Payment declined";
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var consumer = new InventoryReleasedConsumer(_db,
-//            NullLogger<InventoryReleasedConsumer>.Instance);
-
-//        // Act
-//        await consumer.Consume(CreateContext(
-//            new InventoryReleasedEvent { OrderId = orderId }));
-
-//        // Assert
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.Cancelled);
-//    }
-
-//    // ── Payment Failure Compensation ────────────────────────────────────────
-
-//    [Fact]
-//    public async Task Compensation_PaymentFailed_PublishesReleaseInventoryCommand()
-//    {
-//        // Arrange
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.ProcessingPayment);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var consumer = new PaymentFailedConsumer(_db, _publishEndpoint,
-//            NullLogger<PaymentFailedConsumer>.Instance);
-
-//        // Act
-//        await consumer.Consume(CreateContext(new PaymentFailedEvent
-//        {
-//            OrderId = orderId,
-//            Reason = "Payment declined by issuing bank"
-//        }));
-
-//        // Assert
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.ReleasingInventory);
-//        updated.FailureReason.Should().Be("Payment declined by issuing bank");
-
-//        await _publishEndpoint.Received(1).Publish(
-//            Arg.Is<ReleaseInventoryCommand>(c => c.OrderId == orderId),
-//            Arg.Any<CancellationToken>());
-//    }
-
-//    [Fact]
-//    public async Task Compensation_PaymentFailed_RecordsFailureReason()
-//    {
-//        // Arrange
-//        var orderId = Guid.NewGuid();
-//        var reason = "Amount exceeds single transaction limit";
-//        var saga = CreateSaga(orderId, SagaStatus.ProcessingPayment);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var consumer = new PaymentFailedConsumer(_db, _publishEndpoint,
-//            NullLogger<PaymentFailedConsumer>.Instance);
-
-//        // Act
-//        await consumer.Consume(CreateContext(new PaymentFailedEvent
-//        {
-//            OrderId = orderId,
-//            Reason = reason
-//        }));
-
-//        // Assert
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.FailureReason.Should().Be(reason);
-//        updated.Status.Should().Be(SagaStatus.ReleasingInventory);
-//    }
-
-//    [Fact]
-//    public async Task Compensation_InsufficientStock_CancelsSagaWithReason()
-//    {
-//        // Arrange
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.ReservingInventory);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var consumer = new InventoryReservationFailedConsumer(_db,
-//            NullLogger<InventoryReservationFailedConsumer>.Instance);
-
-//        // Act
-//        await consumer.Consume(CreateContext(new InventoryReservationFailedEvent
-//        {
-//            OrderId = orderId,
-//            Reason = "Insufficient stock for 4K Webcam"
-//        }));
-
-//        // Assert
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.Cancelled);
-//        updated.FailureReason.Should().Contain("Insufficient stock");
-//    }
-
-//    [Fact]
-//    public async Task Compensation_InsufficientStock_PublishesNothingAndCancelsSaga()
-//    {
-//        // Arrange
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.ReservingInventory);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var consumer = new InventoryReservationFailedConsumer(_db, NullLogger<InventoryReservationFailedConsumer>.Instance);
-
-//        // Act
-//        await consumer.Consume(CreateContext(new InventoryReservationFailedEvent
-//        {
-//            OrderId = orderId,
-//            Reason = "Insufficient stock for 4K Webcam"
-//        }));
-
-//        // Assert
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.Cancelled);
-//        updated.FailureReason.Should().Contain("Insufficient stock");
-
-//        // No inventory to release — nothing published
-//        await _publishEndpoint.DidNotReceive().Publish(
-//            Arg.Any<ReleaseInventoryCommand>(),
-//            Arg.Any<CancellationToken>());
-//    }
-
-//    // ── Zombie Message Guard (Late Events After Cancellation) ───────────────
-
-//    [Fact]
-//    public async Task ZombieGuard_PaymentSucceededForCancelledSaga_PublishesRefund()
-//    {
-//        // Arrange — saga already cancelled by timeout
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.Cancelled);
-//        saga.FailureReason = "Timed out waiting for payment";
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var consumer = new PaymentSucceededConsumer(_db, _publishEndpoint,
-//            NullLogger<PaymentSucceededConsumer>.Instance);
-
-//        // Act — late payment arrives after cancellation
-//        await consumer.Consume(CreateContext(new PaymentSucceededEvent
-//        {
-//            OrderId = orderId,
-//            PaymentId = Guid.NewGuid(),
-//            Amount = 100m
-//        }));
-
-//        // Assert — saga stays cancelled, refund issued
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.Cancelled); // unchanged
-
-//        await _publishEndpoint.Received(1).Publish(
-//            Arg.Is<RefundPaymentCommand>(c => c.OrderId == orderId),
-//            Arg.Any<CancellationToken>());
-
-//        // Must NOT have published CommitInventory
-//        await _publishEndpoint.DidNotReceive().Publish(
-//            Arg.Any<CommitInventoryCommand>(),
-//            Arg.Any<CancellationToken>());
-//    }
-
-//    [Fact]
-//    public async Task ZombieGuard_PaymentSucceededForFailedSaga_PublishesRefund()
-//    {
-//        // Same guard should work for Failed status too
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.Failed);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var consumer = new PaymentSucceededConsumer(_db, _publishEndpoint,
-//            NullLogger<PaymentSucceededConsumer>.Instance);
-
-//        await consumer.Consume(CreateContext(new PaymentSucceededEvent
-//        {
-//            OrderId = orderId,
-//            PaymentId = Guid.NewGuid(),
-//            Amount = 100m
-//        }));
-
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.Failed); // unchanged
-
-//        await _publishEndpoint.Received(1).Publish(
-//            Arg.Is<RefundPaymentCommand>(c => c.OrderId == orderId),
-//            Arg.Any<CancellationToken>());
-//    }
-
-//    [Fact]
-//    public async Task ZombieGuard_PaymentSucceededForCompletedSaga_PublishesRefund()
-//    {
-//        // Duplicate payment for an already completed order
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.Completed);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var consumer = new PaymentSucceededConsumer(_db, _publishEndpoint,
-//            NullLogger<PaymentSucceededConsumer>.Instance);
-
-//        await consumer.Consume(CreateContext(new PaymentSucceededEvent
-//        {
-//            OrderId = orderId,
-//            PaymentId = Guid.NewGuid(),
-//            Amount = 100m
-//        }));
-
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.Completed); // unchanged
-
-//        await _publishEndpoint.Received(1).Publish(
-//            Arg.Is<RefundPaymentCommand>(c => c.OrderId == orderId),
-//            Arg.Any<CancellationToken>());
-//    }
-
-//    [Fact]
-//    public async Task ZombieGuard_InventoryReservedForCancelledSaga_ReleasesReservation()
-//    {
-//        // Late InventoryReservedEvent arrives after saga was cancelled
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.Cancelled);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var consumer = new InventoryReservedConsumer(_db, _publishEndpoint,
-//            NullLogger<InventoryReservedConsumer>.Instance);
-
-//        await consumer.Consume(CreateContext(
-//            new InventoryReservedEvent { OrderId = orderId }));
-
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.Cancelled); // unchanged
-
-//        // Must release the late reservation
-//        await _publishEndpoint.Received(1).Publish(
-//            Arg.Is<ReleaseInventoryCommand>(c => c.OrderId == orderId),
-//            Arg.Any<CancellationToken>());
-
-//        // Must NOT proceed to payment
-//        await _publishEndpoint.DidNotReceive().Publish(
-//            Arg.Any<ProcessPaymentCommand>(),
-//            Arg.Any<CancellationToken>());
-//    }
-
-//    // ── Idempotency ─────────────────────────────────────────────────────────
-
-//    [Fact]
-//    public async Task Idempotency_DuplicateOrderConfirmed_CreatesSagaOnlyOnce()
-//    {
-//        // Arrange
-//        var orderId = Guid.NewGuid();
-//        var evt = new OrderConfirmedEvent
-//        {
-//            OrderId = orderId,
-//            UserId = "user-1",
-//            UserEmail = "user@test.com",
-//            TotalAmount = 100m,
-//            ConfirmedAt = DateTime.UtcNow,
-//            Items = new List<OrderLineItem>()
-//        };
-
-//        var consumer = new OrderConfirmedSagaStarter(_db,
-//            NullLogger<OrderConfirmedSagaStarter>.Instance);
-
-//        // Act — consume same event twice
-//        await consumer.Consume(CreateContext(evt));
-//        await consumer.Consume(CreateContext(evt));
-
-//        // Assert — only one saga created
-//        var sagas = await _db.SagaStates
-//            .Where(s => s.OrderId == orderId).ToListAsync();
-//        sagas.Should().HaveCount(1);
-//    }
-
-//    [Fact]
-//    public async Task Idempotency_DuplicateInventoryReserved_ProcessesOnlyOnce()
-//    {
-//        // Arrange
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.ReservingInventory);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var consumer = new InventoryReservedConsumer(_db, _publishEndpoint,
-//            NullLogger<InventoryReservedConsumer>.Instance);
-
-//        // Act — consume same event twice
-//        await consumer.Consume(CreateContext(
-//            new InventoryReservedEvent { OrderId = orderId }));
-//        await consumer.Consume(CreateContext(
-//            new InventoryReservedEvent { OrderId = orderId }));
-
-//        // Assert — ProcessPaymentCommand published only once
-//        await _publishEndpoint.Received(1).Publish(
-//            Arg.Any<ProcessPaymentCommand>(),
-//            Arg.Any<CancellationToken>());
-//    }
-
-//    // ── Edge Cases ──────────────────────────────────────────────────────────
-
-//    [Fact]
-//    public async Task EdgeCase_EventForNonExistentSaga_DoesNothing()
-//    {
-//        var consumer = new InventoryReservedConsumer(_db, _publishEndpoint,
-//            NullLogger<InventoryReservedConsumer>.Instance);
-
-//        // Act — event for unknown order
-//        await consumer.Consume(CreateContext(
-//            new InventoryReservedEvent { OrderId = Guid.NewGuid() }));
-
-//        // Assert — no commands published, no exceptions
-//        await _publishEndpoint.DidNotReceive().Publish(
-//            Arg.Any<object>(), Arg.Any<CancellationToken>());
-//    }
-
-//    [Fact]
-//    public async Task EdgeCase_PaymentFailedForNonExistentSaga_DoesNothing()
-//    {
-//        var consumer = new PaymentFailedConsumer(_db, _publishEndpoint,
-//            NullLogger<PaymentFailedConsumer>.Instance);
-
-//        await consumer.Consume(CreateContext(new PaymentFailedEvent
-//        {
-//            OrderId = Guid.NewGuid(),
-//            Reason = "Declined"
-//        }));
-
-//        await _publishEndpoint.DidNotReceive().Publish(
-//            Arg.Any<object>(), Arg.Any<CancellationToken>());
-//    }
-
-//    [Fact]
-//    public async Task EdgeCase_ZeroAmountOrder_IsHandledCorrectly()
-//    {
-//        var orderId = Guid.NewGuid();
-//        var consumer = new OrderConfirmedSagaStarter(_db,
-//            NullLogger<OrderConfirmedSagaStarter>.Instance);
-
-//        await consumer.Consume(CreateContext(new OrderConfirmedEvent
-//        {
-//            OrderId = orderId,
-//            UserId = "user-1",
-//            UserEmail = "user@test.com",
-//            TotalAmount = 0m,
-//            ConfirmedAt = DateTime.UtcNow,
-//            Items = new List<OrderLineItem>()
-//        }));
-
-//        var saga = await _db.SagaStates.FirstOrDefaultAsync(s => s.OrderId == orderId);
-//        saga.Should().NotBeNull();
-//        saga!.TotalAmount.Should().Be(0m);
-//    }
-
-//    // ── Saga Timeout Tests ──────────────────────────────────────────────────
-//    [Fact]
-//    public async Task Timeout_SagaStuckInReservingInventory_GetsDetected()
-//    {
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.ReservingInventory);
-//        saga.UpdatedAt = DateTime.UtcNow - TimeSpan.FromMinutes(3);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var svc = new SagaTimeoutService(
-//            Substitute.For<IServiceScopeFactory>(),
-//            NullLogger<SagaTimeoutService>.Instance);
-
-//        await svc.CheckForTimedOutSagasPublic(_db, _publishEndpoint, CancellationToken.None);
-
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.Failed);
-//        updated.FailureReason.Should().Contain("Timed out");
-//    }
-
-//    [Fact]
-//    public async Task Timeout_SagaStuckInProcessingPayment_ReleasesInventory()
-//    {
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.ProcessingPayment);
-//        saga.UpdatedAt = DateTime.UtcNow - TimeSpan.FromMinutes(3);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var svc = new SagaTimeoutService(
-//            Substitute.For<IServiceScopeFactory>(),
-//            NullLogger<SagaTimeoutService>.Instance);
-
-//        await svc.CheckForTimedOutSagasPublic(_db, _publishEndpoint, CancellationToken.None);
-
-//        await _publishEndpoint.Received(1).Publish(
-//            Arg.Is<ReleaseInventoryCommand>(c => c.OrderId == orderId),
-//            Arg.Any<CancellationToken>());
-
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.ReleasingInventory);
-//        updated.FailureReason.Should().Contain("Timed out waiting for payment");
-//    }
-
-//    [Fact]
-//    public async Task Timeout_SagaStuckInReleasingInventory_ForcesCancelled()
-//    {
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.ReleasingInventory);
-//        saga.UpdatedAt = DateTime.UtcNow - TimeSpan.FromMinutes(3);
-//        saga.FailureReason = "Payment declined";
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var svc = new SagaTimeoutService(
-//            Substitute.For<IServiceScopeFactory>(),
-//            NullLogger<SagaTimeoutService>.Instance);
-
-//        await svc.CheckForTimedOutSagasPublic(_db, _publishEndpoint, CancellationToken.None);
-
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.Failed);
-//        updated.FailureReason.Should().Contain("Timed out during inventory release");
-//    }
-
-//    [Fact]
-//    public async Task Timeout_CompletedSaga_IsNotAffectedByTimeout()
-//    {
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.Completed);
-//        saga.UpdatedAt = DateTime.UtcNow - TimeSpan.FromHours(1);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var svc = new SagaTimeoutService(
-//            Substitute.For<IServiceScopeFactory>(),
-//            NullLogger<SagaTimeoutService>.Instance);
-
-//        await svc.CheckForTimedOutSagasPublic(_db, _publishEndpoint, CancellationToken.None);
-
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.Completed);
-//    }
-
-//    [Fact]
-//    public async Task Timeout_CancelledSaga_IsNotAffectedByTimeout()
-//    {
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.Cancelled);
-//        saga.UpdatedAt = DateTime.UtcNow - TimeSpan.FromHours(1);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var svc = new SagaTimeoutService(
-//            Substitute.For<IServiceScopeFactory>(),
-//            NullLogger<SagaTimeoutService>.Instance);
-
-//        await svc.CheckForTimedOutSagasPublic(_db, _publishEndpoint, CancellationToken.None);
-
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.Cancelled);
-//    }
-
-//    [Fact]
-//    public async Task Timeout_FreshSaga_IsNotTimedOut()
-//    {
-//        var orderId = Guid.NewGuid();
-//        var saga = CreateSaga(orderId, SagaStatus.ReservingInventory);
-//        saga.UpdatedAt = DateTime.UtcNow - TimeSpan.FromSeconds(30);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        var svc = new SagaTimeoutService(
-//            Substitute.For<IServiceScopeFactory>(),
-//            NullLogger<SagaTimeoutService>.Instance);
-
-//        await svc.CheckForTimedOutSagasPublic(_db, _publishEndpoint, CancellationToken.None);
-
-//        var updated = await _db.SagaStates.FindAsync(saga.Id);
-//        updated!.Status.Should().Be(SagaStatus.ReservingInventory);
-//    }
-
-//    // ── State Machine Completeness Tests ────────────────────────────────────
-
-//    [Fact]
-//    public async Task StateMachine_FullHappyPath_AllTransitionsCorrect()
-//    {
-//        // Arrange
-//        var orderId = Guid.NewGuid();
-
-//        // Step 1: Order confirmed → saga started
-//        var starter = new OrderConfirmedSagaStarter(_db,
-//            NullLogger<OrderConfirmedSagaStarter>.Instance);
-//        await starter.Consume(CreateContext(new OrderConfirmedEvent
-//        {
-//            OrderId = orderId,
-//            UserId = "user-1",
-//            UserEmail = "user@test.com",
-//            TotalAmount = 200m,
-//            ConfirmedAt = DateTime.UtcNow,
-//            Items = new List<OrderLineItem>()
-//        }));
-
-//        var saga = await _db.SagaStates.FirstAsync(s => s.OrderId == orderId);
-//        saga.Status.Should().Be(SagaStatus.Started);
-
-//        // Step 2: Saga orchestrator sends ReserveInventoryCommand
-//        // (simulated by manually advancing state)
-//        saga.Status = SagaStatus.ReservingInventory;
-//        saga.UpdatedAt = DateTime.UtcNow;
-//        await _db.SaveChangesAsync();
-
-//        // Step 3: Inventory reserved → payment processing
-//        var invReserved = new InventoryReservedConsumer(_db, _publishEndpoint,
-//            NullLogger<InventoryReservedConsumer>.Instance);
-//        await invReserved.Consume(CreateContext(
-//            new InventoryReservedEvent { OrderId = orderId }));
-
-//        saga = await _db.SagaStates.FirstAsync(s => s.OrderId == orderId);
-//        saga.Status.Should().Be(SagaStatus.ProcessingPayment);
-
-//        // Step 4: Payment succeeded → committing
-//        var paySucceeded = new PaymentSucceededConsumer(_db, _publishEndpoint,
-//            NullLogger<PaymentSucceededConsumer>.Instance);
-//        await paySucceeded.Consume(CreateContext(new PaymentSucceededEvent
-//        {
-//            OrderId = orderId,
-//            PaymentId = Guid.NewGuid(),
-//            Amount = 200m
-//        }));
-
-//        saga = await _db.SagaStates.FirstAsync(s => s.OrderId == orderId);
-//        saga.Status.Should().Be(SagaStatus.Completing);
-
-//        // Step 5: Verify commands published in correct order
-//        Received.InOrder(() =>
-//        {
-//            _publishEndpoint.Publish(
-//                Arg.Any<ProcessPaymentCommand>(),
-//                Arg.Any<CancellationToken>());
-//            _publishEndpoint.Publish(
-//                Arg.Any<CommitInventoryCommand>(),
-//                Arg.Any<CancellationToken>());
-//        });
-//    }
-
-//    [Fact]
-//    public async Task StateMachine_FullCompensationPath_AllTransitionsCorrect()
-//    {
-//        // Arrange
-//        var orderId = Guid.NewGuid();
-
-//        // Saga in ProcessingPayment
-//        var saga = CreateSaga(orderId, SagaStatus.ProcessingPayment);
-//        _db.SagaStates.Add(saga);
-//        await _db.SaveChangesAsync();
-
-//        // Step 1: Payment fails → releasing inventory
-//        var payFailed = new PaymentFailedConsumer(_db, _publishEndpoint,
-//            NullLogger<PaymentFailedConsumer>.Instance);
-//        await payFailed.Consume(CreateContext(new PaymentFailedEvent
-//        {
-//            OrderId = orderId,
-//            Reason = "Declined"
-//        }));
-
-//        saga = await _db.SagaStates.FirstAsync(s => s.OrderId == orderId);
-//        saga.Status.Should().Be(SagaStatus.ReleasingInventory);
-
-//        // Step 2: Inventory released → cancelled
-//        var invReleased = new InventoryReleasedConsumer(_db,
-//            NullLogger<InventoryReleasedConsumer>.Instance);
-//        await invReleased.Consume(CreateContext(
-//            new InventoryReleasedEvent { OrderId = orderId }));
-
-//        saga = await _db.SagaStates.FirstAsync(s => s.OrderId == orderId);
-//        saga.Status.Should().Be(SagaStatus.Cancelled);
-//        saga.FailureReason.Should().Be("Declined");
-
-//        // Verify compensation commands published
-//        await _publishEndpoint.Received(1).Publish(
-//            Arg.Is<ReleaseInventoryCommand>(c => c.OrderId == orderId),
-//            Arg.Any<CancellationToken>());
-//    }
-
-//    // ── Helpers ─────────────────────────────────────────────────────────────
-
-//    private static OrderSagaState CreateSaga(Guid orderId, SagaStatus status) =>
-//        new()
-//        {
-//            Id = Guid.NewGuid(),
-//            OrderId = orderId,
-//            Status = status,
-//            UserId = "user-1",
-//            UserEmail = "user@test.com",
-//            TotalAmount = 100m,
-//            ItemsJson = JsonSerializer.Serialize(new List<OrderLineItem>()),
-//            CreatedAt = DateTime.UtcNow,
-//            UpdatedAt = DateTime.UtcNow
-//        };
-
-//    private static ConsumeContext<T> CreateContext<T>(T message) where T : class
-//    {
-//        var ctx = Substitute.For<ConsumeContext<T>>();
-//        ctx.Message.Returns(message);
-//        ctx.CancellationToken.Returns(CancellationToken.None);
-//        return ctx;
-//    }
-
-//    private IServiceScopeFactory CreateScopeFactory(
-//        IPublishEndpoint? publishEndpoint = null)
-//    {
-//        var pe = publishEndpoint ?? _publishEndpoint;
-//        var scope = Substitute.For<IServiceScope>();
-//        var factory = Substitute.For<IServiceScopeFactory>();
-//        var provider = Substitute.For<IServiceProvider>();
-
-//        provider.GetService(typeof(OrderDbContext)).Returns(_db);
-//        provider.GetService(typeof(IPublishEndpoint)).Returns(pe);
-//        scope.ServiceProvider.Returns(provider);
-//        factory.CreateScope().Returns(scope);
-
-//        return factory;
-//    }
-//    public void Dispose()
-//    {
-//        _db.Dispose();
-//    }
-//}
-
-//// ═══════════════════════════════════════════════════════════════════════════
-//// OUTBOX TESTS
-//// ═══════════════════════════════════════════════════════════════════════════
-
-//public class OutboxTests : IDisposable
-//{
-//    private readonly OrderDbContext _db;
-//    public OutboxTests()
-//    {
-//        var options = new DbContextOptionsBuilder<OrderDbContext>()
-//            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
-//            .ConfigureWarnings(w =>
-//                w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
-//            .Options;
-
-//        _db = new OrderDbContext(options);
-//    }
-
-//    [Fact]
-//    public async Task Outbox_NewEntry_HasPendingStatus()
-//    {
-//        var entry = new OutboxEntry
-//        {
-//            Id = Guid.NewGuid(),
-//            EventType = "OrderConfirmedEvent",
-//            Payload = "{}",
-//            CreatedAt = DateTime.UtcNow
-//        };
-
-//        _db.OutboxEntries.Add(entry);
-//        await _db.SaveChangesAsync();
-
-//        var saved = await _db.OutboxEntries.FindAsync(entry.Id);
-//        saved!.DeliveredAt.Should().BeNull();
-//        saved.RetryCount.Should().Be(0);
-//    }
-
-//    [Fact]
-//    public async Task Outbox_PendingQuery_ReturnsOnlyUndelivered()
-//    {
-//        _db.OutboxEntries.AddRange(
-//            new OutboxEntry
-//            {
-//                Id = Guid.NewGuid(),
-//                EventType = "OrderConfirmedEvent",
-//                Payload = "{}",
-//                CreatedAt = DateTime.UtcNow,
-//                DeliveredAt = null
-//            },
-//            new OutboxEntry
-//            {
-//                Id = Guid.NewGuid(),
-//                EventType = "OrderConfirmedEvent",
-//                Payload = "{}",
-//                CreatedAt = DateTime.UtcNow,
-//                DeliveredAt = DateTime.UtcNow // already delivered
-//            }
-//        );
-//        await _db.SaveChangesAsync();
-
-//        var pending = await _db.OutboxEntries
-//            .Where(e => e.DeliveredAt == null).ToListAsync();
-
-//        pending.Should().HaveCount(1);
-//    }
-
-//    [Fact]
-//    public async Task Outbox_AfterDelivery_HasDeliveredAtSet()
-//    {
-//        var entry = new OutboxEntry
-//        {
-//            Id = Guid.NewGuid(),
-//            EventType = "OrderConfirmedEvent",
-//            Payload = "{}",
-//            CreatedAt = DateTime.UtcNow
-//        };
-//        _db.OutboxEntries.Add(entry);
-//        await _db.SaveChangesAsync();
-
-//        // Simulate delivery
-//        entry.DeliveredAt = DateTime.UtcNow;
-//        await _db.SaveChangesAsync();
-
-//        var pending = await _db.OutboxEntries
-//            .Where(e => e.DeliveredAt == null).CountAsync();
-
-//        pending.Should().Be(0);
-//    }
-
-//    [Fact]
-//    public async Task Outbox_FailedDelivery_IncrementsRetryCount()
-//    {
-//        var entry = new OutboxEntry
-//        {
-//            Id = Guid.NewGuid(),
-//            EventType = "OrderConfirmedEvent",
-//            Payload = "{}",
-//            CreatedAt = DateTime.UtcNow,
-//            RetryCount = 0
-//        };
-//        _db.OutboxEntries.Add(entry);
-//        await _db.SaveChangesAsync();
-
-//        // Simulate 3 failed delivery attempts
-//        for (int i = 0; i < 3; i++)
-//        {
-//            entry.RetryCount++;
-//            await _db.SaveChangesAsync();
-//        }
-
-//        var saved = await _db.OutboxEntries.FindAsync(entry.Id);
-//        saved!.RetryCount.Should().Be(3);
-//        saved.DeliveredAt.Should().BeNull(); // still not delivered
-//    }
-
-//    [Fact]
-//    public async Task Outbox_MultipleEntries_DeliveredInChronologicalOrder()
-//    {
-//        var now = DateTime.UtcNow;
-//        _db.OutboxEntries.AddRange(
-//            new OutboxEntry
-//            {
-//                Id = Guid.NewGuid(),
-//                EventType = "OrderConfirmedEvent",
-//                Payload = "{\"order\":\"third\"}",
-//                CreatedAt = now.AddMinutes(2)
-//            },
-//            new OutboxEntry
-//            {
-//                Id = Guid.NewGuid(),
-//                EventType = "OrderConfirmedEvent",
-//                Payload = "{\"order\":\"first\"}",
-//                CreatedAt = now
-//            },
-//            new OutboxEntry
-//            {
-//                Id = Guid.NewGuid(),
-//                EventType = "OrderConfirmedEvent",
-//                Payload = "{\"order\":\"second\"}",
-//                CreatedAt = now.AddMinutes(1)
-//            }
-//        );
-//        await _db.SaveChangesAsync();
-
-//        var pending = await _db.OutboxEntries
-//            .Where(e => e.DeliveredAt == null)
-//            .OrderBy(e => e.CreatedAt)
-//            .ToListAsync();
-
-//        pending[0].Payload.Should().Contain("first");
-//        pending[1].Payload.Should().Contain("second");
-//        pending[2].Payload.Should().Contain("third");
-//    }
-
-//    public void Dispose()
-//    {
-//        _db.Dispose();
-//    }
-//}
+﻿using FluentAssertions;
+using MassTransit;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using NSubstitute;
+using ShopEasy.OrderService.Data;
+using ShopEasy.OrderService.ReadModels;
+using ShopEasy.OrderService.Sagas;
+using ShopEasy.OrderService.Services;
+using ShopEasy.Shared.Contracts;
+using ShopEasy.Shared.Messaging;
+using Xunit;
+
+namespace ShopEasy.UnitTests.Sagas;
+
+// The saga state machine as a whole: every path an order can take from Started to a final
+// state, what happens on duplicates and unknown orders, and what the timeout service does
+// with a saga that is stuck in each state.
+//
+// Single-handler behaviour in depth lives next to this file:
+//   CommitFlowTests     — payment / commit results, duplicates, late events
+//   CancellationTests   — customer cancellation and its effect on the handlers
+//   SagaOrchestratorTests — the saga starter and the first handlers
+// The saga row locking itself needs a real PostgreSQL: Infrastructure/SagaPostgresTests.
+public class SagaStateTransitionTests : IDisposable
+{
+    private readonly OrderDbContext _db;
+    private readonly IPublishEndpoint _publish = Substitute.For<IPublishEndpoint>();
+    private readonly ISagaLocking _locking = new InMemorySagaLocking();
+    private readonly OrderReadModelUpdater _readModel;
+
+    public SagaStateTransitionTests()
+    {
+        var options = new DbContextOptionsBuilder<OrderDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
+            .Options;
+
+        _db = new OrderDbContext(options);
+        _readModel = new OrderReadModelUpdater(_db, NullLogger<OrderReadModelUpdater>.Instance);
+    }
+
+    public void Dispose() => _db.Dispose();
+
+    // ── consumers under test, built the way the DI container builds them ─────
+
+    private OrderConfirmedSagaStarter Starter() =>
+        new(_db, NullLogger<OrderConfirmedSagaStarter>.Instance);
+
+    private InventoryReservedConsumer Reserved() =>
+        new(_db, _locking, _publish, NullLogger<InventoryReservedConsumer>.Instance);
+
+    private InventoryReservationFailedConsumer ReservationFailed() =>
+        new(_db, _locking, _readModel, NullLogger<InventoryReservationFailedConsumer>.Instance);
+
+    private PaymentSucceededConsumer PaymentSucceeded() =>
+        new(_db, _locking, _publish, _readModel, NullLogger<PaymentSucceededConsumer>.Instance);
+
+    private PaymentFailedConsumer PaymentFailed() =>
+        new(_db, _locking, _publish, _readModel, NullLogger<PaymentFailedConsumer>.Instance);
+
+    private InventoryCommittedConsumer Committed() =>
+        new(_db, _locking, _readModel, NullLogger<InventoryCommittedConsumer>.Instance);
+
+    private InventoryReleasedConsumer Released() =>
+        new(_db, _locking, _readModel, NullLogger<InventoryReleasedConsumer>.Instance);
+
+    private static SagaTimeoutService TimeoutService() =>
+        new(Substitute.For<IServiceScopeFactory>(), NullLogger<SagaTimeoutService>.Instance);
+
+    // ── Happy path ───────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task OrderConfirmed_CreatesTheSagaInStartedState()
+    {
+        var orderId = Guid.NewGuid();
+
+        await Starter().Consume(Ctx(new OrderConfirmedEvent
+        {
+            OrderId = orderId, UserId = "user-1", UserEmail = "user@test.com",
+            TotalAmount = 100m, ConfirmedAt = DateTime.UtcNow,
+            Items = [new() { ProductId = Guid.NewGuid(), ProductName = "Widget", Quantity = 2, UnitPrice = 50m }]
+        }));
+
+        var saga = await SagaOf(orderId);
+        saga.Status.Should().Be(SagaStatus.Started);
+        saga.TotalAmount.Should().Be(100m);
+        saga.UserId.Should().Be("user-1");
+    }
+
+    [Fact]
+    public async Task FullHappyPath_EveryTransitionIsCorrect_AndTheOrderIsConfirmedOnlyAtTheEnd()
+    {
+        var orderId = Guid.NewGuid();
+        await SeedOrder(orderId);
+
+        // 1. the saga starter creates the saga
+        await Starter().Consume(Ctx(OrderConfirmed(orderId, 200m)));
+        (await SagaOf(orderId)).Status.Should().Be(SagaStatus.Started);
+
+        // 2. the orchestrator moves it to ReservingInventory (it sends ReserveInventoryCommand)
+        await SetStatus(orderId, SagaStatus.ReservingInventory);
+
+        // 3. stock reserved → payment is requested
+        await Reserved().Consume(Ctx(new InventoryReservedEvent { OrderId = orderId }));
+        (await SagaOf(orderId)).Status.Should().Be(SagaStatus.ProcessingPayment);
+
+        // 4. payment succeeded → the stock commit is requested; the order is NOT complete yet
+        await PaymentSucceeded().Consume(Ctx(new PaymentSucceededEvent
+            { OrderId = orderId, PaymentId = Guid.NewGuid(), Amount = 200m }));
+        (await SagaOf(orderId)).Status.Should().Be(SagaStatus.Completing);
+        (await OrderOf(orderId)).Status.Should().Be(OrderStatus.Pending);
+
+        // 5. inventory confirmed the commit → done
+        await Committed().Consume(Ctx(new InventoryCommittedEvent { OrderId = orderId }));
+        (await SagaOf(orderId)).Status.Should().Be(SagaStatus.Completed);
+        (await OrderOf(orderId)).Status.Should().Be(OrderStatus.Confirmed);
+        (await SummaryOf(orderId)).StatusName.Should().Be("Confirmed");
+
+        // the commands went out in order, each exactly once
+        Received.InOrder(() =>
+        {
+            _publish.Publish(Arg.Is<ProcessPaymentCommand>(c => c.OrderId == orderId && c.Amount == 200m),
+                Arg.Any<CancellationToken>());
+            _publish.Publish(Arg.Is<CommitInventoryCommand>(c => c.OrderId == orderId),
+                Arg.Any<CancellationToken>());
+        });
+        await _publish.DidNotReceive().Publish(Arg.Any<ReleaseInventoryCommand>(), Arg.Any<CancellationToken>());
+        await _publish.DidNotReceive().Publish(Arg.Any<RefundPaymentCommand>(), Arg.Any<CancellationToken>());
+    }
+
+    // ── Compensation ─────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task FullCompensationPath_PaymentDeclined_ReleasesTheStockAndCancelsTheOrder()
+    {
+        var orderId = await Seed(SagaStatus.ProcessingPayment);
+
+        // payment declined → give the reserved stock back
+        await PaymentFailed().Consume(Ctx(new PaymentFailedEvent { OrderId = orderId, Reason = "Declined" }));
+        var saga = await SagaOf(orderId);
+        saga.Status.Should().Be(SagaStatus.ReleasingInventory);
+        saga.FailureReason.Should().Be("Declined");
+        await _publish.Received(1).Publish(
+            Arg.Is<ReleaseInventoryCommand>(c => c.OrderId == orderId), Arg.Any<CancellationToken>());
+
+        // inventory confirms the release → cancelled, with the reason the customer sees
+        await Released().Consume(Ctx(new InventoryReleasedEvent { OrderId = orderId }));
+        saga = await SagaOf(orderId);
+        saga.Status.Should().Be(SagaStatus.Cancelled);
+        saga.FailureReason.Should().Be("Declined");
+        (await OrderOf(orderId)).Status.Should().Be(OrderStatus.Cancelled);
+        (await SummaryOf(orderId)).StatusName.Should().Be("Cancelled");
+    }
+
+    [Fact]
+    public async Task InsufficientStock_CancelsTheOrderWithTheReason_AndPublishesNothing()
+    {
+        var orderId = await Seed(SagaStatus.ReservingInventory);
+
+        await ReservationFailed().Consume(Ctx(new InventoryReservationFailedEvent
+            { OrderId = orderId, Reason = "Insufficient stock for 4K Webcam" }));
+
+        var saga = await SagaOf(orderId);
+        saga.Status.Should().Be(SagaStatus.Cancelled);
+        saga.FailureReason.Should().Contain("Insufficient stock");
+        (await OrderOf(orderId)).Status.Should().Be(OrderStatus.Cancelled);
+        (await SummaryOf(orderId)).FailureReason.Should().Contain("Insufficient stock");
+
+        // nothing was reserved, so there is nothing to release, charge or refund
+        await _publish.DidNotReceive().Publish(Arg.Any<ReleaseInventoryCommand>(), Arg.Any<CancellationToken>());
+        await _publish.DidNotReceive().Publish(Arg.Any<ProcessPaymentCommand>(), Arg.Any<CancellationToken>());
+    }
+
+    // ── Duplicates ───────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task DuplicateOrderConfirmed_CreatesOnlyOneSaga()
+    {
+        var orderId = Guid.NewGuid();
+        var evt = OrderConfirmed(orderId, 100m);
+
+        await Starter().Consume(Ctx(evt));
+        await Starter().Consume(Ctx(evt));
+
+        (await _db.SagaStates.CountAsync(s => s.OrderId == orderId)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task DuplicateInventoryReserved_RequestsThePaymentOnlyOnce()
+    {
+        var orderId = await Seed(SagaStatus.ReservingInventory);
+
+        await Reserved().Consume(Ctx(new InventoryReservedEvent { OrderId = orderId }));
+        await Reserved().Consume(Ctx(new InventoryReservedEvent { OrderId = orderId }));
+
+        await _publish.Received(1).Publish(
+            Arg.Is<ProcessPaymentCommand>(c => c.OrderId == orderId), Arg.Any<CancellationToken>());
+    }
+
+    // ── Edge cases ───────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task EventsForAnOrderWithoutASaga_DoNothing()
+    {
+        var unknown = Guid.NewGuid();
+
+        await Reserved().Consume(Ctx(new InventoryReservedEvent { OrderId = unknown }));
+        await PaymentFailed().Consume(Ctx(new PaymentFailedEvent { OrderId = unknown, Reason = "Declined" }));
+        await ReservationFailed().Consume(Ctx(new InventoryReservationFailedEvent { OrderId = unknown, Reason = "x" }));
+        await PaymentSucceeded().Consume(Ctx(new PaymentSucceededEvent { OrderId = unknown, PaymentId = Guid.NewGuid(), Amount = 1m }));
+
+        _publish.ReceivedCalls().Should().BeEmpty();
+        (await _db.SagaStates.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task AZeroAmountOrder_IsStoredAsIs()
+    {
+        var orderId = Guid.NewGuid();
+
+        await Starter().Consume(Ctx(OrderConfirmed(orderId, 0m)));
+
+        (await SagaOf(orderId)).TotalAmount.Should().Be(0m);
+    }
+
+    // ── Timeouts: a saga that stopped making progress ────────────────────────
+
+    private static readonly DateTime LongAgo = DateTime.UtcNow.AddMinutes(-5);
+
+    private Task RunTimeoutCheck() =>
+        TimeoutService().CheckForTimedOutSagasPublic(_db, _publish, _locking, CancellationToken.None);
+
+    [Theory]
+    [InlineData(SagaStatus.Started)]
+    [InlineData(SagaStatus.ReservingInventory)]
+    public async Task Timeout_WaitingForInventory_FailsTheSaga_AndCancelsTheOrder(SagaStatus stuckIn)
+    {
+        var orderId = await Seed(stuckIn, updatedAt: LongAgo);
+
+        await RunTimeoutCheck();
+
+        var saga = await SagaOf(orderId);
+        saga.Status.Should().Be(SagaStatus.Failed);
+        saga.FailureReason.Should().Contain("Timed out waiting for inventory");
+        (await OrderOf(orderId)).Status.Should().Be(OrderStatus.Cancelled);
+        (await SummaryOf(orderId)).StatusName.Should().Be("Cancelled");
+        // a reservation might still be on its way: nothing was confirmed, so nothing to give back
+        // here — a late InventoryReservedEvent is released by the zombie guard (CancellationTests)
+        await _publish.DidNotReceive().Publish(Arg.Any<ProcessPaymentCommand>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Timeout_WaitingForPayment_ReleasesTheStock()
+    {
+        var orderId = await Seed(SagaStatus.ProcessingPayment, updatedAt: LongAgo);
+
+        await RunTimeoutCheck();
+
+        await _publish.Received(1).Publish(
+            Arg.Is<ReleaseInventoryCommand>(c => c.OrderId == orderId), Arg.Any<CancellationToken>());
+        var saga = await SagaOf(orderId);
+        saga.Status.Should().Be(SagaStatus.ReleasingInventory);
+        saga.FailureReason.Should().Contain("Timed out waiting for payment");
+    }
+
+    [Fact]
+    public async Task Timeout_WaitingForTheCommitResult_ResendsTheCommit()
+    {
+        var orderId = await Seed(SagaStatus.Completing, updatedAt: LongAgo);
+
+        await RunTimeoutCheck();
+
+        var saga = await SagaOf(orderId);
+        saga.Status.Should().Be(SagaStatus.Completing);
+        saga.RetryCount.Should().Be(1);
+        await _publish.Received(1).Publish(
+            Arg.Is<CommitInventoryCommand>(c => c.OrderId == orderId), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Timeout_ACommitThatNeverConfirms_IsFlaggedForAHuman_NotRetriedForever()
+    {
+        var orderId = await Seed(SagaStatus.Completing, updatedAt: LongAgo, retryCount: 10);
+
+        await RunTimeoutCheck();
+
+        var saga = await SagaOf(orderId);
+        saga.Status.Should().Be(SagaStatus.Completing);          // the payment is taken: never auto-cancel
+        saga.FailureReason.Should().Contain("stuck");
+        await _publish.DidNotReceive().Publish(Arg.Any<CommitInventoryCommand>(), Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(SagaStatus.Completed)]
+    [InlineData(SagaStatus.Cancelled)]
+    [InlineData(SagaStatus.Failed)]
+    public async Task Timeout_FinishedSagas_AreLeftAlone(SagaStatus status)
+    {
+        var orderId = await Seed(status, updatedAt: DateTime.UtcNow.AddHours(-1));
+
+        await RunTimeoutCheck();
+
+        (await SagaOf(orderId)).Status.Should().Be(status);
+        _publish.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Timeout_ASagaThatIsStillFresh_IsLeftAlone()
+    {
+        var orderId = await Seed(SagaStatus.ReservingInventory, updatedAt: DateTime.UtcNow.AddSeconds(-30));
+
+        await RunTimeoutCheck();
+
+        (await SagaOf(orderId)).Status.Should().Be(SagaStatus.ReservingInventory);
+        _publish.ReceivedCalls().Should().BeEmpty();
+    }
+
+    // ── Correlation: the background workers have no HTTP request ────────────
+
+    [Fact]
+    public async Task TheSaga_RemembersTheCorrelationIdOfTheRequestThatPlacedTheOrder()
+    {
+        var orderId = Guid.NewGuid();
+
+        // the consume filter restores the id from the message header before the starter runs
+        using (CorrelationContext.Push("req-77"))
+            await Starter().Consume(Ctx(OrderConfirmed(orderId, 10m)));
+
+        (await SagaOf(orderId)).CorrelationId.Should().Be("req-77");
+    }
+
+    [Fact]
+    public async Task TheOrchestrator_SendsTheReserveCommandInTheTraceOfTheOriginalRequest()
+    {
+        var orderId = await Seed(SagaStatus.Started, correlationId: "req-77");
+        string? seen = "not published";
+        _publish.Publish(Arg.Any<ReserveInventoryCommand>(), Arg.Any<CancellationToken>())
+            .Returns(_ => { seen = CorrelationContext.Current; return Task.CompletedTask; });
+        var orchestrator = new SagaOrchestrator(
+            Substitute.For<IServiceScopeFactory>(), NullLogger<SagaOrchestrator>.Instance);
+
+        await orchestrator.ProcessSaga(
+            await SagaOf(orderId), _db, _publish, _locking, CancellationToken.None);
+
+        seen.Should().Be("req-77");
+        CorrelationContext.Current.Should().BeNull("the scope ends with the saga");
+    }
+
+    [Fact]
+    public async Task TheTimeoutService_ReleasesStockInTheTraceOfTheOriginalRequest()
+    {
+        var orderId = await Seed(SagaStatus.ProcessingPayment, updatedAt: LongAgo, correlationId: "req-77");
+        string? seen = "not published";
+        _publish.Publish(Arg.Any<ReleaseInventoryCommand>(), Arg.Any<CancellationToken>())
+            .Returns(_ => { seen = CorrelationContext.Current; return Task.CompletedTask; });
+
+        await RunTimeoutCheck();
+
+        seen.Should().Be("req-77");
+        CorrelationContext.Current.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ASagaFromBeforeCorrelationIds_StillWorks()
+    {
+        var orderId = await Seed(SagaStatus.ProcessingPayment, updatedAt: LongAgo, correlationId: null);
+
+        await RunTimeoutCheck();
+
+        (await SagaOf(orderId)).Status.Should().Be(SagaStatus.ReleasingInventory);
+    }
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    private static OrderConfirmedEvent OrderConfirmed(Guid orderId, decimal total) => new()
+    {
+        OrderId = orderId, UserId = "user-1", UserEmail = "user@test.com",
+        TotalAmount = total, ConfirmedAt = DateTime.UtcNow, Items = []
+    };
+
+    // Order + read model row, without a saga
+    private async Task SeedOrder(Guid orderId)
+    {
+        var now = DateTime.UtcNow;
+        _db.Orders.Add(new Order
+        {
+            Id = orderId, UserId = "user-1", UserEmail = "user@test.com",
+            Status = OrderStatus.Pending, TotalAmount = 100m, CreatedAt = now, UpdatedAt = now
+        });
+        _db.OrderSummaries.Add(new OrderSummary
+        {
+            OrderId = orderId, UserId = "user-1", UserEmail = "user@test.com",
+            StatusName = "Pending", StatusCode = (int)OrderStatus.Pending, TotalAmount = 100m,
+            AmountDisplay = "$100.00", ItemCount = 1, ItemsSummary = "Widget x1",
+            PlacedAt = now, UpdatedAt = now
+        });
+        await _db.SaveChangesAsync();
+    }
+
+    // Order + read model row + a saga in the given state
+    private async Task<Guid> Seed(
+        SagaStatus status, DateTime? updatedAt = null, int retryCount = 0, string? correlationId = null)
+    {
+        var orderId = Guid.NewGuid();
+        await SeedOrder(orderId);
+        var now = DateTime.UtcNow;
+        _db.SagaStates.Add(new OrderSagaState
+        {
+            Id = Guid.NewGuid(), OrderId = orderId, Status = status,
+            UserId = "user-1", UserEmail = "user@test.com", TotalAmount = 100m,
+            ItemsJson = "[]", RetryCount = retryCount, CorrelationId = correlationId,
+            CreatedAt = updatedAt ?? now, UpdatedAt = updatedAt ?? now
+        });
+        await _db.SaveChangesAsync();
+        return orderId;
+    }
+
+    private async Task SetStatus(Guid orderId, SagaStatus status)
+    {
+        var saga = await _db.SagaStates.FirstAsync(s => s.OrderId == orderId);
+        saga.Status = status;
+        saga.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+    }
+
+    // Reads bypass the change tracker so they see what is really stored
+    private Task<OrderSagaState> SagaOf(Guid orderId) =>
+        _db.SagaStates.AsNoTracking().FirstAsync(s => s.OrderId == orderId);
+
+    private Task<Order> OrderOf(Guid orderId) =>
+        _db.Orders.AsNoTracking().FirstAsync(o => o.Id == orderId);
+
+    private Task<OrderSummary> SummaryOf(Guid orderId) =>
+        _db.OrderSummaries.AsNoTracking().FirstAsync(o => o.OrderId == orderId);
+
+    private static ConsumeContext<T> Ctx<T>(T message) where T : class
+    {
+        var context = Substitute.For<ConsumeContext<T>>();
+        context.Message.Returns(message);
+        context.CancellationToken.Returns(CancellationToken.None);
+        return context;
+    }
+}

@@ -6,6 +6,7 @@ using NSubstitute;
 using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.Services;
 using ShopEasy.Shared.Contracts;
+using ShopEasy.Shared.Messaging;
 using ShopEasy.UnitTests.Support;
 using Xunit;
 
@@ -168,5 +169,32 @@ public class OutboxDeliveryPostgresTests
         entries[1].RetryCount.Should().Be(1);
         entries[2].RetryCount.Should().Be(0, "the batch stops at the failure; the rest wait for the next cycle");
         entries[2].DeliveredAt.Should().BeNull();
+    }
+
+    [RequiresPostgresFact]
+    public async Task TheCorrelationIdOfTheRequestThatPlacedTheOrder_IsRestoredWhilePublishing()
+    {
+        await using var database = await PostgresTestDatabase.CreateAsync("outbox_corr");
+        var (service, publish, provider) = await CreateAsync(database, busReady: true, pendingEntries: 2);
+        await using var _ = provider;
+
+        // the worker has no HTTP request: the ids come from the entries
+        using (var scope = provider.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+            var entries = await db.OutboxEntries.OrderBy(e => e.CreatedAt).ToListAsync();
+            entries[0].CorrelationId = "req-1";
+            // entries[1] stays without one (placed before correlation ids existed)
+            await db.SaveChangesAsync();
+        }
+
+        var seen = new List<string?>();
+        publish.Publish(Arg.Any<OrderConfirmedEvent>(), Arg.Any<CancellationToken>())
+            .Returns(_ => { seen.Add(CorrelationContext.Current); return Task.CompletedTask; });
+
+        await service.DeliverPendingMessages(CancellationToken.None);
+
+        seen.Should().Equal("req-1", null);
+        CorrelationContext.Current.Should().BeNull("the scope ends with each entry");
     }
 }

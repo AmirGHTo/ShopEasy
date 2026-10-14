@@ -1,0 +1,238 @@
+name: CI/CD
+
+# CI: runs on every pull request, every push to main and every version tag.
+#     Merge only when "CI passed" is green (see "CI/CD" in the README).
+# CD: after CI passed on main or on a v* tag, the service images are published to GHCR.
+#     Pull requests never publish anything.
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+# A new push to the same branch cancels the run that is still going for the previous one
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+
+jobs:
+  # ── Build + every test, including the ones that need PostgreSQL and RabbitMQ ─────────────
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      # Plain RabbitMQ on purpose: the application must not need the management plugin
+      rabbitmq:
+        image: rabbitmq:3.13-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: test
+          RABBITMQ_DEFAULT_PASS: test
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s --health-timeout 10s --health-retries 10
+
+    env:
+      # Picked up by src/Tests/ShopEasy.UnitTests/Infrastructure (see README "Testing")
+      SHOPEASY_TEST_POSTGRES: Host=localhost;Port=5432;Username=postgres;Password=postgres
+      SHOPEASY_TEST_RABBITMQ: amqp://test:test@localhost:5672
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      # CI=true (set by GitHub Actions) turns NuGet vulnerability warnings into errors,
+      # see Directory.Build.props — a vulnerable dependency fails right here.
+      - name: Restore
+        run: dotnet restore ShopEasy.sln
+
+      - name: Build
+        run: dotnet build ShopEasy.sln --configuration Release --no-restore
+
+      - name: Test
+        run: >-
+          dotnet test src/Tests/ShopEasy.UnitTests
+          --configuration Release --no-build
+          --logger "trx;LogFileName=unit-tests.trx"
+          --results-directory TestResults
+
+      # The PostgreSQL/RabbitMQ tests skip themselves when their server is not configured.
+      # That is right on a laptop but must never happen here: a mis-wired service container
+      # would otherwise turn 20 tests into silent no-ops and still show green.
+      - name: Fail if any test was skipped
+        if: always()
+        run: |
+          trx=TestResults/unit-tests.trx
+          test -f "$trx" || { echo "::error::No test results were produced"; exit 1; }
+          counters=$(grep -o '<Counters [^>]*>' "$trx" | head -1)
+          echo "$counters"
+          echo "### Unit tests" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$counters\`" >> "$GITHUB_STEP_SUMMARY"
+          skipped=$(grep -c 'outcome="NotExecuted"' "$trx" || true)
+          if [ "$skipped" != "0" ]; then
+            echo "::error::$skipped test(s) were skipped. The PostgreSQL/RabbitMQ service containers are not wired correctly."
+            exit 1
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults/
+          retention-days: 14
+
+  # ── The Compose file and the Kubernetes manifests must stay valid ────────────────────────
+  validate-deployment-files:
+    name: Validate Compose and Kubernetes files
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # .env.example documents every required variable; if the Compose file starts
+      # needing a new one that is missing from the example, this fails.
+      - name: docker compose config
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+
+      - name: kubeconform (Kubernetes manifests)
+        run: >-
+          docker run --rm -v "$PWD/k8s:/k8s:ro"
+          ghcr.io/yannh/kubeconform:v0.6.7
+          -strict -summary -ignore-missing-schemas /k8s
+
+  # ── Every service image must build (nothing is pushed from a pull request) ───────────────
+  docker-build:
+    name: Docker build (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { service: identity,  dockerfile: src/Identity/ShopEasy.Identity/Dockerfile }
+          - { service: gateway,   dockerfile: src/Gateway/ShopEasy.Gateway/Dockerfile }
+          - { service: product,   dockerfile: src/Services/ShopEasy.ProductService/Dockerfile }
+          - { service: inventory, dockerfile: src/Services/ShopEasy.InventoryService/Dockerfile }
+          - { service: payment,   dockerfile: src/Services/ShopEasy.PaymentService/Dockerfile }
+          - { service: order,     dockerfile: src/Services/ShopEasy.OrderService/Dockerfile }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: false
+          tags: shopeasy-${{ matrix.service }}:ci
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+
+  # ── Single status to require in branch protection ────────────────────────────────────────
+  ci-passed:
+    name: CI passed
+    if: always()
+    needs: [build-and-test, validate-deployment-files, docker-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All required jobs succeeded?
+        run: |
+          echo '${{ toJSON(needs) }}'
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "::error::A required job failed or was cancelled"
+            exit 1
+          fi
+
+  # ── CD: publish the service images to the GitHub Container Registry ─────────────────────
+  # Only after every CI job passed, only from main or a version tag, never from a pull request.
+  # Authenticates with the built-in GITHUB_TOKEN: no secret needs to be created.
+  # Images: ghcr.io/<owner>/shopeasy-<service>:{sha-<short>, latest (main only), <version> (tags)}
+  publish-images:
+    name: Publish image (${{ matrix.service }})
+    needs: [ci-passed]
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { service: identity,  dockerfile: src/Identity/ShopEasy.Identity/Dockerfile }
+          - { service: gateway,   dockerfile: src/Gateway/ShopEasy.Gateway/Dockerfile }
+          - { service: product,   dockerfile: src/Services/ShopEasy.ProductService/Dockerfile }
+          - { service: inventory, dockerfile: src/Services/ShopEasy.InventoryService/Dockerfile }
+          - { service: payment,   dockerfile: src/Services/ShopEasy.PaymentService/Dockerfile }
+          - { service: order,     dockerfile: src/Services/ShopEasy.OrderService/Dockerfile }
+    steps:
+      - uses: actions/checkout@v4
+
+      # Registry paths must be lowercase; the GitHub owner name may not be
+      - name: Image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/shopeasy-${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max

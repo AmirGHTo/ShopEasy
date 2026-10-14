@@ -6,8 +6,15 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="2.2.0" />
+    <!-- Patched versions of transitive packages with known vulnerabilities. They flow to every project that references Shared. -->
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="System.Text.Encodings.Web" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Caching.Abstractions" Version="8.0.0" />
     <PackageReference Include="StackExchange.Redis" Version="2.13.1" />
 	  <PackageReference Include="Serilog.Sinks.Seq" Version="9.1.0" />
+	  <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
+	  <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
+	  <!-- interfaces only (no transport): the correlation filters are written against them -->
+	  <PackageReference Include="MassTransit.Abstractions" Version="8.2.5" />
   </ItemGroup>
 </Project>

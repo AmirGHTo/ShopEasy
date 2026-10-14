@@ -18,11 +18,12 @@ An e-commerce backend built with **.NET 8** and **C#** as independent microservi
 10. [Inventory Stock Model](#inventory-stock-model)
 11. [Developer Portal & Monitoring](#developer-portal--monitoring)
 12. [Testing](#testing)
-13. [Horizontal Scaling](#horizontal-scaling)
-14. [Kubernetes Deployment](#kubernetes-deployment)
-15. [Project Structure](#project-structure)
-16. [Troubleshooting](#troubleshooting)
-17. [Production Hardening Roadmap & Known Limitations](#production-hardening-roadmap--known-limitations)
+13. [CI/CD](#cicd)
+14. [Horizontal Scaling](#horizontal-scaling)
+15. [Kubernetes Deployment](#kubernetes-deployment)
+16. [Project Structure](#project-structure)
+17. [Troubleshooting](#troubleshooting)
+18. [Production Hardening Roadmap & Known Limitations](#production-hardening-roadmap--known-limitations)
 
 ---
 
@@ -266,8 +267,9 @@ Every service exposes `/health`, `/health/ready`, and `/health/live`. Used by Do
 
 ### 19. Observability — the three pillars
 
-- **Logs** — Serilog ships structured logs to Seq, enriched with a `Service` property and a propagated `X-Correlation-Id` so a single request can be traced across all services.
-- **Traces** — OpenTelemetry exports spans to Jaeger; you can see a request fan out across services on a timeline.
+- **Logs** — Serilog writes structured logs to the console and to Seq. Every line names its service and carries the **correlation id** of the request it belongs to: `[12:00:01 INF] [ShopEasy.PaymentService] [a1b2c3d4] Payment … succeeded`. Outside a request or message the id shows `-`. Where Seq is not available, set `Seq__ServerUrl` to an empty value (see [Configuration](#service-configuration-keys)); logs still go to the console.
+- **Correlation across messages** — the id does not stop at the first RabbitMQ message. The gateway generates one when the client sends none (and returns it in the `X-Correlation-Id` response header), passes it to the service behind it, and from there it follows the order: it is stored on the order's outbox entry and saga, stamped as a header on every command and event, and restored in each consumer — also across the Payment/Inventory outboxes and the background workers (outbox delivery, orchestrator, timeout service), which have no HTTP request of their own. Every consumer also logs the message's `OrderId`. See [Following one order across services](#following-one-order-across-services).
+- **Traces** — OpenTelemetry exports spans to Jaeger: HTTP requests and calls, **one span per RabbitMQ message** sent or consumed (MassTransit; linked across services), and **one span per database command** (Npgsql, with the SQL in the `db.statement` tag), so a request fans out across services, queues and databases on one timeline.
 - **Metrics** — custom Prometheus counters (`orders_placed_total`, `outbox_pending_messages`, `sagas_active`, `saga_duration_seconds`, `inventory_cache_hits_total`) visualized in Grafana.
 
 ### 20. Server-Side Pricing & Request Validation
@@ -412,6 +414,7 @@ Services read standard ASP.NET Core configuration, so every key can be an enviro
 | `Services__InventoryService`, `Services__InventoryGrpcService` | Order | Inventory REST and gRPC URLs. |
 | `Redis__Connection` | Product, Inventory, Order | Redis endpoint, e.g. `redis:6379`. |
 | `Telemetry__Endpoint` | all | OTLP endpoint (Jaeger), default `http://jaeger:4317`. |
+| `Seq__ServerUrl` | all | Where logs are shipped, default `http://seq:5341` (the Compose Seq). **Empty = off** (console only) — the Kubernetes manifests set it empty because they do not run Seq. |
 | `Testing__ForcePaymentSuccess` | Payment | Test-only: forces simulated payments to succeed. |
 
 ### Kubernetes
@@ -623,7 +626,7 @@ Transient failures (database unavailable, ...) are *not* reported as events: the
 
 ### Checking the concurrency behaviour yourself
 
-Unit tests cover the logic (idempotency, state checks, quantity maths) with an in-memory database, but they cannot prove the row locks — that needs a real PostgreSQL (planned: Testcontainers). To see it with the running stack, log in as the admin at `http://localhost:5000` and paste this into the browser console. It leaves exactly 5 *Standing Desks* in stock and then places 10 orders for one desk each, all at the same moment (the order rate limit is 10 per minute, so run it once a minute):
+The unit tests cover the logic (idempotency, state checks, quantity maths) with an in-memory database, and the PostgreSQL-backed tests (`Infrastructure/InventoryPostgresTests`, see [Testing](#testing)) prove the row locks automatically — 12 orders racing for 10 units reserve at most 3 times of 3. To see it with the running stack, log in as the admin at `http://localhost:5000` and paste this into the browser console. It leaves exactly 5 *Standing Desks* in stock and then places 10 orders for one desk each, all at the same moment (the order rate limit is 10 per minute, so run it once a minute):
 
 ```javascript
 const id = '00000000-0000-0000-0000-000000000003';          // Standing Desk
@@ -672,6 +675,16 @@ All reachable from the landing page at `http://localhost:5000`:
 
 **pgAdmin connection** (to inspect databases): host `postgres`, port `5432`, user `shopeasy`, password = `POSTGRES_PASSWORD` from your `.env`.
 
+### Following one order across services
+
+Every log line and trace of one customer action shares a **correlation id**, and every line of an order's flow also carries its `OrderId`.
+
+1. Place the order and read the id from the response header: `curl -i … | grep -i x-correlation-id` (or send your own: `-H "X-Correlation-Id: my-test-1"`).
+2. In Seq (http://localhost:5341) search `CorrelationId = 'my-test-1'` — you see the gateway request, the saga steps in the Order service, the stock changes in Inventory and the payment in Payment, in order. `OrderId = '<guid>'` finds the same story from the order id, even for lines the id did not reach (for example a payment timeout fired by a background worker long after the request).
+3. In Jaeger (http://localhost:16686) pick the `ShopEasy.OrderService` service and look at the trace: HTTP spans, one span per message and one per database command.
+
+Orders placed before correlation ids existed have no id on their saga; their messages simply carry none, and `OrderId` still works.
+
 ### Working with dead letters
 
 A message that fails all its retries is parked in an `<endpoint>_error` queue (for example `payment-process_error`). The Order service logs `DEAD LETTER ALERT: Queue … has N failed message(s)` every 30 seconds while a queue is non-empty.
@@ -719,18 +732,18 @@ dotnet test src/Tests/ShopEasy.UnitTests
 dotnet test src/Tests/ShopEasy.IntegrationTests
 ```
 
-**Unit tests — 142 test cases.** 122 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 20 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them.
+**Unit tests — 204 test cases.** 176 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 28 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 204 (see [CI/CD](#cicd)).
 
 | Area | Where | What it covers |
 |---|---|---|
+| Saga state machine | `Sagas/SagaStateTransitionTests` | The full happy path (Started → … → Completed → order Confirmed only at the end), the compensation path, insufficient stock, duplicate events, unknown orders, and the timeout service for every stuck state (including a lost commit result being re-sent and a stuck commit being flagged for a human). |
 | Order cancellation | `Sagas/CancellationTests` | Cancelling at every saga stage, who may cancel, a lost release command, and what the saga handlers do after a cancel (release confirmed, late payment refunded, late reservation released, timeout retries). |
 | Commit flow | `Sagas/CommitFlowTests` | Completion only after `InventoryCommittedEvent`, refund on `InventoryCommitFailedEvent`, duplicate or late events never refund, cancel or release a finished order. |
-| Saga starter, orchestrator, outbox entries | `Sagas/SagaOrchestratorTests`, `Consumers/*` | Starting a saga (including idempotency), the inventory-reserved consumer, outbox entry state. |
+| Saga starter and first handlers | `Sagas/SagaOrchestratorTests`, `Consumers/*` | Starting a saga (including idempotency), the reserved / payment consumers, outbox entry state. |
 | Inventory consumers | `Inventory/*` | Reserve, commit and release including duplicates, out-of-order messages, shortages, multi-product orders and a missing inventory record. |
 | Order placement | `Orders/*` | Request validation and limits, server-side price/name resolution, the Product service client (404, 5xx, network failure, malformed response). |
 | Messaging (no servers needed) | `Messaging/*` | The broker readiness gate (including against MassTransit's real health check registration), outbox delivery pausing while the bus is not ready, the dead-letter monitor and the requeue endpoint's responses. |
-
-The larger saga state-machine suite (`Sagas/SagaStateTransitionTests.cs`) is currently commented out and needs to be updated for the current consumer constructors; the payment-succeeded/failed consumer tests in `SagaOrchestratorTests.cs` are likewise disabled.
+| Logging, correlation, tracing (no servers needed) | `Messaging/LoggingTests`, `CorrelationFilterTests`, `TracingSourceTests` | The exact console line per service, the correlation id inside and outside a scope, the Seq setting; the id travelling through a real MassTransit pipeline (header → consumer → the messages it publishes), the HTTP hand-over from the gateway; MassTransit and Npgsql emitting spans under the source names the services subscribe to. |
 
 ### Tests that need PostgreSQL and RabbitMQ
 
@@ -740,7 +753,8 @@ What these check cannot be faked: row locks, transactions, the MassTransit outbo
 |---|---|
 | `Infrastructure/InventoryPostgresTests` | 12 orders of 3 units racing for 10 units reserve at most 3 times (the real `SELECT … FOR UPDATE`); the same command delivered 4 times at once reserves once; a consumer that publishes and then fails sends **nothing** and rolls everything back; `BeginOrJoinAsync` joins an open transaction and leaves the commit to its owner. |
 | `Infrastructure/PaymentPostgresTests` | A payment command through the outbox saves the payment and delivers the event; the same command twice charges once and still confirms. |
-| `Infrastructure/OutboxDeliveryPostgresTests` | Ready bus → entries published and marked delivered; not ready → nothing published and no retry spent; a failing entry is retried, parked after 5 attempts and no longer blocks the others; deliveries earlier in a batch stay delivered when a later one fails. |
+| `Infrastructure/OutboxDeliveryPostgresTests` | Ready bus → entries published and marked delivered; not ready → nothing published and no retry spent; a failing entry is retried, parked after 5 attempts and no longer blocks the others; deliveries earlier in a batch stay delivered when a later one fails; each entry's correlation id is restored while it is published. |
+| `Infrastructure/SagaPostgresTests` | The saga row lock (`SELECT … FOR UPDATE`): twelve concurrent actors lose no update (and a control test shows that **without** the lock updates are lost); a payment result racing the timeout service, and a customer cancel racing the payment result, never leave a charged order both committed and released. Checked to fail when the lock is removed. |
 | `Infrastructure/ErrorQueueClientTests` | Counting and moving messages between real queues over AMQP (body, headers and message id preserved), missing source / destination, broker unreachable. |
 
 Start throw-away servers and point the tests at them. They were verified against PostgreSQL 16 and RabbitMQ 3.12, with the RabbitMQ management plugin deliberately **not** enabled — the application does not need it:
@@ -751,12 +765,59 @@ docker run -d --name shopeasy-test-mq -e RABBITMQ_DEFAULT_USER=test -e RABBITMQ_
 
 export SHOPEASY_TEST_POSTGRES="Host=localhost;Port=55432;Username=postgres;Password=test"
 export SHOPEASY_TEST_RABBITMQ="amqp://test:test@localhost:55672"
-dotnet test src/Tests/ShopEasy.UnitTests          # now 142 run, 0 skipped
+dotnet test src/Tests/ShopEasy.UnitTests          # now 204 run, 0 skipped
 
 docker rm -f shopeasy-test-pg shopeasy-test-mq
 ```
 
-`SHOPEASY_TEST_POSTGRES` is a server connection string **without** a database name (the role needs `CREATEDB`). Not covered yet by automated tests: the saga row locking (`ISagaLocking`) — it needs the same kind of PostgreSQL test and is planned with the CI work (roadmap step 7).
+`SHOPEASY_TEST_POSTGRES` is a server connection string **without** a database name (the role needs `CREATEDB`). 
+
+## CI/CD
+
+Everything below is in `.github/` and runs on GitHub Actions. Nothing needs to be installed or configured by hand for the **CI** part; the **CD** part publishes images with the repository's built-in token.
+
+### CI — `.github/workflows/ci.yml`
+
+Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new push to the same branch cancels the run still in progress.
+
+| Job | What it checks |
+|---|---|
+| **Build and test** | `dotnet restore/build` (Release) and all 204 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 28 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). Test results are uploaded as an artifact; the counters appear in the job summary. |
+| **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example) and `kubeconform -strict` over `k8s/`. |
+| **Docker build (×6)** | Each service image builds from its Dockerfile (nothing is pushed from a pull request). |
+| **CI passed** | One aggregate status for the three groups above — the check to require in branch protection. |
+
+**Dependency audit.** `Directory.Build.props` makes NuGet check every restored package, direct *and* transitive, against the advisory database. Locally a finding is a warning; **in CI it fails the build** (`NU1901`–`NU1904`). To fix one, upgrade the package, or pin a patched version of the transitive dependency with a direct `PackageReference` (see the `System.Text.Json` pin in `ShopEasy.Shared.csproj`). **Dependabot** (`.github/dependabot.yml`) opens weekly update pull requests for NuGet packages, the Dockerfile base images and the GitHub Actions; each runs the full CI. Major bumps of the framework-bound packages are ignored on purpose (the services target .NET 8 LTS).
+
+To run the same checks locally:
+
+```bash
+CI=true dotnet build ShopEasy.sln          # includes the vulnerability audit
+dotnet test src/Tests/ShopEasy.UnitTests    # with the two SHOPEASY_TEST_* variables set (see Testing)
+docker compose --env-file .env.example config --quiet
+```
+
+### CD — publishing images
+
+After **CI passed** on `main` or on a version tag, the `publish-images` job builds the six service images again and pushes them to the GitHub Container Registry as `ghcr.io/<owner>/shopeasy-<service>` (`identity`, `gateway`, `product`, `inventory`, `payment`, `order`), tagged:
+
+| Tag | When |
+|---|---|
+| `sha-<short commit>` | every publish — immutable, what a deployment should reference |
+| `latest` | pushes to `main` |
+| `1.2.3` and `1.2` | when you push a tag `v1.2.3` |
+
+To cut a release: `git tag v1.2.3 && git push origin v1.2.3`. Pull requests never publish. The job authenticates with the workflow's own `GITHUB_TOKEN` (permission `packages: write` on that job only), so there is **no secret to create**. A pushed image is private to the repository at first; make the package public (or grant the cluster pull access) under *Packages → package settings*.
+
+Deploying to a cluster is intentionally **not** automated yet: it needs credentials for a specific environment. The Kubernetes manifests still reference local image names (`shopeasy-order:latest`, `imagePullPolicy: Never`); switching them to the published `sha-…` tags is part of roadmap step 8.
+
+### One-time repository settings (needs repository admin)
+
+These cannot be done from a workflow file; they are GitHub settings:
+
+1. **Settings → Actions → General**: Actions enabled; *Workflow permissions* may stay on the read-only default (the publish job asks for `packages: write` itself).
+2. **Settings → Branches → add rule for `main`**: *Require a pull request before merging* and *Require status checks to pass* with the check **`CI passed`**. This is what turns the CI above from advice into a gate.
+3. *(Optional)* **Settings → Code security**: enable *Dependabot alerts* and *secret scanning* (free on public repositories).
 
 ---
 
@@ -850,6 +911,10 @@ kubectl delete namespace shopeasy
 ShopEasy/
 ├── docker-compose.yml
 ├── .env.example                   # copy to .env (git-ignored) — all secrets live there
+├── Directory.Build.props          # NuGet vulnerability audit (errors in CI)
+├── .github/
+│   ├── workflows/ci.yml           # CI (build, tests, deployment-file checks, image builds) + CD (publish to GHCR)
+│   └── dependabot.yml
 ├── postgres-init.sql              # creates the 5 databases
 ├── prometheus.yml
 ├── grafana/provisioning/          # auto-provisioned dashboards
@@ -862,6 +927,8 @@ ShopEasy/
 │   ├── Gateway/ShopEasy.Gateway/
 │   ├── Shared/ShopEasy.Shared/    # contracts, middleware, cache, protos
 │   │   ├── Contracts/             # events & commands
+│   │   ├── Logging/               # one Serilog setup for every service (names, Seq, correlation id)
+│   │   ├── Messaging/             # CorrelationContext + MassTransit correlation filters
 │   │   ├── Protos/inventory.proto
 │   │   ├── Services/CacheService.cs
 │   │   └── Middleware/CorrelationIdMiddleware.cs
@@ -929,6 +996,14 @@ ShopEasy/
 
 **Payment or Inventory processed a command but the next step never happened** — the result event is stored in the service's `OutboxMessage` table until it is delivered. `SELECT count(*) FROM "OutboxMessage";` in `shopeasy_payments` / `shopeasy_inventory` should be 0; rows that stay mean RabbitMQ was unreachable at that moment. They are delivered when the broker is back and the command is redelivered — the stock/payment change itself is not repeated. If the command ended up in an `_error` queue instead, requeue it from the Dead Letter Monitor page; the saga timeout service also re-sends commands that never got an answer.
 
+**CI fails with `NU1903` (or `NU1902`, `NU1904`, `NU1901`)** — a package has a published security advisory. Run `dotnet list ShopEasy.sln package --vulnerable --include-transitive` to see which, then upgrade it or pin a patched version (see CI/CD → Dependency audit). It is only a warning on your machine; CI makes it an error on purpose.
+
+**CI fails in "Fail if any test was skipped"** — the PostgreSQL / RabbitMQ tests did not run, so their service containers are not reachable. Look at the *Initialize containers* step of the job; this guard exists so that never passes silently.
+
+**Log lines show `[-]` instead of an id** — the line was written outside a request or message (start-up, a timer). Search by `OrderId` instead, or find the line's neighbours with the same `Service`.
+
+**No logs in Seq on Kubernetes** — expected: the manifests set `Seq__ServerUrl` empty because Seq is part of the Compose stack only. Use `kubectl logs`, or set `Seq__ServerUrl` in the ConfigMap to your own Seq.
+
 **Redis down crashes EF migrations** — the Redis connection string uses `abortConnect=false` and the multiplexer is registered so startup doesn't depend on Redis being up.
 
 ---
@@ -945,20 +1020,23 @@ This project is being hardened step by step. Status:
 | 4 | Inventory correctness: row locking on reserve/commit/release/adjust, idempotent commit and release, saga waits for the commit result (refunds if the commit is impossible) | Done |
 | 5 | Order cancellation through the saga (release stock, refund a late payment), plus row locking on every saga transition | Done |
 | 6 | Replace RabbitMQ management-API polling with a bus-ready check and AMQP dead-letter tooling; MassTransit transactional inbox/outbox for Payment/Inventory events | Done |
-| 7 | Observability fixes (per-service log names, correlation across messages, MassTransit/EF tracing), CI (GitHub Actions, running the PostgreSQL/RabbitMQ infrastructure tests against service containers) with saga row-locking tests, re-enable the commented-out saga tests | Planned |
+| 7 | Observability (per-service log names, configurable Seq, correlation id across HTTP, outbox, saga and RabbitMQ, MassTransit + Npgsql traces), CI/CD on GitHub Actions (build, all tests incl. PostgreSQL/RabbitMQ, deployment-file validation, image builds, publish to GHCR, Dependabot), vulnerable dependencies patched and gated, saga row-locking tests on PostgreSQL, saga tests re-enabled | Done |
 | 8 | Dockerfile (non-root, slim image) and Kubernetes hardening (pinned image tags, shared Identity key storage, network policies) | Planned |
 
 **Known limitations today** (documented so nobody is surprised):
 
 - Orders cannot be cancelled once the payment is taken (`Completing` / `Completed`): there is no return, restock or partial-refund flow yet.
 - If the saga orchestrator itself fails three times on a saga it marks the saga `Failed` but does not update the order, which stays `Pending` until the customer cancels it (cancelling a `Failed` saga fixes the order).
-- The saga row locking (`ISagaLocking`) is not covered by automated tests yet; the unit tests use a stand-in. (The Inventory row locking is, against a real PostgreSQL — see *Testing*.)
 - The Order service's saga handlers still publish their commands *after* committing (they do not use the MassTransit outbox). A crash in that gap is recovered by the saga timeout service, which re-sends the command; every consumer is idempotent.
 - The Inventory consumers invalidate the Redis stock cache while MassTransit's transaction is still open (the commit follows immediately after the consumer returns). In that few-millisecond window a reader can re-cache the old stock level for up to its 30-second TTL. The cache is advisory — the saga's reservation is the authoritative check.
 - A message published to an exchange that has no queue bound yet is dropped by the broker, so a command sent before its consuming service has started for the first time is lost until the saga timeout re-sends it. (Docker Compose and Kubernetes start order makes this rare.)
 - The MassTransit inbox only remembers a message for its 30-minute duplicate-detection window; beyond that, duplicates are caught by the business-level checks (pattern 7).
 - Inventory endpoints process one message at a time per instance (`ConcurrentMessageLimit = 1`). Correctness no longer depends on it (row locks do), so it can be raised for throughput.
 - `InventoryDbContext` has no unique database constraint on the ledger; idempotency relies on the row locks.
+- The CI only becomes a *gate* once branch protection requires the `CI passed` check (a one-time repository setting, see CI/CD). Until then it reports but does not block.
+- The integration tests in `src/Tests/ShopEasy.IntegrationTests` call a running stack and are not run by CI yet; the unit-test project (with real PostgreSQL and RabbitMQ) is.
+- Images are published to GHCR but nothing deploys them: the Kubernetes manifests still use local image names (roadmap step 8). No container image vulnerability scan (Trivy) or code scanning (CodeQL) runs yet.
+- A customer cancel (`DELETE /api/orders/{id}`) is logged and published under the *cancel request's* correlation id, not the id of the request that placed the order; `OrderId` links the two.
 - Migrations run at service start-up; with several replicas the race is only handled for the Order service.
 - Swagger UIs and Prometheus metrics ports are unauthenticated.
 

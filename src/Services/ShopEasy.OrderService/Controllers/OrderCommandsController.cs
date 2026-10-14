@@ -8,6 +8,7 @@ using ShopEasy.OrderService.Metrics;
 using ShopEasy.OrderService.ReadModels;
 using ShopEasy.OrderService.Services;
 using ShopEasy.Shared.Contracts;
+using ShopEasy.Shared.Messaging;
 
 namespace ShopEasy.OrderService.Controllers;
 
@@ -190,7 +191,9 @@ public class OrderCommandsController(
             Id = Guid.NewGuid(),
             EventType = nameof(OrderConfirmedEvent),
             Payload = System.Text.Json.JsonSerializer.Serialize(eventData),
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+            // lets the saga's messages, in every service, be found by this request's id
+            CorrelationId = CorrelationContext.Current
         };
 
         _db.Orders.Add(order);

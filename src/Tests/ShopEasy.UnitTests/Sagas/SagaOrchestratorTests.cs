@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using ShopEasy.OrderService.Data;
+using ShopEasy.OrderService.ReadModels;
 using ShopEasy.OrderService.Sagas;
 using ShopEasy.Shared.Contracts;
 using System.Text.Json;
@@ -154,100 +155,110 @@ public class SagaOrchestratorTests : IDisposable
 
     // ── PaymentSucceededConsumer Tests ────────────────────────────────────────
 
-    //[Fact]
-    //public async Task PaymentSucceeded_WhenSagaInPaymentProcessing_MovesToCompleting()
-    //{
-    //    // Arrange
-    //    var orderId = Guid.NewGuid();
-    //    var saga = CreateSaga(orderId, SagaStatus.ProcessingPayment);
-    //    _db.SagaStates.Add(saga);
-    //    await _db.SaveChangesAsync();
+    private OrderReadModelUpdater ReadModel() =>
+        new(_db, NullLogger<OrderReadModelUpdater>.Instance);
 
-    //    var context = CreateConsumeContext(new PaymentSucceededEvent
-    //    {
-    //        OrderId = orderId,
-    //        PaymentId = Guid.NewGuid(),
-    //        Amount = 99.99m
-    //    });
-    //    var consumer = new PaymentSucceededConsumer(
-    //        _db,
-    //        _publishEndpoint,
-    //        NullLogger<PaymentSucceededConsumer>.Instance);
+    [Fact]
+    public async Task PaymentSucceeded_WhenSagaInPaymentProcessing_MovesToCompleting()
+    {
+        // Arrange
+        var orderId = Guid.NewGuid();
+        var saga = CreateSaga(orderId, SagaStatus.ProcessingPayment);
+        _db.SagaStates.Add(saga);
+        await _db.SaveChangesAsync();
 
-    //    // Act
-    //    await consumer.Consume(context);
+        var context = CreateConsumeContext(new PaymentSucceededEvent
+        {
+            OrderId = orderId,
+            PaymentId = Guid.NewGuid(),
+            Amount = 99.99m
+        });
+        var consumer = new PaymentSucceededConsumer(
+            _db,
+            new InMemorySagaLocking(),
+            _publishEndpoint,
+            ReadModel(),
+            NullLogger<PaymentSucceededConsumer>.Instance);
 
-    //    // Assert
-    //    var updated = await _db.SagaStates.FindAsync(saga.Id);
-    //    updated!.Status.Should().Be(SagaStatus.Completing);
+        // Act
+        await consumer.Consume(context);
 
-    //    // Verify CommitInventoryCommand was published
-    //    await _publishEndpoint.Received(1).Publish(
-    //        Arg.Is<CommitInventoryCommand>(c => c.OrderId == orderId),
-    //        Arg.Any<CancellationToken>());
-    //}
+        // Assert — Completing, not Completed: the order completes only after Inventory
+        // confirms the stock commit (InventoryCommittedEvent)
+        var updated = await _db.SagaStates.FindAsync(saga.Id);
+        updated!.Status.Should().Be(SagaStatus.Completing);
+
+        // Verify CommitInventoryCommand was published
+        await _publishEndpoint.Received(1).Publish(
+            Arg.Is<CommitInventoryCommand>(c => c.OrderId == orderId),
+            Arg.Any<CancellationToken>());
+    }
 
     // ── PaymentFailedConsumer Tests ───────────────────────────────────────────
 
-    //[Fact]
-    //public async Task PaymentFailed_WhenSagaInPaymentProcessing_MovesToReleasingInventory()
-    //{
-    //    // Arrange
-    //    var orderId = Guid.NewGuid();
-    //    var saga = CreateSaga(orderId, SagaStatus.ProcessingPayment);
-    //    _db.SagaStates.Add(saga);
-    //    await _db.SaveChangesAsync();
+    [Fact]
+    public async Task PaymentFailed_WhenSagaInPaymentProcessing_MovesToReleasingInventory()
+    {
+        // Arrange
+        var orderId = Guid.NewGuid();
+        var saga = CreateSaga(orderId, SagaStatus.ProcessingPayment);
+        _db.SagaStates.Add(saga);
+        await _db.SaveChangesAsync();
 
-    //    var context = CreateConsumeContext(new PaymentFailedEvent
-    //    {
-    //        OrderId = orderId,
-    //        Reason = "Insufficient funds"
-    //    });
-    //    var consumer = new PaymentFailedConsumer(
-    //        _db,
-    //        _publishEndpoint,
-    //        NullLogger<PaymentFailedConsumer>.Instance);
+        var context = CreateConsumeContext(new PaymentFailedEvent
+        {
+            OrderId = orderId,
+            Reason = "Insufficient funds"
+        });
+        var consumer = new PaymentFailedConsumer(
+            _db,
+            new InMemorySagaLocking(),
+            _publishEndpoint,
+            ReadModel(),
+            NullLogger<PaymentFailedConsumer>.Instance);
 
-    //    // Act
-    //    await consumer.Consume(context);
+        // Act
+        await consumer.Consume(context);
 
-    //    // Assert
-    //    var updated = await _db.SagaStates.FindAsync(saga.Id);
-    //    updated!.Status.Should().Be(SagaStatus.ReleasingInventory);
-    //    updated.FailureReason.Should().Be("Insufficient funds");
+        // Assert
+        var updated = await _db.SagaStates.FindAsync(saga.Id);
+        updated!.Status.Should().Be(SagaStatus.ReleasingInventory);
+        updated.FailureReason.Should().Be("Insufficient funds");
 
-    //    // Verify ReleaseInventoryCommand was published (compensating action)
-    //    await _publishEndpoint.Received(1).Publish(
-    //        Arg.Is<ReleaseInventoryCommand>(c => c.OrderId == orderId),
-    //        Arg.Any<CancellationToken>());
-    //}
+        // Verify ReleaseInventoryCommand was published (compensating action)
+        await _publishEndpoint.Received(1).Publish(
+            Arg.Is<ReleaseInventoryCommand>(c => c.OrderId == orderId),
+            Arg.Any<CancellationToken>());
+    }
 
-    //[Fact]
-    //public async Task PaymentFailed_SagaFailureReasonIsRecorded()
-    //{
-    //    // Arrange
-    //    var orderId = Guid.NewGuid();
-    //    var failureReason = "Payment declined by issuing bank";
-    //    var saga = CreateSaga(orderId, SagaStatus.ProcessingPayment);
-    //    _db.SagaStates.Add(saga);
-    //    await _db.SaveChangesAsync();
+    [Fact]
+    public async Task PaymentFailed_SagaFailureReasonIsRecorded()
+    {
+        // Arrange
+        var orderId = Guid.NewGuid();
+        var failureReason = "Payment declined by issuing bank";
+        var saga = CreateSaga(orderId, SagaStatus.ProcessingPayment);
+        _db.SagaStates.Add(saga);
+        await _db.SaveChangesAsync();
 
-    //    var consumer = new PaymentFailedConsumer(
-    //        _db,
-    //        _publishEndpoint,
-    //        NullLogger<PaymentFailedConsumer>.Instance);
+        var consumer = new PaymentFailedConsumer(
+            _db,
+            new InMemorySagaLocking(),
+            _publishEndpoint,
+            ReadModel(),
+            NullLogger<PaymentFailedConsumer>.Instance);
 
-    //    // Act
-    //    await consumer.Consume(CreateConsumeContext(new PaymentFailedEvent
-    //    {
-    //        OrderId = orderId,
-    //        Reason = failureReason
-    //    }));
+        // Act
+        await consumer.Consume(CreateConsumeContext(new PaymentFailedEvent
+        {
+            OrderId = orderId,
+            Reason = failureReason
+        }));
 
-    //    // Assert
-    //    var updated = await _db.SagaStates.FindAsync(saga.Id);
-    //    updated!.FailureReason.Should().Be(failureReason);
-    //}
+        // Assert
+        var updated = await _db.SagaStates.FindAsync(saga.Id);
+        updated!.FailureReason.Should().Be(failureReason);
+    }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

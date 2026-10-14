@@ -2,6 +2,7 @@
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.OrderService.Data;
 using ShopEasy.Shared.Contracts;
+using ShopEasy.Shared.Messaging;
 using System.Text.Json;
 
 namespace ShopEasy.OrderService.Sagas;
@@ -41,6 +42,8 @@ public class OrderConfirmedSagaStarter(
             UserEmail = evt.UserEmail,
             TotalAmount = evt.TotalAmount,
             ItemsJson = JsonSerializer.Serialize(evt.Items),
+            // restored from the message header by the consume filter
+            CorrelationId = CorrelationContext.Current,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
