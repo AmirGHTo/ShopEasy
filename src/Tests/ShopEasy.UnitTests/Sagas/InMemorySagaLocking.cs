@@ -6,7 +6,8 @@ namespace ShopEasy.UnitTests.Sagas;
 
 // The real PostgresSagaLocking issues SELECT ... FOR UPDATE, which the InMemory provider
 // cannot run. This stand-in loads the same row without locking, so the saga handlers'
-// business logic can be unit tested. The locking itself needs a real PostgreSQL.
+// business logic can be unit tested. The locking itself is tested against a real PostgreSQL
+// in Infrastructure/SagaPostgresTests.
 public sealed class InMemorySagaLocking : ISagaLocking
 {
     public Task<OrderSagaState?> LockByOrderIdAsync(

@@ -11,9 +11,8 @@ namespace ShopEasy.UnitTests.Inventory;
 
 // The real PostgresInventoryLocking issues SELECT ... FOR UPDATE, which the InMemory provider
 // cannot run. This stand-in loads the same rows without locking, so the consumers' business
-// logic (idempotency, state checks, quantity maths) can be unit tested. The locking itself
-// needs a real PostgreSQL (Testcontainers) and is covered by the manual concurrency check
-// described in the README.
+// logic (idempotency, state checks, quantity maths) can be unit tested. The locking itself is
+// tested against a real PostgreSQL in Infrastructure/InventoryPostgresTests.
 public sealed class InMemoryInventoryLocking : IInventoryLocking
 {
     public Task<List<InventoryItem>> LockItemsAsync(
