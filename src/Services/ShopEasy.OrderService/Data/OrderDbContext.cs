@@ -1,4 +1,3 @@
-using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.OrderService.ReadModels;
 
@@ -122,13 +121,5 @@ public class OrderDbContext : DbContext
             e.HasIndex(s => s.Status);
             e.Property(s => s.TotalAmount).HasColumnType("decimal(18,2)");
         });
-
-        // ── MassTransit Outbox tables ────────────────────────────────────────
-        // These two tables are managed entirely by MassTransit.
-        // OutboxMessage: stores pending events waiting to be sent to RabbitMQ
-        // OutboxState:   tracks the delivery state per consumer/saga
-        modelBuilder.AddInboxStateEntity();
-        modelBuilder.AddOutboxMessageEntity();
-        modelBuilder.AddOutboxStateEntity();
     }
 }
