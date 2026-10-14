@@ -41,9 +41,16 @@ updates:
       - /src/Services/ShopEasy.OrderService
     schedule:
       interval: weekly
+    groups:
+      # one pull request per week for all six services, not twelve
+      dotnet-images:
+        patterns: ["dotnet/*"]
     ignore:
-      # keep the .NET 8 SDK / ASP.NET runtime images
-      - dependency-name: "mcr.microsoft.com/dotnet/*"
+      # Keep the .NET 8 SDK / ASP.NET runtime images. Dependabot names these images
+      # "dotnet/aspnet" and "dotnet/sdk" — WITHOUT the "mcr.microsoft.com/" registry prefix —
+      # so a pattern with the prefix matches nothing (the first run proposed 8.0 -> 10.0 for
+      # every service). Moving to a newer .NET is a project decision, not an automatic bump.
+      - dependency-name: "dotnet/*"
         update-types: ["version-update:semver-major"]
 
   # The actions used by the workflows above
@@ -51,3 +58,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      # one pull request for all action updates instead of one per action
+      github-actions:
+        patterns: ["*"]
