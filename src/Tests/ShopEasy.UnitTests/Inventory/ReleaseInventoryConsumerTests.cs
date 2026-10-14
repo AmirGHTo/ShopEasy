@@ -82,6 +82,30 @@ public class ReleaseInventoryConsumerTests : IDisposable
     }
 
     [Fact]
+    public async Task WhenAReservedProductHasNoInventoryRecord_StillReleasesTheRest_AndRecordsTheRelease()
+    {
+        var orderId = Guid.NewGuid();
+        var missing = Guid.Parse("00000000-0000-0000-0000-0000000000ff");
+        var item = _env.AddItem(ProductA, quantity: 10, reserved: 3);
+        SeedReservation(orderId, ProductA, 3);
+        SeedReservation(orderId, missing, 2);          // no InventoryItem exists for this product
+        var consumer = CreateConsumer();
+
+        var first = await Run(consumer, orderId);
+        var second = await Run(consumer, orderId);
+
+        // the existing product is freed, the anomaly does not block the cancellation ...
+        item.ReservedQty.Should().Be(0);
+        await first.Received(1).Publish(
+            Arg.Is<InventoryReleasedEvent>(e => e.OrderId == orderId), Arg.Any<CancellationToken>());
+        // ... and the release is recorded for both products, so a repeat is a no-op duplicate
+        _env.LedgerCount(orderId, StockReasons.Released(orderId)).Should().Be(2);
+        item.ReservedQty.Should().Be(0);
+        await second.Received(1).Publish(
+            Arg.Is<InventoryReleasedEvent>(e => e.OrderId == orderId), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task WithoutAReservation_StillConfirmsSoTheSagaCanFinish()
     {
         var orderId = Guid.NewGuid();
