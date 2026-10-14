@@ -11,7 +11,7 @@
 		<!-- Patched versions of transitive packages with known vulnerabilities (pulled in by the test tooling). -->
 		<PackageReference Include="System.Net.Http" Version="4.3.4" />
 		<PackageReference Include="System.Text.RegularExpressions" Version="4.3.1" />
-		<PackageReference Include="System.Text.Json" Version="8.0.5" />
+		<PackageReference Include="System.Text.Json" Version="8.0.6" />
 		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
 		<PackageReference Include="xunit" Version="2.6.1" />
 		<PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
