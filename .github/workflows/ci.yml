@@ -118,6 +118,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The image build stays green with a wrong .NET version, but a net8.0 app cannot start on a
+      # .NET 10 runtime image. This turns "Dependabot bumped the base image" into a red check.
+      - name: Dockerfile base images match the target framework
+        run: bash .github/scripts/check-dockerfile-frameworks.sh
+
       # .env.example documents every required variable; if the Compose file starts
       # needing a new one that is missing from the example, this fails.
       - name: docker compose config
