@@ -6,14 +6,14 @@
   </PropertyGroup>
   <ItemGroup>
 	  <PackageReference Include="Google.Protobuf" Version="3.36.2" />
-	  <PackageReference Include="Grpc.AspNetCore" Version="2.80.0" />
+	  <PackageReference Include="Grpc.AspNetCore" Version="2.84.0" />
 	  <PackageReference Include="Grpc.Net.Client" Version="2.84.0" />
-	  <PackageReference Include="Grpc.Tools" Version="2.80.0">
+	  <PackageReference Include="Grpc.Tools" Version="2.84.0">
 	    <PrivateAssets>all</PrivateAssets>
 	    <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
 	  </PackageReference>
 	  <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.32" />
-	  <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.8" />
+	  <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.32" />
 	  <PackageReference Include="MassTransit" Version="8.2.5" />
 	  <PackageReference Include="MassTransit.RabbitMQ" Version="8.2.5" />
 	  <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="8.0.32" />
@@ -28,7 +28,7 @@
 	  <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.19.0" />
 	  <PackageReference Include="Swashbuckle.AspNetCore" Version="6.7.3" />
 	  <PackageReference Include="OpenTelemetry.Exporter.Console" Version="1.19.1" />
-	  <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="8.0.8" />
+	  <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="8.0.32" />
 	  <PackageReference Include="AspNetCore.HealthChecks.Rabbitmq" Version="8.0.2" />
 	  <PackageReference Include="AspNetCore.HealthChecks.Uris" Version="8.0.1" />
 	  <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
