@@ -7,18 +7,14 @@ using OpenTelemetry.Trace;
 using Prometheus;
 using Serilog;
 using Serilog.Events;
+using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Middleware;
 using System.Net.Http.Headers;
 using System.Threading.RateLimiting;
 using Yarp.ReverseProxy.Transforms;
 
 Log.Logger = new LoggerConfiguration()
-    .MinimumLevel.Information()
-    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-    .Enrich.FromLogContext()
-    .Enrich.WithProperty("Service", "ShopEasy.Gateway")
-    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [OrderService] {Message:lj}{NewLine}{Exception}")
-    .WriteTo.Seq("http://seq:5341")
+    .ConfigureShopEasy("ShopEasy.Gateway")
     .CreateBootstrapLogger();
 
 try
@@ -26,13 +22,7 @@ try
     var builder = WebApplication.CreateBuilder(args);
 
     builder.Host.UseSerilog((ctx, _, cfg) => cfg
-         .MinimumLevel.Information()
-         .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-         .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
-         .Enrich.FromLogContext()
-         .Enrich.WithProperty("Service", "ShopEasy.Gateway")
-         .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [OrderService] {Message:lj}{NewLine}{Exception}")
-         .WriteTo.Seq("http://seq:5341", restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Information));
+        .ConfigureShopEasy("ShopEasy.Gateway", ctx.Configuration, ctx.HostingEnvironment.EnvironmentName));
 
     var identityAuthority = builder.Configuration["IdentityServer:Authority"] ?? "http://identity:8080";
     // Browser-facing URL of the IdP (the Authority is the internal Docker/k8s address)

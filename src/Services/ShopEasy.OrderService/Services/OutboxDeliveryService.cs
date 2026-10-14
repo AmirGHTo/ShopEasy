@@ -3,6 +3,7 @@ using global::ShopEasy.Shared.Contracts;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.OrderService.Metrics;
+using ShopEasy.Shared.Messaging;
 
 namespace ShopEasy.OrderService.Services;
 
@@ -77,7 +78,10 @@ public class OutboxDeliveryService(
             {
                 try
                 {
-                    await PublishEntry(entry, publishEndpoint, ct);
+                    // The worker has no HTTP request: restore the id of the request that placed
+                    // the order, so the message (and the logs below) carry it
+                    using (CorrelationContext.Push(entry.CorrelationId))
+                        await PublishEntry(entry, publishEndpoint, ct);
                     entry.DeliveredAt = DateTime.UtcNow;
                     await db.SaveChangesAsync(ct);
                     OrderMetrics.RecordOutboxDelivered();

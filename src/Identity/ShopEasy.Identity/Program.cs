@@ -8,15 +8,11 @@ using Serilog;
 using Serilog.Events;
 using ShopEasy.Identity.Configuration;
 using ShopEasy.Identity.Data;
+using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Middleware;
 
 Log.Logger = new LoggerConfiguration()
-    .MinimumLevel.Information()
-    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-    .Enrich.FromLogContext()
-    .Enrich.WithProperty("Service", "ShopEasy.Identity")
-    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [OrderService] {Message:lj}{NewLine}{Exception}")
-    .WriteTo.Seq("http://seq:5341")
+    .ConfigureShopEasy("ShopEasy.Identity")
     .CreateBootstrapLogger();
 
 try
@@ -26,13 +22,7 @@ try
     var builder = WebApplication.CreateBuilder(args);
 
     builder.Host.UseSerilog((ctx, _, cfg) => cfg
-        .MinimumLevel.Information()
-        .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-        .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
-        .Enrich.FromLogContext()
-        .Enrich.WithProperty("Service", "ShopEasy.Identity")
-        .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [OrderService] {Message:lj}{NewLine}{Exception}")
-        .WriteTo.Seq("http://seq:5341", restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Information));
+        .ConfigureShopEasy("ShopEasy.Identity", ctx.Configuration, ctx.HostingEnvironment.EnvironmentName));
 
     builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseNpgsql(
@@ -110,6 +100,7 @@ try
     .WithTracing(tracing => tracing
         .SetResourceBuilder(ResourceBuilder.CreateDefault()
             .AddService("ShopEasy.Identity"))
+        .AddSource("Npgsql") // a span per database command
         .AddAspNetCoreInstrumentation(options =>
         {
             options.Filter = ctx =>

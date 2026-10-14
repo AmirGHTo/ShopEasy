@@ -26,6 +26,12 @@ public class OrderSagaState
     public string ItemsJson { get; set; } = default!; // serialized items
     public string? FailureReason { get; set; }
     public int RetryCount { get; set; }
+
+    // Correlation id of the request that placed the order, taken from the message that started
+    // the saga. The orchestrator and the timeout service run without a request and use it to
+    // keep the commands they publish in the same trace.
+    public string? CorrelationId { get; set; }
+
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 }
@@ -49,6 +55,11 @@ public class OutboxEntry
     public DateTime CreatedAt { get; set; }
     public DateTime? DeliveredAt { get; set; }
     public int RetryCount { get; set; }
+
+    // Correlation id of the HTTP request that placed the order. The event is published later by
+    // a background worker that has no request, so the id is stored with the entry and put back
+    // on the message (see CorrelationContext).
+    public string? CorrelationId { get; set; }
 }
 
 public class Order

@@ -2,6 +2,7 @@
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.OrderService.Data;
 using ShopEasy.Shared.Contracts;
+using ShopEasy.Shared.Messaging;
 using System.Text.Json;
 
 namespace ShopEasy.OrderService.Sagas;
@@ -83,13 +84,18 @@ public class SagaOrchestrator : BackgroundService
         }
     }
 
-    private async Task ProcessSaga(
+    // internal: a test runs one saga through it without the 3-second polling loop
+    internal async Task ProcessSaga(
         OrderSagaState saga,
         OrderDbContext db,
         IPublishEndpoint publishEndpoint,
         ISagaLocking sagaLocking,
         CancellationToken ct)
     {
+        // No HTTP request here: use the id the saga was started with, so every log line below
+        // and the commands published belong to the same trace as the request that placed the order
+        using var correlation = CorrelationContext.Push(saga.CorrelationId);
+
         _logger.LogInformation(
             "Processing saga {SagaId} for Order {OrderId} — Status: {Status}",
             saga.Id, saga.OrderId, saga.Status);

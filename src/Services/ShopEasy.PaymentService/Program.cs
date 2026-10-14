@@ -9,17 +9,14 @@ using Serilog;
 using Serilog.Events;
 using ShopEasy.PaymentService.Consumers;
 using ShopEasy.PaymentService.Data;
+using ShopEasy.Shared.Logging;
+using ShopEasy.Shared.Messaging;
 using ShopEasy.Shared.Middleware;
 using System.IdentityModel.Tokens.Jwt;
 
 
 Log.Logger = new LoggerConfiguration()
-    .MinimumLevel.Information()
-    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-    .Enrich.FromLogContext()
-    .Enrich.WithProperty("Service", "ShopEasy.PaymentService")
-    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [OrderService] {Message:lj}{NewLine}{Exception}")
-    .WriteTo.Seq("http://seq:5341")
+    .ConfigureShopEasy("ShopEasy.PaymentService")
     .CreateBootstrapLogger();
 
 try
@@ -27,14 +24,9 @@ try
     var builder = WebApplication.CreateBuilder(args);
 
     builder.Host.UseSerilog((ctx, _, cfg) => cfg
-        .MinimumLevel.Information()
-        .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-        .MinimumLevel.Override("Microsoft.AspNetCore.Authentication", LogEventLevel.Information)
-        .Enrich.FromLogContext()
-        .Enrich.WithProperty("Service", "ShopEasy.PaymentService")
-        .Enrich.WithProperty("Environment", ctx.HostingEnvironment.EnvironmentName)
-        .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [{Service}] [{CorrelationId}] {Message:lj}{NewLine}{Exception}")
-        .WriteTo.Seq("http://seq:5341"));
+        .ConfigureShopEasy("ShopEasy.PaymentService", ctx.Configuration, ctx.HostingEnvironment.EnvironmentName)
+        // unchanged from before: Payment also logs authentication decisions at Information
+        .MinimumLevel.Override("Microsoft.AspNetCore.Authentication", LogEventLevel.Information));
 
     builder.Services.AddDbContext<PaymentDbContext>(options =>
         options.UseNpgsql(
@@ -68,6 +60,12 @@ try
 
     builder.Services.AddAuthorization();
 
+    // Carry the correlation id across RabbitMQ: stamp it on outgoing messages, restore it (and
+    // the OrderId) for the logs of the consumer that receives them
+    builder.Services.AddScoped(typeof(CorrelationConsumeFilter<>));
+    builder.Services.AddScoped(typeof(CorrelationPublishFilter<>));
+    builder.Services.AddScoped(typeof(CorrelationSendFilter<>));
+
     builder.Services.AddMassTransit(x =>
     {
         x.AddConsumer<ProcessPaymentConsumer>();
@@ -96,6 +94,11 @@ try
                 h.Username(builder.Configuration["RabbitMQ:Username"] ?? throw new InvalidOperationException("RabbitMQ:Username is not configured."));
                 h.Password(builder.Configuration["RabbitMQ:Password"] ?? throw new InvalidOperationException("RabbitMQ:Password is not configured."));
             });
+
+            // First, so the correlation scope also covers the retries and the outbox below
+            cfg.UseConsumeFilter(typeof(CorrelationConsumeFilter<>), ctx);
+            cfg.UsePublishFilter(typeof(CorrelationPublishFilter<>), ctx);
+            cfg.UseSendFilter(typeof(CorrelationSendFilter<>), ctx);
 
             // ── Global retry policy ───────────────────────────────────────────────
             // Retry 3 times with exponential backoff before moving to error queue
@@ -143,6 +146,8 @@ try
         .WithTracing(tracing => tracing
             .SetResourceBuilder(ResourceBuilder.CreateDefault()
                 .AddService("ShopEasy.PaymentService"))
+            .AddSource("MassTransit") // a span per message published / consumed, linked across RabbitMQ
+            .AddSource("Npgsql") // a span per database command
             .AddAspNetCoreInstrumentation(options =>
             {
                 options.Filter = ctx =>

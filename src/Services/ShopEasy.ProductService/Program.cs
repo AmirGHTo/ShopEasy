@@ -6,18 +6,14 @@ using Prometheus;
 using Serilog;
 using Serilog.Events;
 using ShopEasy.ProductService.Data;
+using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Middleware;
 using ShopEasy.Shared.Services;
 using StackExchange.Redis;
 using System.IdentityModel.Tokens.Jwt;
 
 Log.Logger = new LoggerConfiguration()
-    .MinimumLevel.Information()
-    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-    .Enrich.FromLogContext()
-    .Enrich.WithProperty("Service", "ShopEasy.ProductService")
-    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [OrderService] {Message:lj}{NewLine}{Exception}")
-    .WriteTo.Seq("http://seq:5341")
+    .ConfigureShopEasy("ShopEasy.ProductService")
     .CreateBootstrapLogger();
 
 try
@@ -25,13 +21,7 @@ try
     var builder = WebApplication.CreateBuilder(args);
 
     builder.Host.UseSerilog((ctx, _, cfg) => cfg
-       .MinimumLevel.Information()
-       .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-       .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
-       .Enrich.FromLogContext()
-       .Enrich.WithProperty("Service", "ShopEasy.ProductService")
-       .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [OrderService] {Message:lj}{NewLine}{Exception}")
-       .WriteTo.Seq("http://seq:5341", restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Information));
+        .ConfigureShopEasy("ShopEasy.ProductService", ctx.Configuration, ctx.HostingEnvironment.EnvironmentName));
 
     builder.Services.AddDbContext<ProductDbContext>(options =>
         options.UseNpgsql(
@@ -77,6 +67,7 @@ try
     .WithTracing(tracing => tracing
         .SetResourceBuilder(ResourceBuilder.CreateDefault()
         .AddService("ShopEasy.ProductService"))
+        .AddSource("Npgsql") // a span per database command
         .AddAspNetCoreInstrumentation(options =>
         {
             options.Filter = ctx =>
