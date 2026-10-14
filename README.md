@@ -237,7 +237,15 @@ Messages that fail repeatedly land in `*_error` queues. A `DeadLetterMonitor` ba
 
 ### 15. Rate Limiting
 
-The gateway enforces tiered limits: anonymous 30/min per IP, authenticated 100/min per user (admin 500), order placement 10/min per user. Returns `429` with `Retry-After`.
+The gateway enforces tiered limits and returns `429` with `Retry-After` when one is exceeded:
+
+| Policy | Applies to | Limit |
+|---|---|---|
+| `anonymous` | public routes (products, login, health) | 30/min per client IP |
+| `authenticated` | everything behind login, **including reading and cancelling orders** | 100/min per user (admin 500) |
+| `orders` | **order placement only** (`POST /api/orders`) | 10/min per user |
+
+Users are identified by the `sub` claim and admins by the `role` claim of their login session, so the per-user and admin limits depend on the gateway copying those claims (it does; see [Troubleshooting](#troubleshooting) if `/account/me` shows no user id after an upgrade). The Order service has its own 10/min limit on placement as a second line of defence.
 
 ### 16. Redis Caching
 
@@ -354,7 +362,7 @@ cp .env.example .env     # Windows cmd: copy .env.example .env
 | `GRAFANA_ANONYMOUS_ENABLED` | no (`false`) | Allow read-only anonymous Grafana access. Keep `false` outside your laptop. |
 | `SEED_DEMO_USERS` | no (`false`) | `true` creates `alice@shopeasy.com` (admin) and `bob@shopeasy.com` (customer) at Identity startup. **Local development only.** |
 | `SEED_ADMIN_PASSWORD` / `SEED_CUSTOMER_PASSWORD` | only if seeding | Passwords for the demo users. Must satisfy the Identity policy: at least 8 characters with an uppercase letter, a lowercase letter and a digit. |
-| `EXPOSE_ACCESS_TOKEN` | no (`false`) | `true` enables `GET /account/token` on the gateway, which returns the raw JWT so you can paste it into Swagger's *Authorize* button. Off by default because the BFF pattern exists to keep tokens out of the browser. |
+| `EXPOSE_ACCESS_TOKEN` | no (`false`) | `true` enables `GET /account/token` on the gateway, which returns the raw JWT so you can paste it into Swagger's *Authorize* button (it is not needed for the browser console examples in this README). Off by default because the BFF pattern exists to keep tokens out of the browser. While it is off, `/account/token` answers `404` with a JSON message explaining how to turn it on. After changing it, recreate the gateway: `docker-compose up -d gateway`. |
 
 Generate strong random values, e.g. `openssl rand -base64 24`, or in PowerShell: `-join ((48..57)+(65..90)+(97..122) | Get-Random -Count 32 | % {[char]$_})`.
 
@@ -820,7 +828,11 @@ ShopEasy/
 
 **`/sagas`, `/outbox` or `/deadletters` redirect to a login page** — expected: they require a login (as an admin to see data). Seed demo users with `SEED_DEMO_USERS=true` in `.env`.
 
-**`/account/token` returns 404** — it is disabled unless `EXPOSE_ACCESS_TOKEN=true` in `.env` (local development only).
+**`/account/token` returns 404 with a message** — it is disabled unless `EXPOSE_ACCESS_TOKEN=true` in `.env` (local development only). Set it, then run `docker-compose up -d gateway` to recreate the gateway container with the new value, and open `/account/token` again while logged in.
+
+**`/account/me` shows `userId: null` or empty `roles`** — your login cookie was created by an older gateway build. Sign out at `/account/logout` and log in again so the session picks up the `sub` and `role` claims. (The services themselves always read the user and role from the access token, so API calls were not affected; the visible effects were this endpoint and the gateway's per-user / admin rate limits.)
+
+**`429 Too Many Requests` when listing or cancelling orders** — only placing an order (`POST /api/orders`) has the strict 10-per-minute limit; other order calls use the normal per-user limit of 100 per minute. If you still see `429`, you are exceeding that, or you are running an older gateway image: `docker-compose up -d --build gateway`.
 
 **`POST /api/orders` returns 503 "Product catalog is temporarily unavailable"** — the Order service could not get a price from the Product service (down, slow, or its circuit breaker is open). Check `docker-compose ps product` and its logs, then retry; nothing was saved.
 

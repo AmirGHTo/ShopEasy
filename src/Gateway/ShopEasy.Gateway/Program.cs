@@ -83,6 +83,17 @@ try
             options.TokenValidationParameters.NameClaimType = "name";
             options.TokenValidationParameters.RoleClaimType = "role";
 
+            // Keep the claim names exactly as the identity server sends them ("sub", "role", ...)
+            // instead of translating them to long Microsoft URIs. The rate limiter policies and
+            // /account/me look for "sub" and "role"; with the default mapping the user id was
+            // missing, so per-user limits silently fell back to the client IP.
+            options.MapInboundClaims = false;
+
+            // The roles only come back from the userinfo endpoint (they are not in the ID token)
+            // and are not copied into the login cookie by default. Without this the gateway
+            // never knew a user was an admin (IsInRole("admin") was always false).
+            options.ClaimActions.MapJsonKey("role", "role");
+
             options.CallbackPath = "/signin-oidc";
             options.SignedOutCallbackPath = "/signout-callback-oidc";
 
@@ -327,19 +338,28 @@ try
         });
     }).AllowAnonymous().RequireRateLimiting("anonymous");
     // ── Token (dev only) ──────────────────────────────────────────────────────
-    // The BFF keeps tokens server-side; exposing the raw JWT to the browser is
-    // only meant for testing Swagger locally, so it is opt-in via configuration.
-    if (builder.Configuration.GetValue<bool>("Features:ExposeAccessToken"))
+    // The BFF keeps tokens server-side; handing the raw JWT to the browser is only meant for
+    // testing Swagger / curl locally, so it is opt-in via configuration. The route always
+    // exists so that a disabled endpoint explains itself instead of showing a bare 404 page.
+    var exposeAccessToken = builder.Configuration.GetValue<bool>("Features:ExposeAccessToken");
+    app.MapGet("/account/token", async (HttpContext ctx) =>
     {
-        app.MapGet("/account/token", async (HttpContext ctx) =>
-        {
-            if (ctx.User.Identity?.IsAuthenticated != true)
-                return Results.Unauthorized();
+        if (!exposeAccessToken)
+            return Results.Json(new
+            {
+                error = "access_token_endpoint_disabled",
+                message = "This endpoint is turned off. For local development set " +
+                          "EXPOSE_ACCESS_TOKEN=true in your .env file (Features:ExposeAccessToken=true) " +
+                          "and restart the gateway: docker-compose up -d gateway. " +
+                          "Never enable it on anything reachable from the internet."
+            }, statusCode: StatusCodes.Status404NotFound);
 
-            var token = await ctx.GetTokenAsync("access_token");
-            return Results.Ok(new { access_token = token });
-        }).AllowAnonymous().RequireRateLimiting("anonymous");
-    }
+        if (ctx.User.Identity?.IsAuthenticated != true)
+            return Results.Unauthorized();
+
+        var token = await ctx.GetTokenAsync("access_token");
+        return Results.Ok(new { access_token = token });
+    }).AllowAnonymous().RequireRateLimiting("anonymous");
 
 
     // Public endpoints — anonymous rate limit
@@ -380,7 +400,7 @@ try
         <ol>
             <li>Login at <a href="/account/login">/account/login</a>
                 (demo users are only created when <code>SEED_DEMO_USERS=true</code> in <code>.env</code>)</li>
-            <li>Get your token at <a href="/account/token">/account/token</a></li>
+            <li>Get your token at <a href="/account/token">/account/token</a> (local development only: needs <code>EXPOSE_ACCESS_TOKEN=true</code> in <code>.env</code>)</li>
             <li>Copy the <code>access_token</code> value</li>
             <li>Open any Swagger UI below → click <strong>Authorize</strong> → paste the token</li>
         </ol>
