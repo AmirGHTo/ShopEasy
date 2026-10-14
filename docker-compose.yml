@@ -1,3 +1,15 @@
+# Applied to the six application containers (not to the third-party infrastructure images):
+# no root, no extra privileges, nothing writable except /tmp. The Kubernetes manifests apply the
+# same restrictions, so a problem shows up here and in CI before it shows up in a cluster.
+x-hardened: &hardened
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
 services:
 
   # ── PostgreSQL Database ─────────────────────────────────────────────────────
@@ -133,6 +145,7 @@ services:
 
   # ── Identity Provider ───────────────────────────────────────────────────────
   identity:
+    <<: *hardened
     build:
       context: .
       dockerfile: src/Identity/ShopEasy.Identity/Dockerfile
@@ -148,9 +161,9 @@ services:
       Seed__Enabled: "${SEED_DEMO_USERS:-false}"
       Seed__AdminPassword: ${SEED_ADMIN_PASSWORD:-}
       Seed__CustomerPassword: ${SEED_CUSTOMER_PASSWORD:-}
-    volumes:
-      # Persist IdentityServer signing keys so tokens survive container restarts
-      - identity-keys:/app/keys
+    # Signing keys, Data Protection keys and issued grants are stored in PostgreSQL (no volume).
+    # Optional: encrypt the key ring with a certificate you mount (see the README, "Identity key
+    # protection"): DataProtection__CertificatePath / DataProtection__CertificatePassword.
     depends_on:
       postgres:
         condition: service_healthy
@@ -165,6 +178,7 @@ services:
 
   # ── Product Service ─────────────────────────────────────────────────────────
   product:
+    <<: *hardened
     build:
       context: .
       dockerfile: src/Services/ShopEasy.ProductService/Dockerfile
@@ -194,6 +208,7 @@ services:
 
   # ── Inventory Service ───────────────────────────────────────────────────────
   inventory:
+    <<: *hardened
     build:
       context: .
       dockerfile: src/Services/ShopEasy.InventoryService/Dockerfile
@@ -231,6 +246,7 @@ services:
 
   # ── Payment Service ─────────────────────────────────────────────────────────
   payment:
+    <<: *hardened
     build:
       context: .
       dockerfile: src/Services/ShopEasy.PaymentService/Dockerfile
@@ -263,6 +279,7 @@ services:
 
   # ── Order Service ───────────────────────────────────────────────────────────
   order:
+    <<: *hardened
     build:
       context: .
       dockerfile: src/Services/ShopEasy.OrderService/Dockerfile
@@ -306,6 +323,7 @@ services:
 
   # ── API Gateway ─────────────────────────────────────────────────────────────
   gateway:
+    <<: *hardened
     build:
       context: .
       dockerfile: src/Gateway/ShopEasy.Gateway/Dockerfile
@@ -334,13 +352,18 @@ services:
         condition: service_healthy
       payment:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     networks:
       - shopeasy-net
 
 # ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   postgres-data:
-  identity-keys:
 
 # ── Network ───────────────────────────────────────────────────────────────────
 networks:
