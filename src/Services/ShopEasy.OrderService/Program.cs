@@ -134,9 +134,11 @@ try
     builder.Services.AddTransient<CorrelationIdHandler>();
     builder.Services.AddScoped<OrderReadModelUpdater>();
     builder.Services.AddScoped<OrderCancellationService>();
-    // Track when the bus connects so outbox knows consumers are ready
-    builder.Services.AddSingleton<BusReadySignal>();
-    builder.Services.AddSingleton<IBusObserver, BusObserver>();
+    // Outbox delivery waits for MassTransit's bus health check (bus started, broker connected,
+    // every receive endpoint declared) instead of polling the RabbitMQ management API.
+    builder.Services.AddSingleton<IBrokerReadiness, MassTransitBrokerReadiness>();
+    // Error queues are inspected and requeued over AMQP, again without the management API.
+    builder.Services.AddSingleton<IErrorQueueClient, RabbitMqErrorQueueClient>();
     builder.Services.AddHttpClient();
     builder.Services.AddHostedService<OutboxDeliveryService>();
     builder.Services.AddMassTransit(x =>
@@ -380,7 +382,7 @@ try
     // ── Prometheus Metrics ────────────────────────────────────────────────────
     builder.Services.AddMetricServer(options =>
     {
-        options.Port = 9091; // separate port from the API
+        options.Port = builder.Configuration.GetValue<ushort>("Metrics:Port", 9091); // separate port from the API
     });
 
     // ── gRPC Client for InventoryService ──────────────────────────────────────

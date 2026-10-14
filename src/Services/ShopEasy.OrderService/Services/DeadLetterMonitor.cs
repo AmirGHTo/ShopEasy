@@ -1,42 +1,24 @@
-﻿using System.Net.Http.Headers;
-using System.Text.Json;
-
 namespace ShopEasy.OrderService.Services;
 
-// Background service that monitors error queues across all services.
-// Logs alerts when messages land in error queues.
-// Exposes dead letter data via API for inspection and requeue.
+// Background service that monitors the error queues of all services.
+// Logs an alert when messages land in an error queue and exposes the queue state through the
+// admin API (/api/outbox/deadletters) for inspection and requeue.
+//
+// Talks AMQP through IErrorQueueClient — it does not need the RabbitMQ management plugin.
 public class DeadLetterMonitor : BackgroundService
 {
-    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IErrorQueueClient _errorQueues;
     private readonly IConfiguration _config;
     private readonly ILogger<DeadLetterMonitor> _logger;
     private readonly TimeSpan _interval = TimeSpan.FromSeconds(30);
-
-    // Queues to monitor — add new ones as you add consumers
-    private static readonly string[] MonitoredErrorQueues =
-    [
-        "inventory-reserve_error",
-        "inventory-commit_error",
-        "inventory-release_error",
-        "payment-process_error",
-        "order-saga-starter_error",
-        "payment-refund_error",
-        "order-saga-inventory-reserved_error",
-        "order-saga-inventory-failed_error",
-        "order-saga-inventory-committed_error",
-        "order-saga-inventory-commit-failed_error",
-        "order-saga-payment-succeeded_error",
-        "order-saga-payment-failed_error",
-        "order-saga-inventory-released_error"
-    ];
+    private bool _brokerWasUnavailable;
 
     public DeadLetterMonitor(
-        IHttpClientFactory httpClientFactory,
+        IErrorQueueClient errorQueues,
         IConfiguration config,
         ILogger<DeadLetterMonitor> logger)
     {
-        _httpClientFactory = httpClientFactory;
+        _errorQueues = errorQueues;
         _config = config;
         _logger = logger;
     }
@@ -53,92 +35,56 @@ public class DeadLetterMonitor : BackgroundService
         }
     }
 
-    private async Task CheckErrorQueues(CancellationToken ct)
+    // One check cycle. Internal so tests can run it without the 30-second timer.
+    internal async Task CheckErrorQueues(CancellationToken ct)
     {
-        var client = CreateManagementClient();
-
-        foreach (var queue in MonitoredErrorQueues)
+        IReadOnlyList<ErrorQueueStatus> queues;
+        try
         {
-            try
-            {
-                var count = await GetQueueMessageCount(client, queue, ct);
-                if (count > 0)
-                {
-                    _logger.LogError(
-                        "DEAD LETTER ALERT: Queue {Queue} has {Count} failed message(s). " +
-                        "Check http://localhost:15672/#/queues/%2F/{Queue} for details.",
-                        queue, count, queue);
-                }
-            }
-            catch
-            {
-                // Queue doesn't exist yet — that's fine, ignore
-            }
+            queues = await _errorQueues.GetStatusAsync(ErrorQueues.Monitored, ct);
+            _brokerWasUnavailable = false;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Broker down or restarting: say so once, not every 30 seconds
+            if (!_brokerWasUnavailable)
+                _logger.LogWarning(ex,
+                    "Dead letter check skipped: RabbitMQ is not reachable");
+            _brokerWasUnavailable = true;
+            return;
+        }
+
+        foreach (var queue in queues.Where(q => q.MessageCount > 0))
+        {
+            _logger.LogError(
+                "DEAD LETTER ALERT: Queue {Queue} has {Count} failed message(s). " +
+                "Inspect them in the RabbitMQ management UI and requeue with " +
+                "POST /api/outbox/deadletters/{Queue}/requeue once the cause is fixed.",
+                queue.Queue, queue.MessageCount, queue.Queue);
         }
     }
 
-    private async Task<int> GetQueueMessageCount(
-        HttpClient client, string queue, CancellationToken ct)
+    // Used by the admin API endpoint
+    public async Task<List<DeadLetterQueueInfo>> GetAllErrorQueues(CancellationToken ct = default)
     {
-        var host = _config["RabbitMQ:Host"] ?? "rabbitmq";
-        var res = await client.GetAsync(
-            $"http://{host}:15672/api/queues/%2F/{Uri.EscapeDataString(queue)}", ct);
+        var queues = await _errorQueues.GetStatusAsync(ErrorQueues.Monitored, ct);
 
-        if (!res.IsSuccessStatusCode) return 0;
+        // Optional link for humans, e.g. http://localhost:15672 — never used by the service itself
+        var managementUi = _config["RabbitMQ:ManagementUiUrl"]?.TrimEnd('/');
 
-        var json = await res.Content.ReadAsStringAsync(ct);
-        var doc = JsonDocument.Parse(json);
-        return doc.RootElement.GetProperty("messages").GetInt32();
-    }
-
-    private HttpClient CreateManagementClient()
-    {
-        var client = _httpClientFactory.CreateClient();
-        var user = _config["RabbitMQ:Username"] ?? throw new InvalidOperationException("RabbitMQ:Username is not configured.");
-        var pass = _config["RabbitMQ:Password"] ?? throw new InvalidOperationException("RabbitMQ:Password is not configured.");
-        var auth = Convert.ToBase64String(
-            System.Text.Encoding.ASCII.GetBytes($"{user}:{pass}"));
-        client.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Basic", auth);
-        return client;
-    }
-
-    // Public method for the API endpoint to call
-    public async Task<List<DeadLetterQueueInfo>> GetAllErrorQueues()
-    {
-        var client = CreateManagementClient();
-        var result = new List<DeadLetterQueueInfo>();
-
-        foreach (var queue in MonitoredErrorQueues)
+        return queues.Select(q => new DeadLetterQueueInfo
         {
-            try
-            {
-                var host = _config["RabbitMQ:Host"] ?? "rabbitmq";
-                var res = await client.GetAsync(
-                    $"http://{host}:15672/api/queues/%2F/{Uri.EscapeDataString(queue)}");
-
-                if (!res.IsSuccessStatusCode) continue;
-
-                var json = await res.Content.ReadAsStringAsync();
-                var doc = JsonDocument.Parse(json);
-                var root = doc.RootElement;
-
-                result.Add(new DeadLetterQueueInfo
-                {
-                    QueueName = queue,
-                    MessageCount = root.GetProperty("messages").GetInt32(),
-                    ConsumerCount = root.TryGetProperty("consumers", out var c)
-                        ? c.GetInt32() : 0,
-                    ManagementUrl = $"http://localhost:15672/#/queues/%2F/{queue}"
-                });
-            }
-            catch
-            {
-                // Queue doesn't exist — skip
-            }
-        }
-
-        return result;
+            QueueName = q.Queue,
+            MessageCount = q.MessageCount,
+            ConsumerCount = q.ConsumerCount,
+            ManagementUrl = managementUi is null
+                ? null
+                : $"{managementUi}/#/queues/%2F/{Uri.EscapeDataString(q.Queue)}"
+        }).ToList();
     }
 }
 
@@ -147,6 +93,6 @@ public class DeadLetterQueueInfo
     public string QueueName { get; set; } = default!;
     public int MessageCount { get; set; }
     public int ConsumerCount { get; set; }
-    public string ManagementUrl { get; set; } = default!;
+    public string? ManagementUrl { get; set; }
     public bool HasMessages => MessageCount > 0;
 }

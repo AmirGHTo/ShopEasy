@@ -1056,8 +1056,10 @@ async function load(){
         <td class="${q.messageCount>0?'count-err':'count-ok'}">${q.messageCount}</td>
         <td>${q.consumerCount}</td>
         <td>${q.messageCount>0
-          ? `<button class="btn btn-red" onclick="requeue('${q.queueName}')">↩ Requeue</button>
-             <a class="btn" href="${q.managementUrl}" target="_blank" style="margin-left:4px">View</a>`
+          ? `<button class="btn btn-red" onclick="requeue('${q.queueName}')">↩ Requeue</button>`
+            + (q.managementUrl
+                ? `<a class="btn" href="${q.managementUrl}" target="_blank" style="margin-left:4px">View</a>`
+                : '')
           : '<span style="color:#94a3b8;font-size:12px">—</span>'
         }</td>
       </tr>`).join('')}</tbody>

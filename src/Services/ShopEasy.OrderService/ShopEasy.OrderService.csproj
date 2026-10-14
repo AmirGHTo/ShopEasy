@@ -41,4 +41,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\Shared\ShopEasy.Shared\ShopEasy.Shared.csproj" />
   </ItemGroup>
+
+	<ItemGroup>
+		<!-- lets the tests run one delivery / monitoring cycle without the background timers -->
+		<InternalsVisibleTo Include="ShopEasy.UnitTests" />
+	</ItemGroup>
 </Project>
