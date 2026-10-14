@@ -10,6 +10,7 @@ using ShopEasy.OrderService.ReadModels;
 using ShopEasy.OrderService.Sagas;
 using ShopEasy.OrderService.Services;
 using ShopEasy.Shared.Contracts;
+using ShopEasy.Shared.Messaging;
 using Xunit;
 
 namespace ShopEasy.UnitTests.Sagas;
@@ -317,6 +318,61 @@ public class SagaStateTransitionTests : IDisposable
         _publish.ReceivedCalls().Should().BeEmpty();
     }
 
+    // ── Correlation: the background workers have no HTTP request ────────────
+
+    [Fact]
+    public async Task TheSaga_RemembersTheCorrelationIdOfTheRequestThatPlacedTheOrder()
+    {
+        var orderId = Guid.NewGuid();
+
+        // the consume filter restores the id from the message header before the starter runs
+        using (CorrelationContext.Push("req-77"))
+            await Starter().Consume(Ctx(OrderConfirmed(orderId, 10m)));
+
+        (await SagaOf(orderId)).CorrelationId.Should().Be("req-77");
+    }
+
+    [Fact]
+    public async Task TheOrchestrator_SendsTheReserveCommandInTheTraceOfTheOriginalRequest()
+    {
+        var orderId = await Seed(SagaStatus.Started, correlationId: "req-77");
+        string? seen = "not published";
+        _publish.Publish(Arg.Any<ReserveInventoryCommand>(), Arg.Any<CancellationToken>())
+            .Returns(_ => { seen = CorrelationContext.Current; return Task.CompletedTask; });
+        var orchestrator = new SagaOrchestrator(
+            Substitute.For<IServiceScopeFactory>(), NullLogger<SagaOrchestrator>.Instance);
+
+        await orchestrator.ProcessSaga(
+            await SagaOf(orderId), _db, _publish, _locking, CancellationToken.None);
+
+        seen.Should().Be("req-77");
+        CorrelationContext.Current.Should().BeNull("the scope ends with the saga");
+    }
+
+    [Fact]
+    public async Task TheTimeoutService_ReleasesStockInTheTraceOfTheOriginalRequest()
+    {
+        var orderId = await Seed(SagaStatus.ProcessingPayment, updatedAt: LongAgo, correlationId: "req-77");
+        string? seen = "not published";
+        _publish.Publish(Arg.Any<ReleaseInventoryCommand>(), Arg.Any<CancellationToken>())
+            .Returns(_ => { seen = CorrelationContext.Current; return Task.CompletedTask; });
+
+        await RunTimeoutCheck();
+
+        seen.Should().Be("req-77");
+        CorrelationContext.Current.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ASagaFromBeforeCorrelationIds_StillWorks()
+    {
+        var orderId = await Seed(SagaStatus.ProcessingPayment, updatedAt: LongAgo, correlationId: null);
+
+        await RunTimeoutCheck();
+
+        (await SagaOf(orderId)).Status.Should().Be(SagaStatus.ReleasingInventory);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private static OrderConfirmedEvent OrderConfirmed(Guid orderId, decimal total) => new()
@@ -346,7 +402,7 @@ public class SagaStateTransitionTests : IDisposable
 
     // Order + read model row + a saga in the given state
     private async Task<Guid> Seed(
-        SagaStatus status, DateTime? updatedAt = null, int retryCount = 0)
+        SagaStatus status, DateTime? updatedAt = null, int retryCount = 0, string? correlationId = null)
     {
         var orderId = Guid.NewGuid();
         await SeedOrder(orderId);
@@ -355,7 +411,7 @@ public class SagaStateTransitionTests : IDisposable
         {
             Id = Guid.NewGuid(), OrderId = orderId, Status = status,
             UserId = "user-1", UserEmail = "user@test.com", TotalAmount = 100m,
-            ItemsJson = "[]", RetryCount = retryCount,
+            ItemsJson = "[]", RetryCount = retryCount, CorrelationId = correlationId,
             CreatedAt = updatedAt ?? now, UpdatedAt = updatedAt ?? now
         });
         await _db.SaveChangesAsync();
