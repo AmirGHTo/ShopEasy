@@ -251,7 +251,9 @@ public class InventoryPostgresTests
 
         await harness.Bus.Publish(new ReleaseInventoryCommand { OrderId = orderId });
 
-        (await harness.Published.Any<Fault<ReleaseInventoryCommand>>()).Should().BeTrue();
+        // explicit timeout: the harness default is short and a loaded CI runner can exceed it
+        using var faultTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        (await harness.Published.Any<Fault<ReleaseInventoryCommand>>(faultTimeout.Token)).Should().BeTrue();
         (await WasDelivered<InventoryReleasedEvent>(
             harness, _ => true, TimeSpan.FromSeconds(2))).Should().BeFalse();
 

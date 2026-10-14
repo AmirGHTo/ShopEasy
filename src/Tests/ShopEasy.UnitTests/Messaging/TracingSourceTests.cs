@@ -55,7 +55,11 @@ public class TracingSourceTests
         await harness.Start();
 
         await harness.Bus.Publish(new Hello { Text = "hi" });
-        (await harness.Consumed.Any<Hello>()).Should().BeTrue();
+
+        // An explicit timeout: without one the harness gives up after a short default, which a
+        // busy CI runner (the whole suite runs in parallel) can exceed — that made this test flaky.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        (await harness.Consumed.Any<Hello>(timeout.Token)).Should().BeTrue();
 
         spans.Started.Should().NotBeEmpty("MassTransit traces sends and consumes");
         spans.Started.Select(a => a.Source.Name).Distinct().Should().Equal("MassTransit");
