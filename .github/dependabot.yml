@@ -1,0 +1,53 @@
+# Weekly pull requests for outdated dependencies. Each PR runs the full CI, so an update only
+# gets merged when the build, the tests and the vulnerability audit are green.
+version: 2
+
+updates:
+  # NuGet packages of every project in the solution
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      opentelemetry:
+        patterns: ["OpenTelemetry*"]
+      serilog:
+        patterns: ["Serilog*"]
+      masstransit:
+        patterns: ["MassTransit*"]
+      test-tooling:
+        patterns: ["xunit*", "FluentAssertions", "NSubstitute", "coverlet*", "Microsoft.NET.Test.Sdk"]
+    ignore:
+      # The services target .NET 8 (LTS). Staying on 8.x of the framework-bound packages is
+      # deliberate; moving to .NET 9/10 is a project decision, not an automatic bump.
+      - dependency-name: "Microsoft.*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "System.*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "Npgsql.EntityFrameworkCore.PostgreSQL"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "AspNetCore.HealthChecks.*"
+        update-types: ["version-update:semver-major"]
+
+  # Base images in the six service Dockerfiles
+  - package-ecosystem: docker
+    directories:
+      - /src/Identity/ShopEasy.Identity
+      - /src/Gateway/ShopEasy.Gateway
+      - /src/Services/ShopEasy.ProductService
+      - /src/Services/ShopEasy.InventoryService
+      - /src/Services/ShopEasy.PaymentService
+      - /src/Services/ShopEasy.OrderService
+    schedule:
+      interval: weekly
+    ignore:
+      # keep the .NET 8 SDK / ASP.NET runtime images
+      - dependency-name: "mcr.microsoft.com/dotnet/*"
+        update-types: ["version-update:semver-major"]
+
+  # The actions used by the workflows above
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
