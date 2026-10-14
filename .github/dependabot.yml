@@ -37,14 +37,16 @@ updates:
       - dependency-name: "AspNetCore.HealthChecks.*"
         update-types: ["version-update:semver-major"]
       # Major upgrades that need a decision and a code change, not a bump:
-      #  - MassTransit 9 is no longer Apache-2.0 (it is under the Massient license, see
-      #    https://massient.com/license) and has API changes. It must move all services
-      #    together, and it is a licensing question first.
+      #  - MassTransit stays on 8.2.x: 8.5+ pulls RabbitMQ.Client 7, which removes the synchronous
+      #    API the dead-letter tooling (ErrorQueueClient) is written against, so the Order service
+      #    stops compiling (tried in a Dependabot pull request). Moving needs that port first.
+      #    MassTransit 9 is also no longer Apache-2.0 (Massient license, see
+      #    https://massient.com/license). All services must move together either way.
       #  - Swashbuckle 10 moves from Microsoft.OpenApi 1.x to 2.x, a breaking API change that
       #    needs code changes in every service that serves Swagger.
       #  - Serilog.AspNetCore 10 is already in use; later majors follow the framework version.
       - dependency-name: "MassTransit*"
-        update-types: ["version-update:semver-major"]
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: "Swashbuckle.AspNetCore*"
         update-types: ["version-update:semver-major"]
       - dependency-name: "Serilog.AspNetCore"
