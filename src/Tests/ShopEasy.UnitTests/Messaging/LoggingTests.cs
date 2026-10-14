@@ -193,3 +193,76 @@ public class CorrelationContextTests
         a.Should().NotBe(b);
     }
 }
+
+// The HTTP leg of the chain: the gateway hands the request's id to the service behind it, and
+// the Order service hands it on to the services it calls.
+public class CorrelationHttpTests
+{
+    [Fact]
+    public void ThePropagatedIdIsTheCurrentOne_ReplacingWhatTheRequestAlreadyHad()
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "http://product/api/v1/products");
+        request.Headers.TryAddWithoutValidation(CorrelationContext.HeaderName, "stale-from-the-client");
+
+        using (CorrelationContext.Push("generated-by-the-gateway"))
+            CorrelationContext.Propagate(request);
+
+        request.Headers.GetValues(CorrelationContext.HeaderName)
+            .Should().Equal("generated-by-the-gateway");
+    }
+
+    [Fact]
+    public void WithoutACurrentId_TheRequestIsLeftAlone()
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "http://product/api/v1/products");
+        request.Headers.TryAddWithoutValidation(CorrelationContext.HeaderName, "from-the-caller");
+
+        CorrelationContext.Propagate(request);
+
+        request.Headers.GetValues(CorrelationContext.HeaderName).Should().Equal("from-the-caller");
+    }
+
+    private sealed class Capture : HttpMessageHandler
+    {
+        public HttpRequestMessage? Seen { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Seen = request;
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+        }
+    }
+
+    [Fact]
+    public async Task TheOrderServicesHttpClient_ForwardsAnIdItGeneratedItself()
+    {
+        // the caller sent no header, so the middleware generated an id: no header to copy,
+        // yet the call to the Product service must still carry it
+        var inner = new Capture();
+        var handler = new ShopEasy.OrderService.Services.CorrelationIdHandler(
+            new Microsoft.AspNetCore.Http.HttpContextAccessor { HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext() })
+        { InnerHandler = inner };
+
+        using var client = new HttpClient(handler);
+        using (CorrelationContext.Push("generated-here"))
+            await client.GetAsync("http://product/api/v1/products");
+
+        inner.Seen!.Headers.GetValues(CorrelationContext.HeaderName).Should().Equal("generated-here");
+    }
+
+    [Fact]
+    public async Task TheOrderServicesHttpClient_FallsBackToTheIncomingHeader()
+    {
+        var inner = new Capture();
+        var context = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+        context.Request.Headers[CorrelationContext.HeaderName] = "from-the-header";
+        var handler = new ShopEasy.OrderService.Services.CorrelationIdHandler(
+            new Microsoft.AspNetCore.Http.HttpContextAccessor { HttpContext = context })
+        { InnerHandler = inner };
+
+        using var client = new HttpClient(handler);
+        await client.GetAsync("http://product/api/v1/products");
+
+        inner.Seen!.Headers.GetValues(CorrelationContext.HeaderName).Should().Equal("from-the-header");
+    }
+}

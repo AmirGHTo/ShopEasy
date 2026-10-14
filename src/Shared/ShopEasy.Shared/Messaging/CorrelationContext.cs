@@ -31,6 +31,17 @@ public static class CorrelationContext
         return new Scope(previous, logScope);
     }
 
+    // Puts the current id on an outgoing HTTP request (replacing any value already there, so the
+    // gateway can hand on the id it generated when the client sent none). No current id: unchanged.
+    public static void Propagate(HttpRequestMessage request)
+    {
+        var current = Current;
+        if (string.IsNullOrEmpty(current)) return;
+
+        request.Headers.Remove(HeaderName);
+        request.Headers.TryAddWithoutValidation(HeaderName, current);
+    }
+
     // A new short id, same shape the HTTP middleware has always generated
     public static string NewId() => Guid.NewGuid().ToString("N")[..8];
 

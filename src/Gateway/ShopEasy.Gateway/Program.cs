@@ -8,6 +8,7 @@ using Prometheus;
 using Serilog;
 using Serilog.Events;
 using ShopEasy.Shared.Logging;
+using ShopEasy.Shared.Messaging;
 using ShopEasy.Shared.Middleware;
 using System.Net.Http.Headers;
 using System.Threading.RateLimiting;
@@ -259,6 +260,10 @@ try
                     ctx.ProxyRequest.Headers.Authorization =
                         new AuthenticationHeaderValue("Bearer", token);
                 }
+
+                // The id of this request — the client's, or the one the middleware generated —
+                // goes to the service behind the gateway, so its logs and messages carry it too
+                CorrelationContext.Propagate(ctx.ProxyRequest);
             });
         });
 
