@@ -38,7 +38,7 @@ public class ReserveInventoryConsumer(
         string? failureReason = null;
         var duplicate = false;
 
-        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await using var transaction = await db.Database.BeginOrJoinAsync(ct);
         try
         {
             var items = await locking.LockItemsAsync(db, lines.Select(l => l.ProductId).ToList(), ct);

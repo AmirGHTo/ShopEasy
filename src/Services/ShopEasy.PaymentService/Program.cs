@@ -73,6 +73,22 @@ try
         x.AddConsumer<ProcessPaymentConsumer>();
         x.AddConsumer<RefundPaymentConsumer>();
 
+        // ── Transactional inbox/outbox ────────────────────────────────────────
+        // Every consumer endpoint below runs inside ONE database transaction that holds the
+        // consumer's own changes, an inbox row (so a redelivered message is not processed
+        // twice) and the events the consumer publishes (stored in the OutboxMessage table
+        // instead of being sent straight away). After the commit MassTransit delivers them to
+        // RabbitMQ, so a payment is never recorded without its result event, and an event is
+        // never sent for a payment that was rolled back. If the broker is unreachable at that
+        // moment, the message stays unacknowledged and its redelivery completes the delivery.
+        x.AddEntityFrameworkOutbox<PaymentDbContext>(o =>
+        {
+            o.UsePostgres();
+            // Consumers lock and re-read rows; READ COMMITTED lets a waiting transaction see
+            // the committed result instead of failing with a serialization error.
+            o.IsolationLevel = System.Data.IsolationLevel.ReadCommitted;
+        });
+
         x.UsingRabbitMq((ctx, cfg) =>
         {
             cfg.Host(builder.Configuration["RabbitMQ:Host"] ?? "rabbitmq", "/", h =>
@@ -104,6 +120,7 @@ try
                     b.ExchangeType = "fanout";
                     b.Durable = true;
                 });
+                e.UseEntityFrameworkOutbox<PaymentDbContext>(ctx);
                 e.ConfigureConsumer<ProcessPaymentConsumer>(ctx);
             });
 
@@ -115,6 +132,7 @@ try
                     b.ExchangeType = "fanout";
                     b.Durable = true;
                 });
+                e.UseEntityFrameworkOutbox<PaymentDbContext>(ctx);
                 e.ConfigureConsumer<RefundPaymentConsumer>(ctx);
             });
         });
@@ -189,7 +207,7 @@ try
 
     builder.Services.AddMetricServer(options =>
     {
-        options.Port = 9091; 
+        options.Port = builder.Configuration.GetValue<ushort>("Metrics:Port", 9091);
     });
 
     var app = builder.Build();

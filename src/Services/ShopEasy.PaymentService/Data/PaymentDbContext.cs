@@ -32,9 +32,11 @@ public class PaymentDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // ── MassTransit Outbox tables ────────────────────────────────────────
-        // PaymentService publishes PaymentProcessedEvent after processing.
-        // The Outbox ensures this event is never lost even if RabbitMQ is down.
+        // ── MassTransit transactional inbox/outbox tables ────────────────────
+        // The consumer endpoints (Program.cs) store the PaymentSucceededEvent / PaymentFailedEvent
+        // they publish here, in the same transaction as the payment row, and record every
+        // consumed message so a redelivered one is not processed twice. The event is therefore
+        // never lost - nor sent for a payment that was rolled back - even if RabbitMQ is down.
         modelBuilder.AddInboxStateEntity();
         modelBuilder.AddOutboxMessageEntity();
         modelBuilder.AddOutboxStateEntity();

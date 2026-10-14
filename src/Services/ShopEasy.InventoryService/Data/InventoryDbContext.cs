@@ -1,3 +1,4 @@
+using MassTransit;
 using Microsoft.EntityFrameworkCore;
 
 namespace ShopEasy.InventoryService.Data;
@@ -39,6 +40,14 @@ public class InventoryDbContext(DbContextOptions<InventoryDbContext> options) : 
     public DbSet<ProcessedEvent> ProcessedEvents => Set<ProcessedEvent>();
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // ── MassTransit transactional inbox/outbox tables ─────────────────────
+        // Used by the consumer endpoints (see Program.cs): the events a consumer publishes are
+        // stored here in the same transaction as the stock changes, and the inbox rows stop a
+        // redelivered message from being processed twice.
+        modelBuilder.AddInboxStateEntity();
+        modelBuilder.AddOutboxMessageEntity();
+        modelBuilder.AddOutboxStateEntity();
+
         modelBuilder.Entity<InventoryItem>(e =>
         {
             e.HasKey(i => i.ProductId);
