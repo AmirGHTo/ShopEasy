@@ -18,6 +18,13 @@ updates:
         patterns: ["MassTransit*"]
       test-tooling:
         patterns: ["xunit*", "FluentAssertions", "NSubstitute", "coverlet*", "Microsoft.NET.Test.Sdk"]
+      # Everything else that is a minor or patch update: ONE pull request for all packages in
+      # all projects, instead of one per package and project (a re-scan once produced twenty).
+      # A package goes into the first group that matches it, so this catch-all stays last.
+      # Major versions are never grouped: each arrives as its own pull request to be judged.
+      minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     ignore:
       # The services target .NET 8 (LTS). Staying on 8.x of the framework-bound packages is
       # deliberate; moving to .NET 9/10 is a project decision, not an automatic bump.
