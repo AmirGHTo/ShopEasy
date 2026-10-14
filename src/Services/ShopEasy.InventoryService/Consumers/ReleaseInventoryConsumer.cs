@@ -72,10 +72,30 @@ public class ReleaseInventoryConsumer(
                                  .Where(r => !state.Released.Contains(r.Key)))
                     {
                         var item = items.FirstOrDefault(i => i.ProductId == productId);
-                        if (item is null) continue;
 
-                        item.ReservedQty = Math.Max(0, item.ReservedQty - qty);
-                        item.UpdatedAt = now;
+                        if (item is null)
+                        {
+                            // Should never happen: a reservation is only written for an existing
+                            // product and nothing deletes inventory records. The order must still be
+                            // cancelled, so do not fail the compensation — but do not hide it either.
+                            // There are no counts to correct for this product; the Released row below
+                            // still records that the order's reservation was dealt with, so a repeat
+                            // of this command is recognised as a duplicate.
+                            logger.LogError(
+                                "Inventory record for Product {ProductId} is missing while releasing " +
+                                "Order {OrderId} — nothing to release for it. DATA INCONSISTENCY, " +
+                                "investigate.", productId, orderId);
+                        }
+                        else
+                        {
+                            item.ReservedQty = Math.Max(0, item.ReservedQty - qty);
+                            item.UpdatedAt = now;
+                            affectedProductIds.Add(productId);
+
+                            logger.LogInformation(
+                                "Released reservation for Product {ProductId} for Order {OrderId}",
+                                productId, orderId);
+                        }
 
                         db.StockTransactions.Add(new StockTransaction
                         {
@@ -86,12 +106,6 @@ public class ReleaseInventoryConsumer(
                             OrderId = orderId,
                             CreatedAt = now
                         });
-
-                        affectedProductIds.Add(productId);
-
-                        logger.LogInformation(
-                            "Released reservation for Product {ProductId} for Order {OrderId}",
-                            productId, orderId);
                     }
 
                     await db.SaveChangesAsync(ct);
