@@ -1,0 +1,46 @@
+# Deploy everything with:   kubectl apply -k k8s
+#
+# `images:` is the ONE place that says where the images come from and which build runs. The tags
+# are pinned to a commit (sha-<7 characters>, published by the CI/CD workflow after every merge to
+# main), never `latest`: a deployment must always say exactly which code it runs, and a node that
+# restarts a pod must not pull something newer. To roll out a build:
+#   k8s/set-image-tag.sh sha-abc1234 && kubectl apply -k k8s
+# On a fork, change `newName` to ghcr.io/<your-lowercase-owner>/shopeasy-<service>.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace/namespace.yaml
+  - configmaps/configmap.yaml
+  - postgres/postgres-init-configmap.yaml
+  - postgres/postgres.yaml
+  - rabbitmq/rabbitmq.yaml
+  - redis/redis.yaml
+  - identity/identity.yaml
+  - product/product.yaml
+  - inventory/inventory.yaml
+  - payment/payment.yaml
+  - order/order.yaml
+  - gateway/gateway.yaml
+  - network-policies/network-policies.yaml
+  # k8s/secrets/secrets.example.yaml is a template you fill in and apply yourself; it is not here
+
+images:
+  - name: shopeasy-identity
+    newName: ghcr.io/nullbutcute/shopeasy-identity
+    newTag: sha-7ead24d
+  - name: shopeasy-gateway
+    newName: ghcr.io/nullbutcute/shopeasy-gateway
+    newTag: sha-7ead24d
+  - name: shopeasy-product
+    newName: ghcr.io/nullbutcute/shopeasy-product
+    newTag: sha-7ead24d
+  - name: shopeasy-inventory
+    newName: ghcr.io/nullbutcute/shopeasy-inventory
+    newTag: sha-7ead24d
+  - name: shopeasy-payment
+    newName: ghcr.io/nullbutcute/shopeasy-payment
+    newTag: sha-7ead24d
+  - name: shopeasy-order
+    newName: ghcr.io/nullbutcute/shopeasy-order
+    newTag: sha-7ead24d

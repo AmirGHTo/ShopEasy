@@ -13,10 +13,33 @@ spec:
       labels:
         app: order
     spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        # Only needed while the GHCR packages are private (see the README); harmless when public
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654        # the "app" user of the .NET base images
+        runAsGroup: 1654
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        # the only writable path: the .NET runtime keeps a few temporary files here
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
       containers:
         - name: order
-          image: shopeasy-order:latest
-          imagePullPolicy: Never
+          # registry and pinned tag come from k8s/kustomization.yaml (images:)
+          image: shopeasy-order
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           ports:
             - containerPort: 8080
           envFrom:
