@@ -6,7 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
 	  <PackageReference Include="AspNetCore.HealthChecks.NpgSql" Version="8.0.2" />
-	  <PackageReference Include="Duende.IdentityServer" Version="7.4.7" />
+	  <PackageReference Include="Duende.IdentityServer" Version="7.4.13" />
 	  <PackageReference Include="Duende.IdentityServer.AspNetIdentity" Version="7.4.7" />
 	  <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="8.0.8" />
 	  <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
