@@ -5,7 +5,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
 
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY ["src/Gateway/ShopEasy.Gateway/ShopEasy.Gateway.csproj", "src/Gateway/ShopEasy.Gateway/"]
 RUN dotnet restore "src/Gateway/ShopEasy.Gateway/ShopEasy.Gateway.csproj"
