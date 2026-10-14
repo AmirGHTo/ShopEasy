@@ -13,6 +13,7 @@ using ShopEasy.InventoryService.Grpc;
 using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Messaging;
 using ShopEasy.Shared.Middleware;
+using ShopEasy.Shared.Resilience;
 using ShopEasy.Shared.Services;
 using StackExchange.Redis;
 using System.IdentityModel.Tokens.Jwt;
@@ -70,9 +71,7 @@ try
 
     builder.Services.AddDbContext<InventoryDbContext>(options =>
     options.UseNpgsql(
-        builder.Configuration.GetConnectionString("DefaultConnection")
-        ?? throw new InvalidOperationException(
-            "Connection string 'DefaultConnection' not found.")));
+        PostgresConnection.FromConfiguration(builder.Configuration)));
 
     // Prevent ASP.NET from remapping "role" → long URI claim type
     // Without this, [Authorize(Roles = "admin")] never matches
@@ -152,19 +151,11 @@ try
             cfg.UseSendFilter(typeof(CorrelationSendFilter<>), ctx);
 
             // ── Global retry policy ───────────────────────────────────────────────
-            // Retry 3 times with exponential backoff before moving to error queue
-            cfg.UseMessageRetry(r =>
-            {
-                r.Exponential(
-                    retryLimit: 3,
-                    minInterval: TimeSpan.FromSeconds(1),
-                    maxInterval: TimeSpan.FromSeconds(10),
-                    intervalDelta: TimeSpan.FromSeconds(2));
-
-                // Don't retry these — they will never succeed
-                r.Ignore<ArgumentNullException>();
-                r.Ignore<InvalidOperationException>();
-            });
+            // A database or network outage is ridden out for several minutes with growing
+            // pauses; anything else is retried 3 times quickly before moving to the error
+            // queue (see ShopEasy.Shared.Resilience.ConsumerResilience, settings under
+            // Resilience:Consumers).
+            cfg.UseConsumerResilience(ConsumerResilienceOptions.From(builder.Configuration));
 
             cfg.ReceiveEndpoint("inventory-reserve", e =>
             {

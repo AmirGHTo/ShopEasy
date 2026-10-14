@@ -11,6 +11,7 @@ using ShopEasy.Identity.Data;
 using ShopEasy.Identity.Storage;
 using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Middleware;
+using ShopEasy.Shared.Resilience;
 
 Log.Logger = new LoggerConfiguration()
     .ConfigureShopEasy("ShopEasy.Identity")
@@ -27,9 +28,7 @@ try
 
     builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseNpgsql(
-        builder.Configuration.GetConnectionString("DefaultConnection")
-        ?? throw new InvalidOperationException(
-            "Connection string 'DefaultConnection' not found.")));
+        PostgresConnection.FromConfiguration(builder.Configuration)));
 
     builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
         {

@@ -8,6 +8,7 @@ using Serilog.Events;
 using ShopEasy.ProductService.Data;
 using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Middleware;
+using ShopEasy.Shared.Resilience;
 using ShopEasy.Shared.Services;
 using StackExchange.Redis;
 using System.IdentityModel.Tokens.Jwt;
@@ -25,9 +26,7 @@ try
 
     builder.Services.AddDbContext<ProductDbContext>(options =>
         options.UseNpgsql(
-            builder.Configuration.GetConnectionString("DefaultConnection")
-            ?? throw new InvalidOperationException(
-                "Connection string 'DefaultConnection' not found.")));
+            PostgresConnection.FromConfiguration(builder.Configuration)));
 
     // ── JWT Authentication ────────────────────────────────────────────────────
     // This middleware:
