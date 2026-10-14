@@ -444,7 +444,9 @@ dotnet user-secrets set "RabbitMQ:Password" "<RABBITMQ_PASSWORD>"
 ### Security notes
 
 - **Monitoring pages and APIs need a login.** `/outbox`, `/sagas` and `/deadletters` on the gateway redirect to the login page, and `/api/outbox/*` on the Order service requires the `admin` role. Swagger UIs and metrics ports are still open in this project; put them behind your network controls in production.
-- **IdentityServer signing keys** are generated at runtime and stored in a persistent volume (`identity-keys` in Compose, a PVC in Kubernetes) so tokens survive restarts. They are no longer committed to git. Running several Identity replicas needs shared key storage (database or a key vault), which is on the roadmap.
+- **Identity key protection.** IdentityServer's signing keys are generated at runtime (automatic key management) and stored **in PostgreSQL**, together with the ASP.NET Data Protection key ring and the issued grants (authorization codes, refresh tokens, consent), so tokens survive restarts and rolling updates and several Identity replicas share one state. The signing keys are encrypted with the Data Protection key ring, which sits in the same database: **without a key-encryption certificate, anyone who can read the database can read the keys** (ASP.NET Core logs `No XML encryptor configured`). Set `DataProtection__CertificatePath` (a PKCS#12 file) and `DataProtection__CertificatePassword` to encrypt the ring with a certificate you guard separately — the Kubernetes manifests require it, see [Identity key protection](#identity-key-protection-kubernetes). `DataProtection__PreviousCertificatePath` keeps the ring readable while you rotate the certificate. Nothing is committed to git.
+- **Duende IdentityServer license.** The project runs unlicensed, which Duende allows for development and testing; in production you need a license (and automatic key management requires the Business or Enterprise tier — IdentityServer logs this at start-up). Without it, supply your own signing certificate instead of automatic key management.
+- **Containers run unprivileged.** Every service image runs as the base image's non-root `app` user (UID 1654); Compose and Kubernetes also set a read-only root file system (only `/tmp` is writable), drop all Linux capabilities and forbid privilege escalation. CI starts the real containers like this, so it cannot silently stop working.
 - **Secrets that were committed in the early history** of this repository (database password, client secrets, a signing key) must be treated as compromised: rotate them anywhere they were used.
 - **Never enable** `SEED_DEMO_USERS`, `EXPOSE_ACCESS_TOKEN` or `GRAFANA_ANONYMOUS_ENABLED` on anything reachable from the internet.
 
@@ -732,7 +734,7 @@ dotnet test src/Tests/ShopEasy.UnitTests
 dotnet test src/Tests/ShopEasy.IntegrationTests
 ```
 
-**Unit tests — 204 test cases.** 176 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 28 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 204 (see [CI/CD](#cicd)).
+**Unit tests — 214 test cases.** 177 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 37 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 214 (see [CI/CD](#cicd)).
 
 | Area | Where | What it covers |
 |---|---|---|
@@ -756,6 +758,7 @@ What these check cannot be faked: row locks, transactions, the MassTransit outbo
 | `Infrastructure/OutboxDeliveryPostgresTests` | Ready bus → entries published and marked delivered; not ready → nothing published and no retry spent; a failing entry is retried, parked after 5 attempts and no longer blocks the others; deliveries earlier in a batch stay delivered when a later one fails; each entry's correlation id is restored while it is published. |
 | `Infrastructure/SagaPostgresTests` | The saga row lock (`SELECT … FOR UPDATE`): twelve concurrent actors lose no update (and a control test shows that **without** the lock updates are lost); a payment result racing the timeout service, and a customer cancel racing the payment result, never leave a charged order both committed and released. Checked to fail when the lock is removed. |
 | `Infrastructure/ErrorQueueClientTests` | Counting and moving messages between real queues over AMQP (body, headers and message id preserved), missing source / destination, broker unreachable. |
+| `Infrastructure/IdentitySharedStorageTests` | What makes several Identity replicas behave like one, with each "replica" a separate service provider that shares only the database: both sign with the same key and it survives a restart; a login cookie protected by one is readable by the other; an authorization code stored by one is redeemed (and removed) at the other; grant filters, upsert, cleanup of expired grants; with a key-encryption certificate the key ring in the table is encrypted and a replica without the certificate cannot read it (and without a certificate it is stored in clear text — the test documents that default). |
 
 Start throw-away servers and point the tests at them. They were verified against PostgreSQL 16 and RabbitMQ 3.12, with the RabbitMQ management plugin deliberately **not** enabled — the application does not need it:
 
@@ -765,7 +768,7 @@ docker run -d --name shopeasy-test-mq -e RABBITMQ_DEFAULT_USER=test -e RABBITMQ_
 
 export SHOPEASY_TEST_POSTGRES="Host=localhost;Port=55432;Username=postgres;Password=test"
 export SHOPEASY_TEST_RABBITMQ="amqp://test:test@localhost:55672"
-dotnet test src/Tests/ShopEasy.UnitTests          # now 204 run, 0 skipped
+dotnet test src/Tests/ShopEasy.UnitTests          # now 214 run, 0 skipped
 
 docker rm -f shopeasy-test-pg shopeasy-test-mq
 ```
@@ -782,10 +785,11 @@ Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new p
 
 | Job | What it checks |
 |---|---|
-| **Build and test** | `dotnet restore/build` (Release) and all 204 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 28 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). Test results are uploaded as an artifact; the counters appear in the job summary. |
-| **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example), `kubeconform -strict` over `k8s/`, and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
+| **Build and test** | `dotnet restore/build` (Release) and all 214 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 37 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). Test results are uploaded as an artifact; the counters appear in the job summary. |
+| **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
 | **Docker build (×6)** | Each service image builds from its Dockerfile (nothing is pushed from a pull request). |
-| **CI passed** | One aggregate status for the three groups above — the check to require in branch protection. |
+| **Start the Compose stack** | Builds the images and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. |
+| **CI passed** | One aggregate status for the four groups above — the check to require in branch protection. |
 
 **Dependency audit.** `Directory.Build.props` makes NuGet check every restored package, direct *and* transitive, against the advisory database. Locally a finding is a warning; **in CI it fails the build** (`NU1901`–`NU1904`). To fix one, upgrade the package, or pin a patched version of the transitive dependency with a direct `PackageReference` (see the `System.Text.Json` pin in `ShopEasy.Shared.csproj`). **Dependabot** (`.github/dependabot.yml`) opens weekly update pull requests for NuGet packages, the Dockerfile base images and the GitHub Actions; each runs the full CI. NuGet updates are grouped: one pull request for the OpenTelemetry, Serilog, MassTransit and test-tooling packages each, and one for every other minor or patch update across all projects; a major version arrives as its own pull request. Major bumps of the framework-bound packages **and of the .NET base images** are ignored on purpose (the services target .NET 8 LTS; moving to a newer .NET is a project decision that changes the `TargetFramework`, the Dockerfiles and the CI together), and so are major bumps of Swashbuckle and Serilog.AspNetCore and every major *and minor* bump of MassTransit: 8.5+ pulls RabbitMQ.Client 7, which removes the synchronous API the dead-letter tooling uses (the Order service stops compiling), and MassTransit 9 is no longer Apache-2.0 — both need a deliberate migration. If a base-image bump is merged anyway, the Dockerfile check above fails.
 
@@ -809,7 +813,7 @@ After **CI passed** on `main` or on a version tag, the `publish-images` job buil
 
 To cut a release: `git tag v1.2.3 && git push origin v1.2.3`. Pull requests never publish. The job authenticates with the workflow's own `GITHUB_TOKEN` (permission `packages: write` on that job only), so there is **no secret to create**. A pushed image is private to the repository at first; make the package public (or grant the cluster pull access) under *Packages → package settings*.
 
-Deploying to a cluster is intentionally **not** automated yet: it needs credentials for a specific environment. The Kubernetes manifests still reference local image names (`shopeasy-order:latest`, `imagePullPolicy: Never`); switching them to the published `sha-…` tags is part of roadmap step 8.
+Deploying to a cluster is intentionally **not** automated: it needs credentials for a specific environment. The Kubernetes manifests reference these published images, pinned to a `sha-<commit>` tag in `k8s/kustomization.yaml`; rolling out a build is `k8s/set-image-tag.sh sha-abc1234 && kubectl apply -k k8s` (see [Kubernetes Deployment](#kubernetes-deployment)).
 
 ### One-time repository settings (needs repository admin)
 
@@ -846,44 +850,84 @@ docker-compose logs order | findstr "acquired lock"
 
 ## Kubernetes Deployment
 
-Full manifests live in `k8s/`. They deploy the same Docker images with production orchestration: auto-scaling, self-healing, rolling updates, and resource limits.
+Full manifests live in `k8s/`. They deploy the images the CI/CD workflow publishes to GHCR with production orchestration: auto-scaling, self-healing, rolling updates, resource limits, containers that run unprivileged, and network policies.
 
-### Quick start (Docker Desktop Kubernetes)
+| Path | What |
+|---|---|
+| `k8s/kustomization.yaml` | What `kubectl apply -k k8s` deploys, and the **one place** that says which images run: `ghcr.io/<owner>/shopeasy-<service>` pinned to a `sha-<commit>` tag (never `latest`). CI fails if a tag is not pinned. |
+| `k8s/set-image-tag.sh` | `k8s/set-image-tag.sh sha-abc1234` points all six services at one published build. |
+| `k8s/<service>/` | Deployment + Service per service (non-root user 1654, read-only root file system, all capabilities dropped, `/tmp` as the only writable path, resource requests/limits, health probes). |
+| `k8s/network-policies/` | Default-deny ingress plus explicit allows (below). |
+| `k8s/secrets/secrets.example.yaml` | Template for the `shopeasy-secrets` Secret you create yourself; it is deliberately not part of the kustomization. |
+
+### Quick start
+
+You need a cluster and `kubectl` (Docker Desktop, kind, minikube, or a managed cluster).
 
 ```bash
-# 1. Enable Kubernetes in Docker Desktop → Settings → Kubernetes
+# 1. The namespace first, because the secrets live in it
+kubectl apply -f k8s/namespace/namespace.yaml
 
-# 2. Build all service images locally
-docker build -t shopeasy-identity:latest  -f src/Identity/ShopEasy.Identity/Dockerfile .
-docker build -t shopeasy-product:latest   -f src/Services/ShopEasy.ProductService/Dockerfile .
-docker build -t shopeasy-inventory:latest -f src/Services/ShopEasy.InventoryService/Dockerfile .
-docker build -t shopeasy-payment:latest   -f src/Services/ShopEasy.PaymentService/Dockerfile .
-docker build -t shopeasy-order:latest     -f src/Services/ShopEasy.OrderService/Dockerfile .
-docker build -t shopeasy-gateway:latest   -f src/Gateway/ShopEasy.Gateway/Dockerfile .
-
-# 3. Apply infrastructure first
-kubectl apply -f k8s/namespace/
-#    Create your real secrets from the template (secrets.yaml is git-ignored):
-cp k8s/secrets/secrets.example.yaml k8s/secrets/secrets.yaml   # then replace every CHANGE_ME
+# 2. Secrets (secrets.yaml is git-ignored): replace every CHANGE_ME
+cp k8s/secrets/secrets.example.yaml k8s/secrets/secrets.yaml
 kubectl apply -f k8s/secrets/secrets.yaml
-kubectl apply -f k8s/configmaps/
-kubectl apply -f k8s/postgres/
-kubectl apply -f k8s/rabbitmq/
-kubectl apply -f k8s/redis/
 
-# 4. Apply services
-kubectl apply -f k8s/identity/
-kubectl apply -f k8s/product/
-kubectl apply -f k8s/inventory/
-kubectl apply -f k8s/payment/
-kubectl apply -f k8s/order/
-kubectl apply -f k8s/gateway/
+# 3. The certificate that encrypts Identity's key ring (see "Identity key protection" below)
 
-# 5. Watch them come up
+# 4. If the GHCR packages are private, let the cluster pull them (skip when they are public)
+kubectl -n shopeasy create secret docker-registry ghcr-pull \
+  --docker-server=ghcr.io --docker-username=<github user> --docker-password=<token with read:packages>
+
+# 5. Everything else, in one command
+kubectl apply -k k8s
+
+# 6. Watch it come up
 kubectl get pods -n shopeasy -w
 ```
 
-Gateway is exposed on NodePort `30000` (`http://localhost:30000`), Identity on `30001`.
+Gateway is exposed on NodePort `30000` (`http://localhost:30000`), Identity on `30001`. The pods start in no particular order and retry until PostgreSQL, RabbitMQ and Identity are ready.
+
+On a **fork**, change `newName` in `k8s/kustomization.yaml` to your lowercase owner (`ghcr.io/<owner>/shopeasy-<service>`). To run **locally built** images (kind, minikube) instead, build them, load them into the cluster and use `kustomize edit set image shopeasy-order=shopeasy-order:dev` in a scratch copy — do not commit that; the CI rule rejects unpinned images.
+
+### Rolling out a build
+
+Every merge to `main` publishes images tagged `sha-<short commit>` (see CD above). Pick the commit, then:
+
+```bash
+k8s/set-image-tag.sh sha-abc1234
+kubectl apply -k k8s
+kubectl -n shopeasy rollout status deployment/identity deployment/gateway
+```
+
+Commit the changed `kustomization.yaml` (a pull request) so the repository always says what is deployed. Rolling back is the same command with the previous tag.
+
+### Identity key protection (Kubernetes)
+
+Identity stores its signing keys, the Data Protection key ring and issued grants in PostgreSQL, so replicas share them and a restart or rolling update invalidates nothing. The key ring protects the signing keys, so it must not sit in the database in clear text: the Identity Deployment loads a certificate from a Secret and encrypts the ring with it. Create it once (any PKCS#12 file works; a self-signed one is enough because it only encrypts):
+
+```bash
+PASSWORD="$(openssl rand -base64 24)"
+openssl req -x509 -newkey rsa:3072 -nodes -days 3650 -subj "/CN=shopeasy-identity-keyring" \
+  -keyout keyring.key -out keyring.crt
+openssl pkcs12 -export -inkey keyring.key -in keyring.crt -out key-ring.pfx -passout "pass:$PASSWORD"
+
+kubectl -n shopeasy create secret generic identity-dataprotection \
+  --from-file=key-ring.pfx --from-literal=password="$PASSWORD"
+
+shred -u keyring.key keyring.crt key-ring.pfx    # keep the PFX and password in your password manager or vault
+```
+
+Without that Secret the Identity pod stays in `ContainerCreating` (*secret "identity-dataprotection" not found*) — on purpose, rather than silently storing the keys unprotected. **Losing the certificate means losing the key ring**: Identity then creates new signing keys and every user signs in again. To rotate the certificate, mount the old one too and set `DataProtection__PreviousCertificatePath` (it must use the same password), roll out, and remove the old one later.
+
+**Scaling Identity.** Deploy with one replica (it applies its database migrations at start-up), then `kubectl -n shopeasy scale deployment identity --replicas=2`.
+
+**Upgrading from the file-based keys.** Earlier versions kept the signing key in a volume (`identity-keys` in Compose, a PVC in Kubernetes). After the upgrade Identity creates a new key in the database, so tokens signed by the old key stop validating and users sign in once more. Remove the old volume: `docker volume rm shopeasy_identity-keys` / `kubectl -n shopeasy delete pvc identity-keys-pvc`.
+
+### Network policies
+
+`k8s/network-policies/network-policies.yaml` denies all ingress in the namespace and then allows only what the services actually call: the **gateway** and **identity** from anywhere (the NodePorts; Identity is also called by every service), the gateway into the four APIs, Order into Inventory (HTTP and gRPC) and Product, and PostgreSQL, RabbitMQ and Redis only from the services that use them. The data stores may not start connections (DNS only).
+
+> NetworkPolicies are enforced only if the cluster's network plugin supports them (Calico, Cilium, …). Docker Desktop's and minikube's defaults accept them and do nothing. Egress of the application pods is not restricted: it needs the list of external endpoints of *your* deployment. Behind an Ingress controller, narrow the "from anywhere" rule to the controller.
 
 ### What Kubernetes adds over Compose
 
@@ -901,7 +945,7 @@ Gateway is exposed on NodePort `30000` (`http://localhost:30000`), Identity on `
 kubectl delete namespace shopeasy
 ```
 
-> **Note on migrations under multiple replicas:** the Order service swallows the `42P07` ("relation already exists") error so that when two replicas start simultaneously, the one that loses the migration race continues cleanly instead of crash-looping.
+> **Note on migrations under multiple replicas:** the Order and Identity services swallow the `42P07` ("relation already exists") error so that when two replicas start simultaneously, the one that loses the migration race continues cleanly instead of crash-looping. The other services still rely on starting one replica first.
 
 ---
 
@@ -913,13 +957,16 @@ ShopEasy/
 ├── .env.example                   # copy to .env (git-ignored) — all secrets live there
 ├── Directory.Build.props          # NuGet vulnerability audit (errors in CI)
 ├── .github/
-│   ├── workflows/ci.yml           # CI (build, tests, deployment-file checks, image builds) + CD (publish to GHCR)
+│   ├── workflows/ci.yml           # CI (build, tests, deployment-file checks, image builds, start the stack) + CD (publish to GHCR)
+│   ├── scripts/                   # Dockerfile / Kubernetes / running-container rules the CI enforces
 │   └── dependabot.yml
 ├── postgres-init.sql              # creates the 5 databases
 ├── prometheus.yml
 ├── grafana/provisioning/          # auto-provisioned dashboards
-├── k8s/                           # Kubernetes manifests
-│   ├── namespace/  secrets/  configmaps/
+├── k8s/                           # Kubernetes manifests (kubectl apply -k k8s)
+│   ├── kustomization.yaml         # which images (pinned sha-<commit> tags) and resources
+│   ├── set-image-tag.sh
+│   ├── namespace/  secrets/  configmaps/  network-policies/
 │   ├── postgres/  rabbitmq/  redis/
 │   └── identity/ product/ inventory/ payment/ order/ gateway/
 ├── src/
@@ -1021,7 +1068,7 @@ This project is being hardened step by step. Status:
 | 5 | Order cancellation through the saga (release stock, refund a late payment), plus row locking on every saga transition | Done |
 | 6 | Replace RabbitMQ management-API polling with a bus-ready check and AMQP dead-letter tooling; MassTransit transactional inbox/outbox for Payment/Inventory events | Done |
 | 7 | Observability (per-service log names, configurable Seq, correlation id across HTTP, outbox, saga and RabbitMQ, MassTransit + Npgsql traces), CI/CD on GitHub Actions (build, all tests incl. PostgreSQL/RabbitMQ, deployment-file validation, image builds, publish to GHCR, Dependabot), vulnerable dependencies patched and gated, saga row-locking tests on PostgreSQL, saga tests re-enabled | Done |
-| 8 | Dockerfile (non-root, slim image) and Kubernetes hardening (pinned image tags, shared Identity key storage, network policies) | Planned |
+| 8 | Non-root images (no SQLite, no `chmod 777`), read-only containers started by CI, Kubernetes with pinned published image tags and no local-image assumptions, Identity keys / key ring / grants shared in PostgreSQL (several replicas), network policies | Done |
 
 **Known limitations today** (documented so nobody is surprised):
 
@@ -1035,9 +1082,13 @@ This project is being hardened step by step. Status:
 - `InventoryDbContext` has no unique database constraint on the ledger; idempotency relies on the row locks.
 - The CI only becomes a *gate* once branch protection requires the `CI passed` check (a one-time repository setting, see CI/CD). Until then it reports but does not block.
 - The integration tests in `src/Tests/ShopEasy.IntegrationTests` call a running stack and are not run by CI yet; the unit-test project (with real PostgreSQL and RabbitMQ) is.
-- Images are published to GHCR but nothing deploys them: the Kubernetes manifests still use local image names (roadmap step 8). No container image vulnerability scan (Trivy) or code scanning (CodeQL) runs yet.
+- Images are published to GHCR and the manifests pin them by commit, but nothing deploys them automatically (that needs credentials for a specific cluster), and the pinned tag in `k8s/kustomization.yaml` is bumped by hand (`k8s/set-image-tag.sh`). No container image vulnerability scan (Trivy) or code scanning (CodeQL) runs yet.
+- The Kubernetes manifests were validated (schema and the deployment rules above) and the same hardening runs in CI under Compose, but they have not been applied to a live cluster in CI. NetworkPolicies need a network plugin that enforces them, and egress of the application pods is not restricted.
+- The gateway keeps its login cookie's Data Protection keys in memory/on its own file system, so a restart signs users out and it cannot run several replicas yet (Identity already can).
+- Without `DataProtection__CertificatePath`, Identity's key ring — and with it the signing keys — is stored in the database in clear text; the Kubernetes manifests require the certificate, Compose (local development) does not. Production use of Duende IdentityServer needs a license (see Security notes).
+- PostgreSQL, RabbitMQ and Redis in `k8s/` are single-replica Deployments with a PVC at most: fine to learn from, not highly available. Use a managed service or an operator for production data stores.
 - A customer cancel (`DELETE /api/orders/{id}`) is logged and published under the *cancel request's* correlation id, not the id of the request that placed the order; `OrderId` links the two.
-- Migrations run at service start-up; with several replicas the race is only handled for the Order service.
+- Migrations run at service start-up; with several replicas the race is only handled for the Order and Identity services.
 - Swagger UIs and Prometheus metrics ports are unauthenticated.
 
 ---
