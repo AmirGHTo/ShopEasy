@@ -130,11 +130,66 @@ jobs:
           cp .env.example .env
           docker compose config --quiet
 
-      - name: kubeconform (Kubernetes manifests)
+      # The cluster gets what `kubectl kustomize` renders (images and their pinned tags come from
+      # k8s/kustomization.yaml), so that is what is validated, together with the secrets template.
+      - name: kubeconform (rendered Kubernetes manifests)
+        run: |
+          kubectl kustomize k8s > "$RUNNER_TEMP/k8s-rendered.yaml"
+          docker run --rm \
+            -v "$RUNNER_TEMP:/rendered:ro" -v "$PWD/k8s/secrets:/secrets:ro" \
+            ghcr.io/yannh/kubeconform:v0.6.7 \
+            -strict -summary -ignore-missing-schemas /rendered/k8s-rendered.yaml /secrets
+
+      # kubeconform says the YAML is valid; this says it is safe: images pinned to a commit, no
+      # root, read-only root file system, no capabilities, ingress denied by default.
+      - name: Kubernetes deployment rules
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 .github/scripts/check-k8s-manifests.py < "$RUNNER_TEMP/k8s-rendered.yaml"
+
+  # ── The stack must actually start (an image that builds can still fail to run) ──────────
+  # The .NET 10 base-image incident built fine and crashed on start. This starts the real
+  # containers, hardened exactly as in production (non-root, read-only file system, no
+  # capabilities), and waits for every health check.
+  container-smoke-test:
+    name: Start the Compose stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # .env.example holds throw-away values ("change-me-…"): fine for a runner that is discarded
+      - name: Configuration
+        run: cp .env.example .env
+
+      # Only the services of the application; the monitoring tools (Grafana, Seq, Jaeger, ...) do
+      # not affect whether the application starts.
+      - name: Build the images and start the services
         run: >-
-          docker run --rm -v "$PWD/k8s:/k8s:ro"
-          ghcr.io/yannh/kubeconform:v0.6.7
-          -strict -summary -ignore-missing-schemas /k8s
+          docker compose up -d --build --wait --wait-timeout 900
+          postgres rabbitmq redis identity product inventory payment order gateway
+
+      - name: Containers run unprivileged
+        run: bash .github/scripts/check-running-containers.sh
+
+      - name: Identity serves its signing key (generated into and read from PostgreSQL)
+        run: |
+          curl --fail --silent --show-error --max-time 90 \
+            http://localhost:5001/.well-known/openid-configuration/jwks | tee "$RUNNER_TEMP/jwks.json"
+          grep -q '"kid"' "$RUNNER_TEMP/jwks.json"
+
+      - name: Gateway is up
+        run: |
+          curl --fail --silent --show-error http://localhost:5000/health
+          echo
+
+      - name: Container logs (on failure)
+        if: failure()
+        run: docker compose logs --no-color --tail 150
+
+      - name: Stop
+        if: always()
+        run: docker compose down --volumes
 
   # ── Every service image must build (nothing is pushed from a pull request) ───────────────
   docker-build:
@@ -168,7 +223,7 @@ jobs:
   ci-passed:
     name: CI passed
     if: always()
-    needs: [build-and-test, validate-deployment-files, docker-build]
+    needs: [build-and-test, validate-deployment-files, docker-build, container-smoke-test]
     runs-on: ubuntu-latest
     steps:
       - name: All required jobs succeeded?

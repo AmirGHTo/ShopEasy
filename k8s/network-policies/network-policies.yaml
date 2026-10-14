@@ -1,0 +1,155 @@
+# Who may talk to whom inside the namespace. Without these every pod can reach every other pod,
+# so one compromised service could open the database directly. The rules below are derived from
+# what the services actually call:
+#
+#   browser/clients -> gateway (NodePort 30000), identity (NodePort 30001: the login redirect)
+#   gateway   -> product, order, inventory, payment   (reverse proxy), identity (OIDC)
+#   order     -> inventory (HTTP 8080 + gRPC 8090), product, identity (service token)
+#   every API -> identity (JWT signing keys, token endpoint)
+#   identity, product, inventory, payment, order -> postgres
+#   order, inventory, payment, product            -> rabbitmq
+#   order, inventory, product                      -> redis
+#
+# NetworkPolicies only take effect when the cluster's network plugin enforces them (Calico,
+# Cilium, ...). Docker Desktop's and minikube's defaults do not: there the policies are accepted
+# and have no effect. Kubelet health probes are not blocked by these policies.
+#
+# Not covered: egress of the application pods (they may open outbound connections anywhere).
+# Restricting it needs a list of the external endpoints you use (a tracing backend, a payment
+# provider, ...), which differs per deployment.
+---
+# 1. Deny all ingress in the namespace; everything below is an explicit exception
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: shopeasy
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# 2. The two services users and their browsers reach. Identity is also called by the services,
+#    which is why it is open to every source. With an Ingress controller in front, replace the
+#    open rule by a `from:` that names the controller's namespace or an ipBlock.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-public-entry-points
+  namespace: shopeasy
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [gateway, identity] }
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { protocol: TCP, port: 8080 }
+---
+# 3. The gateway proxies to the APIs
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gateway-to-apis
+  namespace: shopeasy
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [product, order, inventory, payment] }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: gateway }
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# 4. Order calls Inventory (REST and gRPC) and Product
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-order-to-inventory-and-product
+  namespace: shopeasy
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [inventory, product] }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: order }
+      ports:
+        - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 8090 }
+---
+# 5. Data stores: only the services that use them
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-clients
+  namespace: shopeasy
+spec:
+  podSelector:
+    matchLabels: { app: postgres }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [identity, product, inventory, payment, order] }
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-rabbitmq-clients
+  namespace: shopeasy
+spec:
+  podSelector:
+    matchLabels: { app: rabbitmq }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [order, inventory, payment, product] }
+      ports:
+        - { protocol: TCP, port: 5672 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-redis-clients
+  namespace: shopeasy
+spec:
+  podSelector:
+    matchLabels: { app: redis }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [order, inventory, product] }
+      ports:
+        - { protocol: TCP, port: 6379 }
+---
+# 6. The data stores never start a connection themselves: let them resolve names, nothing else
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: data-stores-egress-dns-only
+  namespace: shopeasy
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [postgres, rabbitmq, redis] }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }

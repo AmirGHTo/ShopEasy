@@ -4,6 +4,9 @@ metadata:
   name: identity
   namespace: shopeasy
 spec:
+  # Signing keys, Data Protection keys and issued grants live in PostgreSQL, so Identity can run
+  # several replicas and be rolled without invalidating tokens. Deploy with 1 replica first (the
+  # database migrations run at startup), then: kubectl -n shopeasy scale deployment identity --replicas=2
   replicas: 1
   selector:
     matchLabels:
@@ -13,10 +16,42 @@ spec:
       labels:
         app: identity
     spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        # Only needed while the GHCR packages are private (see the README); harmless when public
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654        # the "app" user of the .NET base images
+        runAsGroup: 1654
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        # the only writable path: the .NET runtime keeps a few temporary files here
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        # The certificate that encrypts the Data Protection key ring (and with it the signing keys)
+        # in the database. Create it as described in the README ("Identity key protection").
+        - name: dataprotection
+          secret:
+            secretName: identity-dataprotection
+            defaultMode: 0440
       containers:
         - name: identity
-          image: shopeasy-identity:latest
-          imagePullPolicy: Never
+          # registry and pinned tag come from k8s/kustomization.yaml (images:)
+          image: shopeasy-identity
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: dataprotection
+              mountPath: /etc/shopeasy/dataprotection
+              readOnly: true
           ports:
             - containerPort: 8080
           env:
@@ -42,9 +77,13 @@ spec:
                   key: order-client-secret
             - name: Seed__Enabled
               value: "false"
-          volumeMounts:
-            - name: identity-keys
-              mountPath: /app/keys
+            - name: DataProtection__CertificatePath
+              value: /etc/shopeasy/dataprotection/key-ring.pfx
+            - name: DataProtection__CertificatePassword
+              valueFrom:
+                secretKeyRef:
+                  name: identity-dataprotection
+                  key: password
           readinessProbe:
             httpGet:
               path: /health
@@ -57,22 +96,13 @@ spec:
               port: 8080
             initialDelaySeconds: 40
             periodSeconds: 20
-      volumes:
-        - name: identity-keys
-          persistentVolumeClaim:
-            claimName: identity-keys-pvc
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: identity-keys-pvc
-  namespace: shopeasy
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 100Mi
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
 ---
 apiVersion: v1
 kind: Service
