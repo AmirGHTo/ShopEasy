@@ -183,6 +183,8 @@ When an order is saved, the event that starts the saga is written to an **outbox
 
 **Why:** it guarantees that "order saved" and "event published" are atomic. If RabbitMQ is down when the order is placed, the event still gets delivered once the broker recovers — no lost orders, no phantom events.
 
+The delivery worker only publishes while the message bus is **ready** (pattern 23), so a broker outage or a start-up race is never counted as a failed delivery attempt. If publishing genuinely fails, the retry count is stored; after 5 failed attempts an entry is parked as a dead letter (visible in the Outbox Monitor) and no longer blocks the entries behind it. The Payment and Inventory services have their own transactional outbox (pattern 22).
+
 ### 6. Distributed Outbox Locking
 
 When the Order service runs as **multiple instances**, they'd all try to publish the same outbox messages. We use PostgreSQL's `SELECT ... FOR UPDATE SKIP LOCKED` so each message is claimed by exactly one instance; others skip locked rows. The database row lock *is* the distributed mutex — no external coordination service (ZooKeeper, etcd) needed.
@@ -195,6 +197,7 @@ Every message consumer must be safe to run twice, because RabbitMQ guarantees on
 - **Inventory reserve** records a `ProcessedEvents` row per order, checked while the stock rows are locked.
 - **Inventory commit / release** read the order's own ledger rows (`StockTransactions` for that order: reserved / committed / released) under the row locks, so a duplicate is detected exactly and only re-sends its result event. See [Inventory Stock Model](#inventory-stock-model).
 - **Payment** keeps a `ProcessedEvents` row per order.
+- **Payment and Inventory** additionally use MassTransit's **inbox** (pattern 22): a redelivered copy of the *same message* is recognised by its message id and not consumed again. The business-level checks above remain the safety net for *different* messages about the same order (for example the saga re-sending a command after a timeout).
 
 ### 8. Zombie Message Guard
 
@@ -233,7 +236,9 @@ HTTP clients use Polly pipelines: exponential-backoff retries and circuit breake
 
 ### 14. Dead Letter Queues
 
-Messages that fail repeatedly land in `*_error` queues. A `DeadLetterMonitor` background service polls these via the RabbitMQ management API, and the developer portal exposes them with a requeue endpoint.
+Messages that fail repeatedly (after 3 retries with exponential backoff) land in `*_error` queues. A `DeadLetterMonitor` background service in the Order service checks them every 30 seconds and logs a `DEAD LETTER ALERT` for every queue that holds messages. The Dead Letter Monitor page and `GET /api/outbox/deadletters` (admin) list them, and `POST /api/outbox/deadletters/{queue}/requeue` (admin) moves the messages back to the queue they came from once the cause is fixed — see [Working with dead letters](#working-with-dead-letters).
+
+This talks **AMQP** — the protocol and credentials the services already use for messaging — and does **not** need the RabbitMQ management plugin (HTTP, port 15672). That UI stays available as a tool for humans, but nothing in the application depends on it.
 
 ### 15. Rate Limiting
 
@@ -274,6 +279,22 @@ A client must never decide what it pays. `POST /api/orders` only accepts **what 
 ### 21. Saga Row Locking
 
 Several actors change a saga: the event consumers, the orchestrator that starts it, the timeout service and customer cancellation. Every transition therefore runs in a database transaction and loads the saga with `SELECT … FOR UPDATE` (`ISagaLocking`, `Sagas/SagaLocking.cs`), so a payment result racing the timeout, a cancel racing the orchestrator, or two Order instances starting the same saga are serialized: the second actor waits and then sees the first one's outcome. Commands are published only after the transaction commits.
+
+### 22. Transactional Inbox/Outbox (Payment & Inventory)
+
+A consumer that changes its database *and* publishes a result event has a classic gap: a crash between the commit and the publish loses the event, a failure after the publish leaves an event for a change that was rolled back. Payment and Inventory close it with MassTransit's **Entity Framework inbox/outbox** (`AddEntityFrameworkOutbox` + `UseEntityFrameworkOutbox` on every consumer endpoint):
+
+1. MassTransit opens **one database transaction per message** (isolation `READ COMMITTED`, which the Inventory row locks need).
+2. The consumer's changes — the payment row, the stock changes and ledger — an **inbox** row for the message, and the **events the consumer publishes** (stored in the `OutboxMessage` table instead of being sent) are all written in that transaction.
+3. After the commit MassTransit sends the stored events to RabbitMQ and removes them. If the process dies or the broker is unreachable at that moment, the command was never acknowledged, so RabbitMQ redelivers it; the inbox shows it was already consumed, the consumer is **not** run again, and only the delivery of the stored events is completed.
+
+Result: a payment or stock change is never recorded without its event, and no event is sent for work that was rolled back. This holds when the service is killed between the commit and the delivery, and when RabbitMQ is stopped at that moment: after the restart exactly one event arrives and the payment or stock change is not repeated. The all-or-nothing behaviour is covered by tests against a real PostgreSQL (see *Testing*).
+
+The consumers call `db.Database.BeginOrJoinAsync()` (`Data/UnitOfWork.cs`): inside the outbox they **join** MassTransit's transaction; without it (unit tests) they open and own one. Tables: `InboxState`, `OutboxMessage` and `OutboxState` in the Payment and Inventory databases; old rows are cleaned up by MassTransit (duplicate-detection window: 30 minutes). The Order service keeps its own hand-written outbox (pattern 5) for the event that starts the saga.
+
+### 23. Broker Readiness (no management API)
+
+The Order service's outbox worker asks `IBrokerReadiness` before it publishes. The implementation reads **MassTransit's own bus health check** (`masstransit-bus`): healthy only when the bus is started, the RabbitMQ connection is up and every receive endpoint has declared its queue and bindings. The last part matters at start-up — an event published to an exchange that has no queue bound yet is silently dropped by the broker. While the bus is not ready, entries simply stay pending (one warning when the state changes, not one per cycle) and no retry is spent. This replaces the previous design, which polled the RabbitMQ management HTTP API (`:15672`) with Basic auth.
 
 ---
 
@@ -383,6 +404,9 @@ Services read standard ASP.NET Core configuration, so every key can be an enviro
 | `Seed__Enabled`, `Seed__AdminPassword`, `Seed__CustomerPassword` | Identity | Demo users, see above. Default off. |
 | `Features__ExposeAccessToken` | Gateway | Enables `/account/token`. Default off. |
 | `RabbitMQ__Host`, `RabbitMQ__Username`, `RabbitMQ__Password` | Order, Inventory, Payment | Username and password are **required** (no `guest` fallback). |
+| `RabbitMQ__Port` | Order | AMQP port used by the dead-letter tooling. Default `5672`. |
+| `RabbitMQ__ManagementUiUrl` | Order | Optional, e.g. `http://localhost:15672`. Only adds a "View" link to the dead-letter page; the service never calls it. |
+| `Metrics__Port` | Order, Inventory, Payment | Port of the Prometheus metrics listener. Default `9091`; change it when running several services on one machine. |
 | `ServiceAuth__ClientId`, `ServiceAuth__ClientSecret` | Order | **Required** when the service token is used. |
 | `Services__ProductService` | Order | Product service base URL used for price lookup. Default `http://product:8080`. |
 | `Services__InventoryService`, `Services__InventoryGrpcService` | Order | Inventory REST and gRPC URLs. |
@@ -648,6 +672,21 @@ All reachable from the landing page at `http://localhost:5000`:
 
 **pgAdmin connection** (to inspect databases): host `postgres`, port `5432`, user `shopeasy`, password = `POSTGRES_PASSWORD` from your `.env`.
 
+### Working with dead letters
+
+A message that fails all its retries is parked in an `<endpoint>_error` queue (for example `payment-process_error`). The Order service logs `DEAD LETTER ALERT: Queue … has N failed message(s)` every 30 seconds while a queue is non-empty.
+
+1. Open http://localhost:5000/deadletters (as an admin), or call `GET /api/outbox/deadletters`, to see every error queue and its message count.
+2. Find the cause — the Seq logs of the failing service, or the message and its `MT-Fault-*` headers in the RabbitMQ management UI.
+3. Fix it, then click **Requeue** (or `POST /api/outbox/deadletters/{queue}/requeue`). Each message is copied back to its original queue, confirmed by the broker, and only then removed from the error queue, so a crash can duplicate a message but never lose one — and every consumer is idempotent.
+
+| Response | Meaning |
+|---|---|
+| `200` `{ moved: n }` | `n` messages were moved back. |
+| `400` | Not one of the known error queues (live queues and unknown names are refused). |
+| `404` | That error queue does not exist — nothing has failed there. |
+| `503` | RabbitMQ is not reachable; retry shortly. |
+
 ### Testing failure scenarios
 
 The Saga Monitor is the best way to see the system's resilience. Try this:
@@ -673,14 +712,51 @@ To reliably force a successful payment for the refund test, set `Testing__ForceP
 ## Testing
 
 ```bash
-# Unit tests (saga starter / inventory-reserved consumer, outbox entries)
+# Unit tests — need nothing but the .NET 8 SDK
 dotnet test src/Tests/ShopEasy.UnitTests
 
 # Integration tests (run with the stack up)
 dotnet test src/Tests/ShopEasy.IntegrationTests
 ```
 
-**Unit tests:** 88 active test methods (95 test cases once parameterized tests are expanded). 17 (`Sagas/CancellationTests`) cover order cancellation at every saga stage, who may cancel, a lost release command, and what the saga handlers do after a cancel (release confirmed, late payment refunded, late reservation released, timeout retries). 6 cover the saga starter (including idempotency), the inventory-reserved consumer and outbox entry state. 16 (`Sagas/CommitFlowTests`) cover the saga's commit flow: completion only after `InventoryCommittedEvent`, refund on `InventoryCommitFailedEvent`, and that duplicate or late events never refund, cancel or release a finished order. 20 (`Inventory/*`) cover the Inventory consumers: reserve, commit and release including duplicates, out-of-order messages, shortages and multi-product orders. 29 cover order placement: request validation and limits (`Orders/OrderRequestValidatorTests`), server-side price/name resolution (`OrderLineResolverTests`) and the Product service client including 404, 5xx, network failure and malformed responses (`ProductCatalogClientTests`). They use the EF Core InMemory provider with a fresh database per test. The larger saga state-machine suite (`Sagas/SagaStateTransitionTests.cs`) is currently commented out and needs to be updated for the current consumer constructors; the payment-succeeded/failed consumer tests in `SagaOrchestratorTests.cs` are likewise disabled. InMemory cannot verify PostgreSQL-specific behaviour (`FOR UPDATE SKIP LOCKED`, row locks): the Inventory tests swap the real `PostgresInventoryLocking` for a plain query, so the locking itself is checked manually (see *Checking the concurrency behaviour yourself*) until Testcontainers-based tests exist.
+**Unit tests — 142 test cases.** 122 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 20 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them.
+
+| Area | Where | What it covers |
+|---|---|---|
+| Order cancellation | `Sagas/CancellationTests` | Cancelling at every saga stage, who may cancel, a lost release command, and what the saga handlers do after a cancel (release confirmed, late payment refunded, late reservation released, timeout retries). |
+| Commit flow | `Sagas/CommitFlowTests` | Completion only after `InventoryCommittedEvent`, refund on `InventoryCommitFailedEvent`, duplicate or late events never refund, cancel or release a finished order. |
+| Saga starter, orchestrator, outbox entries | `Sagas/SagaOrchestratorTests`, `Consumers/*` | Starting a saga (including idempotency), the inventory-reserved consumer, outbox entry state. |
+| Inventory consumers | `Inventory/*` | Reserve, commit and release including duplicates, out-of-order messages, shortages, multi-product orders and a missing inventory record. |
+| Order placement | `Orders/*` | Request validation and limits, server-side price/name resolution, the Product service client (404, 5xx, network failure, malformed response). |
+| Messaging (no servers needed) | `Messaging/*` | The broker readiness gate (including against MassTransit's real health check registration), outbox delivery pausing while the bus is not ready, the dead-letter monitor and the requeue endpoint's responses. |
+
+The larger saga state-machine suite (`Sagas/SagaStateTransitionTests.cs`) is currently commented out and needs to be updated for the current consumer constructors; the payment-succeeded/failed consumer tests in `SagaOrchestratorTests.cs` are likewise disabled.
+
+### Tests that need PostgreSQL and RabbitMQ
+
+What these check cannot be faked: row locks, transactions, the MassTransit outbox and AMQP queue operations. Every test creates and drops its own database / queues.
+
+| Test class | What it proves |
+|---|---|
+| `Infrastructure/InventoryPostgresTests` | 12 orders of 3 units racing for 10 units reserve at most 3 times (the real `SELECT … FOR UPDATE`); the same command delivered 4 times at once reserves once; a consumer that publishes and then fails sends **nothing** and rolls everything back; `BeginOrJoinAsync` joins an open transaction and leaves the commit to its owner. |
+| `Infrastructure/PaymentPostgresTests` | A payment command through the outbox saves the payment and delivers the event; the same command twice charges once and still confirms. |
+| `Infrastructure/OutboxDeliveryPostgresTests` | Ready bus → entries published and marked delivered; not ready → nothing published and no retry spent; a failing entry is retried, parked after 5 attempts and no longer blocks the others; deliveries earlier in a batch stay delivered when a later one fails. |
+| `Infrastructure/ErrorQueueClientTests` | Counting and moving messages between real queues over AMQP (body, headers and message id preserved), missing source / destination, broker unreachable. |
+
+Start throw-away servers and point the tests at them. They were verified against PostgreSQL 16 and RabbitMQ 3.12, with the RabbitMQ management plugin deliberately **not** enabled — the application does not need it:
+
+```bash
+docker run -d --name shopeasy-test-pg -e POSTGRES_PASSWORD=test -p 55432:5432 postgres:16-alpine
+docker run -d --name shopeasy-test-mq -e RABBITMQ_DEFAULT_USER=test -e RABBITMQ_DEFAULT_PASS=test -p 55672:5672 rabbitmq:3.13-alpine
+
+export SHOPEASY_TEST_POSTGRES="Host=localhost;Port=55432;Username=postgres;Password=test"
+export SHOPEASY_TEST_RABBITMQ="amqp://test:test@localhost:55672"
+dotnet test src/Tests/ShopEasy.UnitTests          # now 142 run, 0 skipped
+
+docker rm -f shopeasy-test-pg shopeasy-test-mq
+```
+
+`SHOPEASY_TEST_POSTGRES` is a server connection string **without** a database name (the role needs `CREATEDB`). Not covered yet by automated tests: the saga row locking (`ISagaLocking`) — it needs the same kind of PostgreSQL test and is planned with the CI work (roadmap step 7).
 
 ---
 
@@ -793,18 +869,21 @@ ShopEasy/
 │       ├── ShopEasy.ProductService/
 │       ├── ShopEasy.OrderService/
 │       │   ├── Sagas/             # orchestrator + consumers
-│       │   ├── Services/          # outbox, timeout, gRPC client, inventory cache,
+│       │   ├── Services/          # outbox delivery + broker readiness, error-queue (AMQP) client,
+│       │   │                      #   dead-letter monitor, timeout, gRPC client, inventory cache,
 │       │   │                      #   product catalog client, order request validation/pricing
 │       │   ├── ReadModels/        # CQRS OrderSummary
 │       │   └── Controllers/       # Commands + Queries (CQRS split)
 │       ├── ShopEasy.InventoryService/
 │       │   ├── Grpc/              # gRPC service implementation
-│       │   ├── Data/              # DbContext, StockReasons (ledger kinds), InventoryLocking (FOR UPDATE)
+│       │   ├── Data/              # DbContext, StockReasons (ledger kinds), InventoryLocking (FOR UPDATE),
+│       │   │                      #   UnitOfWork (join the MassTransit outbox transaction)
 │       │   └── Consumers/         # reserve / commit / release
 │       └── ShopEasy.PaymentService/
-│           └── Consumers/         # process / refund
+│           ├── Consumers/         # process / refund
+│           └── Data/              # DbContext, UnitOfWork (join the MassTransit outbox transaction)
 └── src/Tests/
-    ├── ShopEasy.UnitTests/
+    ├── ShopEasy.UnitTests/        # unit tests + Infrastructure/ (needs PostgreSQL / RabbitMQ, see Testing)
     └── ShopEasy.IntegrationTests/
 ```
 
@@ -844,6 +923,12 @@ ShopEasy/
 
 **An order was `Cancelled` and refunded although payment had succeeded** — the Inventory service reported `InventoryCommitFailedEvent`: the reservation had been released (for example by a timeout) before the commit arrived. The saga ends in `Failed`, the order is cancelled and the payment is refunded. The reason is on the saga (`/sagas`) and in the order's `failureReason`.
 
+**Orders stay `Pending` and the Order log says `Outbox: message bus is not ready — delivery paused`** — the Order service cannot publish because RabbitMQ is unreachable or one of its queues is not declared yet. Entries stay in the outbox (check `/outbox`) and are delivered automatically, in order, once the log says `message bus is ready — delivery enabled`; nothing needs to be done unless it persists, in which case check the `rabbitmq` container and the `RabbitMQ__*` settings.
+
+**Dead letter page shows nothing / `503 RabbitMQ is not reachable`** — the Order service reaches RabbitMQ over AMQP (port 5672), not through the management UI. Check `RabbitMQ__Host`, `RabbitMQ__Port`, the credentials and that the `rabbitmq` container is healthy. The management UI (15672) being disabled does not affect it.
+
+**Payment or Inventory processed a command but the next step never happened** — the result event is stored in the service's `OutboxMessage` table until it is delivered. `SELECT count(*) FROM "OutboxMessage";` in `shopeasy_payments` / `shopeasy_inventory` should be 0; rows that stay mean RabbitMQ was unreachable at that moment. They are delivered when the broker is back and the command is redelivered — the stock/payment change itself is not repeated. If the command ended up in an `_error` queue instead, requeue it from the Dead Letter Monitor page; the saga timeout service also re-sends commands that never got an answer.
+
 **Redis down crashes EF migrations** — the Redis connection string uses `abortConnect=false` and the multiplexer is registered so startup doesn't depend on Redis being up.
 
 ---
@@ -859,16 +944,19 @@ This project is being hardened step by step. Status:
 | 3 | Server-side pricing and request validation on `POST /api/orders` | Done |
 | 4 | Inventory correctness: row locking on reserve/commit/release/adjust, idempotent commit and release, saga waits for the commit result (refunds if the commit is impossible) | Done |
 | 5 | Order cancellation through the saga (release stock, refund a late payment), plus row locking on every saga transition | Done |
-| 6 | Replace RabbitMQ management-API polling with a bus-ready check; use the MassTransit outbox for Payment/Inventory events | Planned |
-| 7 | Observability fixes (per-service log names, correlation across messages, MassTransit/EF tracing), CI (GitHub Actions), Testcontainers tests, re-enable the commented-out saga tests | Planned |
+| 6 | Replace RabbitMQ management-API polling with a bus-ready check and AMQP dead-letter tooling; MassTransit transactional inbox/outbox for Payment/Inventory events | Done |
+| 7 | Observability fixes (per-service log names, correlation across messages, MassTransit/EF tracing), CI (GitHub Actions, running the PostgreSQL/RabbitMQ infrastructure tests against service containers) with saga row-locking tests, re-enable the commented-out saga tests | Planned |
 | 8 | Dockerfile (non-root, slim image) and Kubernetes hardening (pinned image tags, shared Identity key storage, network policies) | Planned |
 
 **Known limitations today** (documented so nobody is surprised):
 
 - Orders cannot be cancelled once the payment is taken (`Completing` / `Completed`): there is no return, restock or partial-refund flow yet.
 - If the saga orchestrator itself fails three times on a saga it marks the saga `Failed` but does not update the order, which stays `Pending` until the customer cancels it (cancelling a `Failed` saga fixes the order).
-- The saga row locking is not covered by automated tests (needs a real PostgreSQL; the unit tests use a stand-in).
-- Payment and Inventory publish their result events *after* committing their database transaction (no transactional outbox yet): a crash between the two is recovered by the message being redelivered and the idempotent consumer re-publishing, not by an outbox.
+- The saga row locking (`ISagaLocking`) is not covered by automated tests yet; the unit tests use a stand-in. (The Inventory row locking is, against a real PostgreSQL — see *Testing*.)
+- The Order service's saga handlers still publish their commands *after* committing (they do not use the MassTransit outbox). A crash in that gap is recovered by the saga timeout service, which re-sends the command; every consumer is idempotent.
+- The Inventory consumers invalidate the Redis stock cache while MassTransit's transaction is still open (the commit follows immediately after the consumer returns). In that few-millisecond window a reader can re-cache the old stock level for up to its 30-second TTL. The cache is advisory — the saga's reservation is the authoritative check.
+- A message published to an exchange that has no queue bound yet is dropped by the broker, so a command sent before its consuming service has started for the first time is lost until the saga timeout re-sends it. (Docker Compose and Kubernetes start order makes this rare.)
+- The MassTransit inbox only remembers a message for its 30-minute duplicate-detection window; beyond that, duplicates are caught by the business-level checks (pattern 7).
 - Inventory endpoints process one message at a time per instance (`ConcurrentMessageLimit = 1`). Correctness no longer depends on it (row locks do), so it can be raised for throughput.
 - `InventoryDbContext` has no unique database constraint on the ledger; idempotency relies on the row locks.
 - Migrations run at service start-up; with several replicas the race is only handled for the Order service.
