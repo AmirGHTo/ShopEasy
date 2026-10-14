@@ -15,6 +15,6 @@
 	  <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
 	  <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
 	  <!-- interfaces only (no transport): the correlation filters are written against them -->
-	  <PackageReference Include="MassTransit.Abstractions" Version="8.2.5" />
+	  <PackageReference Include="MassTransit.Abstractions" Version="8.5.11" />
   </ItemGroup>
 </Project>
