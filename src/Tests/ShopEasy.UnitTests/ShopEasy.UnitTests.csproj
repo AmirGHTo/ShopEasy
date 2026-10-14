@@ -8,6 +8,9 @@
 
 	<ItemGroup>
 		<PackageReference Include="FluentAssertions" Version="6.12.0" />
+		<!-- Patched versions of transitive packages with known vulnerabilities (pulled in by the test tooling). -->
+		<PackageReference Include="System.Net.Http" Version="4.3.4" />
+		<PackageReference Include="System.Text.RegularExpressions" Version="4.3.1" />
 		<PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.27" />
 		<PackageReference Include="NSubstitute" Version="5.1.0" />
 		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />

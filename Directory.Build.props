@@ -1,0 +1,22 @@
+<Project>
+
+  <!-- ── Dependency vulnerability audit ───────────────────────────────────────
+       NuGet checks every restored package against the GitHub advisory database and reports
+       NU1901 (low) .. NU1904 (critical) warnings.
+       - "all" also covers transitive packages (the SDK default only checks direct ones); most
+         real findings sit in transitive dependencies.
+       - In CI (GitHub Actions sets CI=true) those warnings fail the build, so a vulnerable
+         dependency cannot be merged. Locally they stay warnings, so a newly published advisory
+         never blocks someone's `dotnet build` mid-task. To fix a finding, upgrade the package or
+         pin a patched version of the transitive one with a direct PackageReference. -->
+  <PropertyGroup>
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <NuGetAuditLevel>low</NuGetAuditLevel>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(CI)' == 'true'">
+    <WarningsAsErrors>$(WarningsAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsAsErrors>
+  </PropertyGroup>
+
+</Project>
