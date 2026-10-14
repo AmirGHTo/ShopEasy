@@ -29,6 +29,19 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "AspNetCore.HealthChecks.*"
         update-types: ["version-update:semver-major"]
+      # Major upgrades that need a decision and a code change, not a bump:
+      #  - MassTransit 9 is no longer Apache-2.0 (it is under the Massient license, see
+      #    https://massient.com/license) and has API changes. It must move all services
+      #    together, and it is a licensing question first.
+      #  - Swashbuckle 10 moves from Microsoft.OpenApi 1.x to 2.x, a breaking API change that
+      #    needs code changes in every service that serves Swagger.
+      #  - Serilog.AspNetCore 10 is already in use; later majors follow the framework version.
+      - dependency-name: "MassTransit*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "Swashbuckle.AspNetCore*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "Serilog.AspNetCore"
+        update-types: ["version-update:semver-major"]
 
   # Base images in the six service Dockerfiles
   - package-ecosystem: docker
