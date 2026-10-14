@@ -8,6 +8,7 @@ using Serilog;
 using Serilog.Events;
 using ShopEasy.Identity.Configuration;
 using ShopEasy.Identity.Data;
+using ShopEasy.Identity.Storage;
 using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Middleware;
 
@@ -44,7 +45,8 @@ try
 
     builder.Services.AddMetricServer(options =>
     {
-        options.Port = 9091; // separate port from the API
+        // separate port from the API (configurable so two instances can share a host)
+        options.Port = builder.Configuration.GetValue<ushort>("Metrics:Port", 9091);
     });
 
     builder.Services.ConfigureApplicationCookie(options =>
@@ -81,9 +83,11 @@ try
         .AddInMemoryApiResources(IdentityServerConfig.ApiResources)
         .AddInMemoryClients(IdentityServerConfig.GetClients(builder.Configuration))
         .AddAspNetIdentity<ApplicationUser>()
-        .AddProfileService<CustomProfileService>();
-    // Note: AddDeveloperSigningCredential is for development only.
-    // In production, use .AddSigningCredential() with a real certificate.
+        .AddProfileService<CustomProfileService>()
+        // Signing keys come from IdentityServer's automatic key management (rotated for you, no
+        // certificate to manage). They, the Data Protection keys and the issued grants live in
+        // PostgreSQL, so every replica shares them and a restart does not invalidate tokens.
+        .AddSharedStorage(builder.Configuration);
 
     builder.Services.AddRazorPages();
     builder.Services.AddControllersWithViews();
@@ -124,7 +128,17 @@ try
         try
         {
             logger.LogInformation("Applying database migrations...");
-            db.Database.Migrate();
+            try
+            {
+                db.Database.Migrate();
+            }
+            catch (Npgsql.PostgresException ex) when (ex.SqlState == "42P07")
+            {
+                // Another replica created the tables first (same handling as the Order service):
+                // starting several Identity pods at once must not crash-loop the ones that lose.
+                logger.LogWarning(
+                    "Migration table already exists — another instance applied migrations first. Continuing.");
+            }
             // Demo users are opt-in (Seed:Enabled=true) — never seed known credentials in production
             if (app.Configuration.GetValue<bool>("Seed:Enabled"))
                 await DatabaseSeeder.SeedUsersAsync(scope.ServiceProvider);
@@ -139,7 +153,7 @@ try
 
     app.UseHttpMetrics(options =>
     {
-        options.AddCustomLabel("service", _ => "InventoryService");
+        options.AddCustomLabel("service", _ => "IdentityService");
     });
     app.MapMetrics();
 
