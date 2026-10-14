@@ -11,6 +11,7 @@ using ShopEasy.InventoryService.Consumers;
 using ShopEasy.InventoryService.Data;
 using ShopEasy.Shared.Contracts;
 using ShopEasy.Shared.Services;
+using ShopEasy.UnitTests.Support;
 using Xunit;
 
 namespace ShopEasy.UnitTests.Infrastructure;
@@ -131,6 +132,7 @@ public class InventoryPostgresTests
         services.AddDbContext<InventoryDbContext>(o => o.UseNpgsql(database.ConnectionString));
         services.AddMassTransitTestHarness(x =>
         {
+            x.AllowSlowRunners();
             addConsumers(x);
             x.AddEntityFrameworkOutbox<InventoryDbContext>(o =>
             {
@@ -251,7 +253,7 @@ public class InventoryPostgresTests
 
         await harness.Bus.Publish(new ReleaseInventoryCommand { OrderId = orderId });
 
-        // explicit timeout: the harness default is short and a loaded CI runner can exceed it
+        // how long to wait is decided here; AllowSlowRunners stops the harness cutting it short
         using var faultTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         (await harness.Published.Any<Fault<ReleaseInventoryCommand>>(faultTimeout.Token)).Should().BeTrue();
         (await WasDelivered<InventoryReleasedEvent>(

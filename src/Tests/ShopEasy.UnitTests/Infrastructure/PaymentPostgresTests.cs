@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using ShopEasy.PaymentService.Consumers;
 using ShopEasy.PaymentService.Data;
 using ShopEasy.Shared.Contracts;
+using ShopEasy.UnitTests.Support;
 using Xunit;
 
 namespace ShopEasy.UnitTests.Infrastructure;
@@ -30,6 +31,7 @@ public class PaymentPostgresTests
         services.AddDbContext<PaymentDbContext>(o => o.UseNpgsql(database.ConnectionString));
         services.AddMassTransitTestHarness(x =>
         {
+            x.AllowSlowRunners();
             x.AddConsumer<ProcessPaymentConsumer>();
             x.AddConsumer<SucceededProbe>();
             x.AddEntityFrameworkOutbox<PaymentDbContext>(o =>

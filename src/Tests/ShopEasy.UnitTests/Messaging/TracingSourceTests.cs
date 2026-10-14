@@ -6,6 +6,7 @@ using MassTransit.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using ShopEasy.UnitTests.Infrastructure;
+using ShopEasy.UnitTests.Support;
 using Xunit;
 
 namespace ShopEasy.UnitTests.Messaging;
@@ -49,15 +50,18 @@ public class TracingSourceTests
         using var spans = new Spans("MassTransit");
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddMassTransitTestHarness(x => x.AddConsumer<HelloConsumer>());
+        services.AddMassTransitTestHarness(x =>
+        {
+            x.AllowSlowRunners();
+            x.AddConsumer<HelloConsumer>();
+        });
         await using var provider = services.BuildServiceProvider(true);
         var harness = provider.GetRequiredService<ITestHarness>();
         await harness.Start();
 
         await harness.Bus.Publish(new Hello { Text = "hi" });
 
-        // An explicit timeout: without one the harness gives up after a short default, which a
-        // busy CI runner (the whole suite runs in parallel) can exceed — that made this test flaky.
+        // How long to wait is decided here; AllowSlowRunners stops the harness cutting it short
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         (await harness.Consumed.Any<Hello>(timeout.Token)).Should().BeTrue();
 
