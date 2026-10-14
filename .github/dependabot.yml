@@ -34,6 +34,10 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "Npgsql.EntityFrameworkCore.PostgreSQL"
         update-types: ["version-update:semver-major"]
+      # ShopEasy.Shared references Npgsql itself (to classify database faults); its major version
+      # must follow the EF provider above, which pins the matching Npgsql major.
+      - dependency-name: "Npgsql"
+        update-types: ["version-update:semver-major"]
       - dependency-name: "AspNetCore.HealthChecks.*"
         update-types: ["version-update:semver-major"]
       # Major upgrades that need a decision and a code change, not a bump:

@@ -7,9 +7,11 @@ using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using Npgsql;
 using ShopEasy.InventoryService.Consumers;
 using ShopEasy.InventoryService.Data;
 using ShopEasy.Shared.Contracts;
+using ShopEasy.Shared.Resilience;
 using ShopEasy.Shared.Services;
 using ShopEasy.UnitTests.Support;
 using Xunit;
@@ -123,13 +125,18 @@ public class InventoryPostgresTests
 
     private static ServiceProvider BuildOutboxHost(
         PostgresTestDatabase database, Action<IBusRegistrationConfigurator> addConsumers,
-        Action<IBusRegistrationContext, IInMemoryBusFactoryConfigurator> endpoints)
+        Action<IBusRegistrationContext, IInMemoryBusFactoryConfigurator> endpoints,
+        string? connectionString = null, FaultInjector? injector = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<IInventoryLocking, PostgresInventoryLocking>();
         services.AddSingleton(NewCache());
-        services.AddDbContext<InventoryDbContext>(o => o.UseNpgsql(database.ConnectionString));
+        services.AddDbContext<InventoryDbContext>(o =>
+        {
+            o.UseNpgsql(connectionString ?? database.ConnectionString);
+            if (injector is not null) o.AddInterceptors(injector);
+        });
         services.AddMassTransitTestHarness(x =>
         {
             x.AllowSlowRunners();
@@ -206,6 +213,66 @@ public class InventoryPostgresTests
         // the consumer joined MassTransit's transaction instead of opening its own
         (await check.Set<MassTransit.EntityFrameworkCoreIntegration.InboxState>().CountAsync())
             .Should().Be(1);
+    }
+
+    // Another process holds the stock row and does not let go (a hung admin tool, a crashed pod
+    // whose session the server has not noticed yet). The consumer's SELECT ... FOR UPDATE used to
+    // queue behind it for as long as it took, with the message and a connection tied up; now it gives
+    // up after the lock timeout, the message is retried, and as soon as the row is free the
+    // reservation goes through.
+    [RequiresPostgresFact]
+    public async Task AStuckRowLock_DelaysAReservation_ButDoesNotLoseIt()
+    {
+        await using var database = await PostgresTestDatabase.CreateAsync("stuck");
+        var options = await CreateInventoryAsync(database, quantity: 10);
+        var orderId = Guid.NewGuid();
+        var injector = new FaultInjector(); // used here only to record what the server reports
+        var hardened = PostgresConnection.Harden(database.ConnectionString,
+            new PostgresResilienceOptions { LockTimeoutSeconds = 1 });
+
+        await using var holder = new NpgsqlConnection(database.ConnectionString);
+        await holder.OpenAsync();
+        await using var holderTransaction = await holder.BeginTransactionAsync();
+        await using (var hold = new NpgsqlCommand(
+            $"SELECT * FROM \"InventoryItems\" WHERE \"ProductId\" = '{Product}' FOR UPDATE", holder, holderTransaction))
+            await hold.ExecuteNonQueryAsync();
+
+        await using var provider = BuildOutboxHost(database,
+            x =>
+            {
+                x.AddConsumer<ReserveInventoryConsumer>();
+                x.AddConsumer<ReservedProbe>();
+            },
+            (ctx, cfg) =>
+            {
+                cfg.UseConsumerResilience(TestResilience.FastConsumers());
+                cfg.ReceiveEndpoint("inventory-reserve", e =>
+                {
+                    e.UseEntityFrameworkOutbox<InventoryDbContext>(ctx);
+                    e.ConfigureConsumer<ReserveInventoryConsumer>(ctx);
+                });
+                cfg.ReceiveEndpoint("probe-reserved", e => e.ConfigureConsumer<ReservedProbe>(ctx));
+            },
+            hardened, injector);
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        await harness.Bus.Publish(Reserve(orderId, 4));
+
+        // the consumer runs into the lock timeout, repeatedly, instead of waiting without end
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        while (injector.ServerErrors.Count(code => code == "55P03") < 2 && DateTime.UtcNow < deadline)
+            await Task.Delay(100);
+        injector.ServerErrors.Count(code => code == "55P03").Should().BeGreaterThanOrEqualTo(2);
+        (await WasDelivered<InventoryReservedEvent>(harness, e => e.OrderId == orderId, TimeSpan.FromMilliseconds(300)))
+            .Should().BeFalse("the row is still locked by somebody else");
+
+        await holderTransaction.RollbackAsync(); // the stuck holder goes away
+
+        (await WasDelivered<InventoryReservedEvent>(
+            harness, e => e.OrderId == orderId, TimeSpan.FromSeconds(20))).Should().BeTrue();
+        await using var check = new InventoryDbContext(options);
+        (await check.InventoryItems.SingleAsync()).ReservedQty.Should().Be(4);
     }
 
     // An event published by a consumer that then fails must not leave the building, and the
