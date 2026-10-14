@@ -9,7 +9,7 @@
 	  <PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" Version="8.1.1" />
 	  <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.8" />
 	  <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.8" />
-	  <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="8.0.27" />
+	  <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="8.0.32" />
 	  <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
 	  <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
 	  <PackageReference Include="Serilog.AspNetCore" Version="8.0.2" />
