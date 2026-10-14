@@ -110,7 +110,7 @@ try
     // ── Prometheus Metrics ────────────────────────────────────────────────────
     builder.Services.AddMetricServer(options =>
     {
-        options.Port = 9091; // separate port from the API
+        options.Port = builder.Configuration.GetValue<ushort>("Metrics:Port", 9091); // separate port from the API
     });
 
     // Row-level locking (SELECT ... FOR UPDATE) used by every stock-changing code path
@@ -121,6 +121,23 @@ try
         x.AddConsumer<ReserveInventoryConsumer>();
         x.AddConsumer<ReleaseInventoryConsumer>();
         x.AddConsumer<CommitInventoryConsumer>();
+
+        // ── Transactional inbox/outbox ────────────────────────────────────────
+        // Each consumer endpoint below runs inside ONE database transaction holding the stock
+        // changes, an inbox row (a redelivered command is not processed twice) and the events
+        // the consumer publishes (written to the OutboxMessage table, not sent yet). MassTransit
+        // sends them to RabbitMQ after the commit, so stock is never changed without its result
+        // event, and no event is sent for a change that was rolled back. If the broker is
+        // unreachable at that moment the command stays unacknowledged; its redelivery completes
+        // the delivery without repeating the stock change.
+        x.AddEntityFrameworkOutbox<InventoryDbContext>(o =>
+        {
+            o.UsePostgres();
+            // The consumers lock rows with SELECT ... FOR UPDATE; under READ COMMITTED a waiting
+            // transaction re-reads the committed values instead of failing with a
+            // serialization error.
+            o.IsolationLevel = System.Data.IsolationLevel.ReadCommitted;
+        });
 
         x.UsingRabbitMq((ctx, cfg) =>
         {
@@ -154,6 +171,7 @@ try
                     b.ExchangeType = "fanout";
                     b.Durable = true;
                 });
+                e.UseEntityFrameworkOutbox<InventoryDbContext>(ctx);
                 e.ConfigureConsumer<ReserveInventoryConsumer>(ctx);
             });
 
@@ -166,6 +184,7 @@ try
                     b.ExchangeType = "fanout";
                     b.Durable = true;
                 });
+                e.UseEntityFrameworkOutbox<InventoryDbContext>(ctx);
                 e.ConfigureConsumer<ReleaseInventoryConsumer>(ctx);
             });
 
@@ -178,6 +197,7 @@ try
                     b.ExchangeType = "fanout";
                     b.Durable = true;
                 });
+                e.UseEntityFrameworkOutbox<InventoryDbContext>(ctx);
                 e.ConfigureConsumer<CommitInventoryConsumer>(ctx);
             });
         });

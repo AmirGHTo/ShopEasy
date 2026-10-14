@@ -3,25 +3,27 @@ using global::ShopEasy.Shared.Contracts;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.OrderService.Metrics;
-using System.Net.Http;
 
 namespace ShopEasy.OrderService.Services;
 
 // Background worker that runs every 5 seconds.
 // Picks up pending outbox entries and publishes them to RabbitMQ.
 // If RabbitMQ is down, it retries next cycle — the order is never lost.
+//
+// Delivery only starts while the message bus is ready (IBrokerReadiness). That keeps an outage
+// or a start-up race — the broker unreachable, or the consuming queue not declared yet — from
+// being counted as failed delivery attempts against entries that were never actually tried.
 
 public class OutboxDeliveryService(
     IServiceScopeFactory scopeFactory,
-    IHttpClientFactory httpClientFactory,
-    IConfiguration config,
+    IBrokerReadiness brokerReadiness,
     ILogger<OutboxDeliveryService> logger) : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
+    private readonly IBrokerReadiness _brokerReadiness = brokerReadiness;
     private readonly ILogger<OutboxDeliveryService> _logger = logger;
     private readonly TimeSpan _interval = TimeSpan.FromSeconds(5);
-    private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
-    private readonly IConfiguration _config = config;
+    private bool? _lastReady;
     private const int MaxRetries = 5;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -30,9 +32,6 @@ public class OutboxDeliveryService(
             "Outbox delivery service started. Polling every {Interval}s",
             _interval.TotalSeconds);
 
-        // Wait for app to fully start before polling
-        await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
-
         while (!stoppingToken.IsCancellationRequested)
         {
             await DeliverPendingMessages(stoppingToken);
@@ -40,7 +39,8 @@ public class OutboxDeliveryService(
         }
     }
 
-    private async Task DeliverPendingMessages(CancellationToken ct)
+    // One delivery cycle. Internal so tests can run a single cycle without the 5-second timer.
+    internal async Task DeliverPendingMessages(CancellationToken ct)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
@@ -51,7 +51,7 @@ public class OutboxDeliveryService(
         OrderMetrics.SetOutboxPending(pendingCount);
 
         if (pendingCount == 0) return;
-        if (!await ConsumersAreReady(ct)) return;
+        if (!await BrokerIsReady(ct)) return;
 
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
         try
@@ -109,7 +109,13 @@ public class OutboxDeliveryService(
 
                     await db.SaveChangesAsync(ct);
                     OrderMetrics.RecordOutboxFailure();
-                    await transaction.RollbackAsync(ct);
+
+                    // COMMIT, do not roll back: the retry count must be stored (otherwise a
+                    // poison entry would fail forever, never reach the dead-letter state and
+                    // block every entry behind it), and the entries of this batch that were
+                    // already published must stay marked as delivered. The rest of the batch
+                    // waits for the next cycle.
+                    await transaction.CommitAsync(ct);
                     return;
                 }
             }
@@ -127,49 +133,34 @@ public class OutboxDeliveryService(
         }
     }
 
-    private async Task<bool> ConsumersAreReady(CancellationToken ct)
+    private async Task<bool> BrokerIsReady(CancellationToken ct)
     {
+        bool ready;
         try
         {
-            var client = _httpClientFactory.CreateClient();
-            var host = _config["RabbitMQ:Host"] ?? "rabbitmq";
-            var user = _config["RabbitMQ:Username"] ?? throw new InvalidOperationException("RabbitMQ:Username is not configured.");
-            var pass = _config["RabbitMQ:Password"] ?? throw new InvalidOperationException("RabbitMQ:Password is not configured.");
-            var auth = Convert.ToBase64String(
-                System.Text.Encoding.ASCII.GetBytes($"{user}:{pass}"));
-
-            client.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", auth);
-
-            // Check order-saga-starter has a consumer
-            var res = await client.GetAsync(
-                $"http://{host}:15672/api/queues/%2F/order-saga-starter", ct);
-
-            if (!res.IsSuccessStatusCode)
-            {
-                _logger.LogWarning("Outbox: order-saga-starter queue not found");
-                return false;
-            }
-
-            var json = await res.Content.ReadAsStringAsync(ct);
-            var doc = System.Text.Json.JsonDocument.Parse(json);
-            var consumers = doc.RootElement.GetProperty("consumers").GetInt32();
-
-            if (consumers == 0)
-            {
-                _logger.LogWarning(
-                    "Outbox: order-saga-starter has no consumers, skipping delivery");
-                return false;
-            }
-
-            return true;
+            ready = await _brokerReadiness.IsReadyAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                "Outbox: cannot reach RabbitMQ management API: {Error}", ex.Message);
-            return false;
+            _logger.LogWarning(ex, "Outbox: could not determine message bus readiness");
+            ready = false;
         }
+
+        // Log only when the state changes — not every 5 seconds while the broker is down
+        if (_lastReady != ready)
+        {
+            if (ready)
+                _logger.LogInformation("Outbox: message bus is ready — delivery enabled");
+            else
+                _logger.LogWarning("Outbox: message bus is not ready — delivery paused, entries stay pending");
+            _lastReady = ready;
+        }
+
+        return ready;
     }
 
     private static async Task PublishEntry(OutboxEntry entry,IPublishEndpoint publishEndpoint,CancellationToken ct)

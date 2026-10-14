@@ -69,7 +69,10 @@ public class ProcessPaymentConsumer(
             UpdatedAt = DateTime.UtcNow
         };
 
-        await using var transaction = await db.Database.BeginTransactionAsync();
+        // Joins MassTransit's transaction when the endpoint uses the transactional outbox:
+        // the payment row, the idempotency row and the events published below are then
+        // committed together (or not at all) by MassTransit once this method returns.
+        await using var transaction = await db.Database.BeginOrJoinAsync();
         try
         {
             db.Payments.Add(payment);

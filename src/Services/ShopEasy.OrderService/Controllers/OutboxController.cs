@@ -1,10 +1,8 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Serilog.Core;
 using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.Services;
-using System.Text.Json;
 
 namespace ShopEasy.OrderService.Controllers;
 
@@ -14,15 +12,13 @@ namespace ShopEasy.OrderService.Controllers;
 public class OutboxController(
     OrderDbContext db,
     DeadLetterMonitor deadLetterMonitor,
-    IConfiguration configuration,
-    IHttpClientFactory httpClientFactory,
-    ILogger<OrderCommandsController> logger) : ControllerBase
+    IErrorQueueClient errorQueues,
+    ILogger<OutboxController> logger) : ControllerBase
 {
     private readonly OrderDbContext _db = db;
     private readonly DeadLetterMonitor _deadLetterMonitor = deadLetterMonitor;
-    private readonly IConfiguration _configuration = configuration;
-    private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
-    private readonly ILogger<OrderCommandsController> _logger = logger;
+    private readonly IErrorQueueClient _errorQueues = errorQueues;
+    private readonly ILogger<OutboxController> _logger = logger;
 
     #region outbox monitor
 
@@ -128,73 +124,70 @@ public class OutboxController(
     // ── GET /api/outbox/deadletters ───────────────────────────────────────────
     // Shows all error queues and their message counts
     [HttpGet("deadletters")]
-    public async Task<IActionResult> GetDeadLetters()
+    public async Task<IActionResult> GetDeadLetters(CancellationToken ct)
     {
-        var queues = await _deadLetterMonitor.GetAllErrorQueues();
-        return Ok(new
+        try
         {
-            totalFailedMessages = queues.Sum(q => q.MessageCount),
-            hasFailures = queues.Any(q => q.HasMessages),
-            queues = queues
-        });
+            var queues = await _deadLetterMonitor.GetAllErrorQueues(ct);
+            return Ok(new
+            {
+                totalFailedMessages = queues.Sum(q => q.MessageCount),
+                hasFailures = queues.Any(q => q.HasMessages),
+                queues = queues
+            });
+        }
+        catch (BrokerUnavailableException ex)
+        {
+            _logger.LogWarning(ex, "Dead letter listing failed: RabbitMQ is not reachable");
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { message = "RabbitMQ is not reachable. Try again shortly." });
+        }
     }
 
     // ── POST /api/outbox/deadletters/{queueName}/requeue ──────────────────────
-    // Moves messages from error queue back to the original queue for reprocessing
+    // Moves the messages of an error queue back to the queue they came from so the consumer
+    // processes them again. Only the known error queues (see ErrorQueues) are accepted.
+    // Safe to repeat: every consumer is idempotent, so a message that is processed twice
+    // (for example after a crash in the middle of the move) changes nothing the second time.
+    //   200 moved (count in the body) · 400 not a known error queue
+    //   404 the error queue does not exist (nothing has failed there) · 503 RabbitMQ unreachable
     [HttpPost("deadletters/{queueName}/requeue")]
-    [Authorize(Roles = "admin")]
-    public async Task<IActionResult> Requeue(string queueName)
+    public async Task<IActionResult> Requeue(string queueName, CancellationToken ct)
     {
-        // Safety check — only allow requeuing known error queues
-        if (!queueName.EndsWith("_error"))
-            return BadRequest(new { message = "Can only requeue from _error queues" });
+        if (!ErrorQueues.IsMonitored(queueName))
+            return BadRequest(new { message = "Can only requeue from a known _error queue" });
 
-        var originalQueue = queueName.Replace("_error", "");
+        var originalQueue = ErrorQueues.OriginalQueueOf(queueName);
 
         try
         {
-            var host = _configuration["RabbitMQ:Host"] ?? "rabbitmq";
-            var user = _configuration["RabbitMQ:Username"] ?? throw new InvalidOperationException("RabbitMQ:Username is not configured.");
-            var pass = _configuration["RabbitMQ:Password"] ?? throw new InvalidOperationException("RabbitMQ:Password is not configured.");
-            var auth = Convert.ToBase64String(
-                System.Text.Encoding.ASCII.GetBytes($"{user}:{pass}"));
+            var result = await _errorQueues.MoveAllAsync(queueName, originalQueue, ct);
 
-            var client = _httpClientFactory.CreateClient();
-            client.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", auth);
+            if (result.Status == MoveStatus.QueueNotFound)
+                return NotFound(new { message = $"{queueName} does not exist — nothing has failed there." });
 
-            // RabbitMQ Management API — move messages between queues
-            var moveBody = JsonSerializer.Serialize(new
+            _logger.LogInformation(
+                "Messages requeued from {ErrorQueue} to {OriginalQueue}: {Count}",
+                queueName, originalQueue, result.Moved);
+
+            return Ok(new
             {
-                vhost = "/",
-                mode = "move",
-                destination = originalQueue,
-                destination_type = "queue"
+                message = $"Moved {result.Moved} message(s) from {queueName} to {originalQueue}",
+                originalQueue,
+                moved = result.Moved
             });
-
-            var res = await client.PostAsync(
-                $"http://{host}:15672/api/queues/%2F/{Uri.EscapeDataString(queueName)}/contents",
-                new StringContent(moveBody,
-                    System.Text.Encoding.UTF8, "application/json"));
-
-            if (res.IsSuccessStatusCode)
-            {
-                _logger.LogInformation(
-                    "Messages requeued from {ErrorQueue} to {OriginalQueue}",
-                    queueName, originalQueue);
-                return Ok(new
-                {
-                    message = $"Messages moved from {queueName} to {originalQueue}",
-                    originalQueue = originalQueue
-                });
-            }
-
-            return StatusCode(500, new { message = "Failed to requeue messages" });
         }
-        catch (Exception ex)
+        catch (BrokerUnavailableException ex)
+        {
+            _logger.LogWarning(ex, "Requeue from {QueueName} failed: RabbitMQ is not reachable", queueName);
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { message = "RabbitMQ is not reachable. Try again shortly." });
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Failed to requeue from {QueueName}", queueName);
-            return StatusCode(500, new { message = ex.Message });
+            return StatusCode(StatusCodes.Status500InternalServerError,
+                new { message = "Requeue failed. Messages already moved stay moved; the rest remain in the error queue." });
         }
     }
     #endregion

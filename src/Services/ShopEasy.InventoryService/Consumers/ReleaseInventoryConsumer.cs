@@ -33,7 +33,7 @@ public class ReleaseInventoryConsumer(
         Outcome outcome;
         var affectedProductIds = new List<Guid>();
 
-        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await using var transaction = await db.Database.BeginOrJoinAsync(ct);
         try
         {
             // 1. Which products did this order reserve? (unlocked read — only decides what to lock)

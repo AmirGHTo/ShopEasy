@@ -282,6 +282,8 @@ services:
       RabbitMQ__Host: rabbitmq
       RabbitMQ__Username: ${RABBITMQ_USER}
       RabbitMQ__Password: ${RABBITMQ_PASSWORD}
+      # Link shown on the dead-letter page (humans only; the service itself never calls it)
+      RabbitMQ__ManagementUiUrl: "http://localhost:15672"
     depends_on:
       postgres:
         condition: service_healthy
