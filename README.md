@@ -233,11 +233,11 @@ Order → Inventory stock checks use gRPC instead of REST: a binary, strongly-ty
 
 ### 13. Resilience (Polly)
 
-HTTP clients use Polly pipelines: exponential-backoff retries and circuit breakers. MassTransit consumers use message retry with exponential backoff before sending to dead-letter queues.
+HTTP clients use Polly pipelines: exponential-backoff retries and circuit breakers. MassTransit consumers retry too, with a different policy for infrastructure outages than for everything else — see [pattern 24](#24-surviving-database-and-network-outages).
 
 ### 14. Dead Letter Queues
 
-Messages that fail repeatedly (after 3 retries with exponential backoff) land in `*_error` queues. A `DeadLetterMonitor` background service in the Order service checks them every 30 seconds and logs a `DEAD LETTER ALERT` for every queue that holds messages. The Dead Letter Monitor page and `GET /api/outbox/deadletters` (admin) list them, and `POST /api/outbox/deadletters/{queue}/requeue` (admin) moves the messages back to the queue they came from once the cause is fixed — see [Working with dead letters](#working-with-dead-letters).
+Messages that fail repeatedly (3 quick retries for an ordinary failure, about 7 minutes of patient retries for a database or network outage — [pattern 24](#24-surviving-database-and-network-outages)) land in `*_error` queues. A `DeadLetterMonitor` background service in the Order service checks them every 30 seconds and logs a `DEAD LETTER ALERT` for every queue that holds messages. The Dead Letter Monitor page and `GET /api/outbox/deadletters` (admin) list them, and `POST /api/outbox/deadletters/{queue}/requeue` (admin) moves the messages back to the queue they came from once the cause is fixed — see [Working with dead letters](#working-with-dead-letters).
 
 This talks **AMQP** — the protocol and credentials the services already use for messaging — and does **not** need the RabbitMQ management plugin (HTTP, port 15672). That UI stays available as a tool for humans, but nothing in the application depends on it.
 
@@ -297,6 +297,38 @@ The consumers call `db.Database.BeginOrJoinAsync()` (`Data/UnitOfWork.cs`): insi
 ### 23. Broker Readiness (no management API)
 
 The Order service's outbox worker asks `IBrokerReadiness` before it publishes. The implementation reads **MassTransit's own bus health check** (`masstransit-bus`): healthy only when the bus is started, the RabbitMQ connection is up and every receive endpoint has declared its queue and bindings. The last part matters at start-up — an event published to an exchange that has no queue bound yet is silently dropped by the broker. While the bus is not ready, entries simply stay pending (one warning when the state changes, not one per cycle) and no retry is spent. This replaces the previous design, which polled the RabbitMQ management HTTP API (`:15672`) with Basic auth.
+
+### 24. Surviving Database and Network Outages
+
+Two kinds of failure reach a message consumer, and they need opposite reactions. The policy lives in `ShopEasy.Shared/Resilience` and is the same in the Order, Inventory and Payment services.
+
+| Failure | Examples | What happens |
+|---|---|---|
+| **Transient** — the infrastructure is unavailable for a while | PostgreSQL restarting or failing over, a dropped connection, a command or connection timeout, a lock timeout, a deadlock, a session ended by the server, a connection pool that is used up | Retried patiently: 12 retries with pauses doubling from 1 s to 60 s (about 7 minutes in total, ±20 % jitter so the replicas do not retry in step). The message stays unacknowledged meanwhile, so that consumer slot takes nothing new from the queue (back-pressure), and a pod that dies meanwhile has the message redelivered. If the database is back inside the window the message is simply processed: no dead letter, nothing to requeue by hand. |
+| **Anything else** | a bug, a business rule that cannot be satisfied, a unique-key conflict with the twin message | 3 quick retries (1–10 s) cover races, then the message goes to the `*_error` queue (pattern 14). `InvalidOperationException` and `ArgumentNullException` are not retried at all. |
+
+Which of the two it is comes from `TransientFaults`, which looks through the whole exception chain. That matters: EF Core reports a database failure as an `InvalidOperationException` ("An exception has been raised that is likely due to a transient failure") and that type used to be on the "never retry" list, so before this a database outage was **not retried at all** — the message went to the error queue on the first failure. A failure-injection test (below) reproduced that against the previous policy.
+
+Database connections are bounded as well (`PostgresConnection`, all five services). Without limits a stuck lock or a half-dead connection holds a request for as long as it lasts, and everything queues up behind it until the service itself is unresponsive. Values written in the connection string win; `0` switches a limit off. Set them as `Resilience__Postgres__<Setting>`:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `LockTimeoutSeconds` | 10 | A `SELECT … FOR UPDATE` (stock, saga, payment rows) gives up after this long instead of queueing behind a lock holder that may be stuck. Counts as transient, so the consumer retries. |
+| `IdleInTransactionTimeoutSeconds` | 60 | The server ends a session that sits inside an open transaction doing nothing. That is what releases the row locks of a pod that crashed or hung mid-transaction. |
+| `CommandTimeoutSeconds` | 30 | A command running longer is cancelled on the server and fails. It also applies to the migrations at start-up: raise it for a migration that legitimately takes longer. |
+| `ConnectTimeoutSeconds` | 15 | Waiting for a connection: opening a new one, or a free one from the pool. |
+| `MaxPoolSize` | 20 | Connections one process may open. When they are used up callers wait `ConnectTimeoutSeconds` and then fail (and are retried), instead of the database refusing everybody. |
+| `TcpKeepAliveSeconds` | 30 | Finds out that the other end vanished (failover, a dropped network path) in seconds instead of the operating system's default of hours. |
+
+**Sizing the pool:** `replicas × MaxPoolSize` must stay below the server's `max_connections` minus a reserve for administrators (the Order service at its HPA maximum is the one to count). `LockTimeoutSeconds` and `IdleInTransactionTimeoutSeconds` travel to the server as connection start-up options; PgBouncer in transaction mode rejects those, so behind it set both to `0` and use `ALTER ROLE … SET lock_timeout = '10s'` instead.
+
+The consumer schedule is configurable as `Resilience__Consumers__<Setting>`: `TransientRetryLimit` (12; `0` turns the patient retries off), `TransientMinIntervalSeconds` (1), `TransientMaxIntervalSeconds` (60), `JitterRatio` (0.2), and for everything else `RetryLimit` (3), `MinIntervalSeconds` (1), `MaxIntervalSeconds` (10), `IntervalDeltaSeconds` (2). Nonsensical values stop the service at start-up rather than at the next outage.
+
+Deliberate choices:
+
+- EF Core's own `EnableRetryOnFailure` is **not** used: it does not support the user-initiated transactions that MassTransit's outbox and the services' `BeginOrJoinAsync` open. Retrying the whole message instead re-runs the whole unit of work, which is safe because every consumer is idempotent and publishes through the outbox.
+- No circuit breaker or kill switch pauses a consumer during an outage: stopping an endpoint can lose the retries in flight, and the bounded pool and the capped pauses already limit the load on a recovering database.
+- Redelivery stays in-process (no RabbitMQ delayed-message plugin to install). The slot a message occupies while it waits is bounded by the 7-minute window, far below RabbitMQ's 30-minute `consumer_timeout`.
 
 ---
 
@@ -414,6 +446,8 @@ Services read standard ASP.NET Core configuration, so every key can be an enviro
 | `Services__InventoryService`, `Services__InventoryGrpcService` | Order | Inventory REST and gRPC URLs. |
 | `Redis__Connection` | Product, Inventory, Order | Redis endpoint, e.g. `redis:6379`. |
 | `Telemetry__Endpoint` | all | OTLP endpoint (Jaeger), default `http://jaeger:4317`. |
+| `Resilience__Postgres__*` | all with a DB | Limits on how long a service waits for PostgreSQL and how many connections it opens (lock, idle-in-transaction, command and connect timeouts, pool size, TCP keep-alive). Defaults suit most setups; see [pattern 24](#24-surviving-database-and-network-outages). |
+| `Resilience__Consumers__*` | Order, Inventory, Payment | Retry schedule of the message consumers: patient retries for outages, quick retries for everything else. Same pattern. |
 | `Seq__ServerUrl` | all | Where logs are shipped, default `http://seq:5341` (the Compose Seq). **Empty = off** (console only) — the Kubernetes manifests set it empty because they do not run Seq. |
 | `Testing__ForcePaymentSuccess` | Payment | Test-only: forces simulated payments to succeed. |
 
@@ -734,7 +768,7 @@ dotnet test src/Tests/ShopEasy.UnitTests
 dotnet test src/Tests/ShopEasy.IntegrationTests
 ```
 
-**Unit tests — 214 test cases.** 177 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 37 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 214 (see [CI/CD](#cicd)).
+**Unit tests — 265 test cases.** 219 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 46 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 265 (see [CI/CD](#cicd)).
 
 | Area | Where | What it covers |
 |---|---|---|
@@ -745,6 +779,7 @@ dotnet test src/Tests/ShopEasy.IntegrationTests
 | Inventory consumers | `Inventory/*` | Reserve, commit and release including duplicates, out-of-order messages, shortages, multi-product orders and a missing inventory record. |
 | Order placement | `Orders/*` | Request validation and limits, server-side price/name resolution, the Product service client (404, 5xx, network failure, malformed response). |
 | Messaging (no servers needed) | `Messaging/*` | The broker readiness gate (including against MassTransit's real health check registration), outbox delivery pausing while the bus is not ready, the dead-letter monitor and the requeue endpoint's responses. |
+| Resilience (no servers needed) | `Resilience/*`, `Messaging/ConsumerResilienceTests` | Which failures count as transient (including EF Core's wrapping, nested and aggregate exceptions, and what must *not* count: a missing file, a cancellation); the connection-string limits and that anything written in the string wins; the retry schedule and its jitter; and the policy on a real MassTransit pipeline — an outage of more than the old four attempts is ridden out without a dead letter, the patient and quick retries never multiply, a bug gets exactly 3 retries and a broken rule none. |
 | Logging, correlation, tracing (no servers needed) | `Messaging/LoggingTests`, `CorrelationFilterTests`, `TracingSourceTests` | The exact console line per service, the correlation id inside and outside a scope, the Seq setting; the id travelling through a real MassTransit pipeline (header → consumer → the messages it publishes), the HTTP hand-over from the gateway; MassTransit and Npgsql emitting spans under the source names the services subscribe to. |
 
 ### Tests that need PostgreSQL and RabbitMQ
@@ -753,8 +788,9 @@ What these check cannot be faked: row locks, transactions, the MassTransit outbo
 
 | Test class | What it proves |
 |---|---|
-| `Infrastructure/InventoryPostgresTests` | 12 orders of 3 units racing for 10 units reserve at most 3 times (the real `SELECT … FOR UPDATE`); the same command delivered 4 times at once reserves once; a consumer that publishes and then fails sends **nothing** and rolls everything back; `BeginOrJoinAsync` joins an open transaction and leaves the commit to its owner. |
-| `Infrastructure/PaymentPostgresTests` | A payment command through the outbox saves the payment and delivers the event; the same command twice charges once and still confirms. |
+| `Infrastructure/InventoryPostgresTests` | 12 orders of 3 units racing for 10 units reserve at most 3 times (the real `SELECT … FOR UPDATE`); the same command delivered 4 times at once reserves once; a consumer that publishes and then fails sends **nothing** and rolls everything back; `BeginOrJoinAsync` joins an open transaction and leaves the commit to its owner; a row lock that another process never releases makes the consumer hit the lock timeout again and again, and the reservation still goes through once the lock is gone. |
+| `Infrastructure/PaymentPostgresTests` | A payment command through the outbox saves the payment and delivers the event; the same command twice charges once and still confirms. **Failure injection:** six dropped database connections in a row (more than the old policy survived) are ridden out and the order is charged exactly once, with one idempotency row and one result event; an outage that outlasts the patient retries ends in the error queue after exactly the configured attempts, with nothing half-written. |
+| `Infrastructure/PostgresResilienceTests` | What each connection limit does against a real server: a waiter behind a stuck row lock gives up at the lock timeout (and, as a control, hangs without it); a session left idle inside a transaction is ended and its locks released; a session terminated by the server counts as retryable; a runaway query is cancelled at the command timeout and the connection stays usable; with the pool used up a caller fails after the connect timeout and the server never sees more than `MaxPoolSize` connections. |
 | `Infrastructure/OutboxDeliveryPostgresTests` | Ready bus → entries published and marked delivered; not ready → nothing published and no retry spent; a failing entry is retried, parked after 5 attempts and no longer blocks the others; deliveries earlier in a batch stay delivered when a later one fails; each entry's correlation id is restored while it is published. |
 | `Infrastructure/SagaPostgresTests` | The saga row lock (`SELECT … FOR UPDATE`): twelve concurrent actors lose no update (and a control test shows that **without** the lock updates are lost); a payment result racing the timeout service, and a customer cancel racing the payment result, never leave a charged order both committed and released. Checked to fail when the lock is removed. |
 | `Infrastructure/ErrorQueueClientTests` | Counting and moving messages between real queues over AMQP (body, headers and message id preserved), missing source / destination, broker unreachable. |
@@ -768,7 +804,7 @@ docker run -d --name shopeasy-test-mq -e RABBITMQ_DEFAULT_USER=test -e RABBITMQ_
 
 export SHOPEASY_TEST_POSTGRES="Host=localhost;Port=55432;Username=postgres;Password=test"
 export SHOPEASY_TEST_RABBITMQ="amqp://test:test@localhost:55672"
-dotnet test src/Tests/ShopEasy.UnitTests          # now 214 run, 0 skipped
+dotnet test src/Tests/ShopEasy.UnitTests          # now 265 run, 0 skipped
 
 docker rm -f shopeasy-test-pg shopeasy-test-mq
 ```
@@ -785,7 +821,7 @@ Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new p
 
 | Job | What it checks |
 |---|---|
-| **Build and test** | `dotnet restore/build` (Release) and all 214 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 37 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). Test results are uploaded as an artifact; the counters appear in the job summary. |
+| **Build and test** | `dotnet restore/build` (Release) and all 265 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 46 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). Test results are uploaded as an artifact; the counters appear in the job summary. |
 | **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
 | **Docker build (×6)** | Each service image builds from its Dockerfile (nothing is pushed from a pull request). |
 | **Start the Compose stack** | Builds the images and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. |
@@ -1069,6 +1105,7 @@ This project is being hardened step by step. Status:
 | 6 | Replace RabbitMQ management-API polling with a bus-ready check and AMQP dead-letter tooling; MassTransit transactional inbox/outbox for Payment/Inventory events | Done |
 | 7 | Observability (per-service log names, configurable Seq, correlation id across HTTP, outbox, saga and RabbitMQ, MassTransit + Npgsql traces), CI/CD on GitHub Actions (build, all tests incl. PostgreSQL/RabbitMQ, deployment-file validation, image builds, publish to GHCR, Dependabot), vulnerable dependencies patched and gated, saga row-locking tests on PostgreSQL, saga tests re-enabled | Done |
 | 8 | Non-root images (no SQLite, no `chmod 777`), read-only containers started by CI, Kubernetes with pinned published image tags and no local-image assumptions, Identity keys / key ring / grants shared in PostgreSQL (several replicas), network policies | Done |
+| 9 | Application-level resilience and security, in five parts: **9.1 failure injection and outage handling (database and network faults are classified, ridden out for minutes and bounded by timeouts and pool limits; proven by injected faults)** · 9.2 idempotent API edges and saga handlers · 9.3 resilient service-to-service calls (deadlines, retry budgets, gateway timeouts and health) · 9.4 authorization model (audiences, scopes, service identity) · 9.5 business-level observability and an end-to-end order test | In progress — 9.1 done |
 
 **Known limitations today** (documented so nobody is surprised):
 
@@ -1089,6 +1126,8 @@ This project is being hardened step by step. Status:
 - PostgreSQL, RabbitMQ and Redis in `k8s/` are single-replica Deployments with a PVC at most: fine to learn from, not highly available. Use a managed service or an operator for production data stores.
 - A customer cancel (`DELETE /api/orders/{id}`) is logged and published under the *cancel request's* correlation id, not the id of the request that placed the order; `OrderId` links the two.
 - Migrations run at service start-up; with several replicas the race is only handled for the Order and Identity services.
+- A database outage longer than the patient-retry window (about 7 minutes by default) sends the messages that were in flight to the `*_error` queues; requeue them once the database is back (pattern 14). While it lasts, every consumer slot retries in parallel (bounded by the pool size and the consumers' concurrency); there is no circuit breaker that pauses consumption.
+- The HTTP calls between services (gRPC stock checks, the Product client) and the gateway's proxy routes do not have the same treatment yet: the Order service's HTTP clients have Polly pipelines, but the gRPC calls have no deadline or retry and YARP has no explicit timeouts (planned as 9.3).
 - Swagger UIs and Prometheus metrics ports are unauthenticated.
 
 ---
