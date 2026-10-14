@@ -6,7 +6,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
 
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY ["src/Services/ShopEasy.PaymentService/ShopEasy.PaymentService.csproj", "src/Services/ShopEasy.PaymentService/"]
 COPY ["src/Shared/ShopEasy.Shared/ShopEasy.Shared.csproj", "src/Shared/ShopEasy.Shared/"]
