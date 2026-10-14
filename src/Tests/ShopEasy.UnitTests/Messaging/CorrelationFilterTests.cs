@@ -7,6 +7,7 @@ using Serilog;
 using Serilog.Core;
 using Serilog.Events;
 using ShopEasy.Shared.Messaging;
+using ShopEasy.UnitTests.Support;
 using Xunit;
 
 namespace ShopEasy.UnitTests.Messaging;
@@ -67,6 +68,7 @@ public class CorrelationFilterTests
         services.AddScoped(typeof(CorrelationSendFilter<>));
         services.AddMassTransitTestHarness(x =>
         {
+            x.AllowSlowRunners();
             x.AddConsumer<PingConsumer>();
             x.AddConsumer<PongConsumer>();
             x.UsingInMemory((ctx, cfg) =>
