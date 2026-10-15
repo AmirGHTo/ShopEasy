@@ -13,6 +13,7 @@ using ShopEasy.Shared.Middleware;
 using System.Net.Http.Headers;
 using System.Threading.RateLimiting;
 using Yarp.ReverseProxy.Transforms;
+using ShopEasy.Gateway.Resilience;
 
 Log.Logger = new LoggerConfiguration()
     .ConfigureShopEasy("ShopEasy.Gateway")
@@ -265,7 +266,10 @@ try
                 // goes to the service behind the gateway, so its logs and messages carry it too
                 CorrelationContext.Propagate(ctx.ProxyRequest);
             });
-        });
+        })
+        // Timeout for a silent service, connection limits, and retries of GETs after a connection
+        // failure (settings: Resilience:Gateway and Resilience:RetryBudget)
+        .AddGatewayResilience(builder.Configuration);
 
     var app = builder.Build();
 

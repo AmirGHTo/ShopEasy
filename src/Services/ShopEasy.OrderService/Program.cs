@@ -68,6 +68,21 @@ try
     // Row-level locking (SELECT ... FOR UPDATE) for every saga state transition
     builder.Services.AddSingleton<ISagaLocking, PostgresSagaLocking>();
 
+    // ── Calls to other services: deadlines, retry budget, circuit breaker ─────
+    // Settings: Resilience:Inventory (the gRPC stock check) and Resilience:RetryBudget (how much
+    // extra load retries may add). Invalid values stop the service at start-up.
+    var retryBudgetOptions = RetryBudgetOptions.From(builder.Configuration);
+    builder.Services.AddOptions<RetryBudgetOptions>()
+        .Bind(builder.Configuration.GetSection(RetryBudgetOptions.SectionName))
+        .Validate(o => { o.Validate(); return true; })
+        .ValidateOnStart();
+    builder.Services.AddOptions<InventoryCallOptions>()
+        .Bind(builder.Configuration.GetSection(InventoryCallOptions.SectionName))
+        .Validate(o => { o.Validate(); return true; })
+        .ValidateOnStart();
+    builder.Services.AddSingleton<InventoryCallPolicy>();
+    builder.Services.AddSingleton<StockFetchCoordinator>();
+
     builder.Services.AddSingleton<ITokenService, TokenService>();
 
     // ── HTTP Client for IdP (used by TokenService to request service tokens) ──
@@ -102,17 +117,22 @@ try
     // PlaceOrder never trusts client-supplied prices: it asks the Product service.
     // Tight timeouts because a customer is waiting; if the catalog is unavailable
     // the order is rejected with 503 (see OrderCommandsController).
+    var productRetryBudget = new RetryBudget(retryBudgetOptions);
     builder.Services.AddHttpClient<IProductCatalogClient, ProductCatalogClient>(client =>
         {
             client.BaseAddress = new Uri(
                 builder.Configuration["Services:ProductService"] ?? "http://product:8080");
         })
+        .AddHttpMessageHandler(() => new RetryBudgetHandler(productRetryBudget))
         .AddHttpMessageHandler<CorrelationIdHandler>()
         .AddStandardResilienceHandler(options =>
         {
             options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(3);
             options.Retry.MaxRetryAttempts = 2;
             options.Retry.Delay = TimeSpan.FromMilliseconds(200);
+            // retries only while the budget allows them (see Resilience:RetryBudget)
+            options.Retry.ShouldHandle = HttpRetryBudget.ShouldRetry(
+                productRetryBudget, "product", options.Retry.MaxRetryAttempts);
 
             options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(30);
             options.CircuitBreaker.FailureRatio = 0.5;
@@ -393,8 +413,21 @@ try
     .ConfigureChannel(options =>
     {
         options.Credentials = Grpc.Core.ChannelCredentials.Insecure;
+    })
+    // Connection level protection (the per-call deadline, retries and circuit breaker are in
+    // InventoryCallPolicy): a connect that hangs is cut off after 3 s, and keep-alive pings find a
+    // connection whose other end has vanished (a restarted pod) instead of waiting for the next
+    // call to fail on it.
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        ConnectTimeout = TimeSpan.FromSeconds(3),
+        PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5),
+        KeepAlivePingDelay = TimeSpan.FromSeconds(30),
+        KeepAlivePingTimeout = TimeSpan.FromSeconds(10),
+        KeepAlivePingPolicy = HttpKeepAlivePingPolicy.WithActiveRequests,
+        EnableMultipleHttp2Connections = true
     });
-    builder.Services.AddScoped<InventoryGrpcClient>();
+    builder.Services.AddScoped<IStockSource, InventoryGrpcClient>();
 
     // ── Redis Distributed Cache ───────────────────────────────────────────────
     // Caches product data to reduce database load.
