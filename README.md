@@ -990,15 +990,15 @@ Everything below is in `.github/` and runs on GitHub Actions. Nothing needs to b
 
 ### CI — `.github/workflows/ci.yml`
 
-Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new push to the same branch cancels the run still in progress.
+Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new push to the same branch cancels the run still in progress. A pull request that **only changes documentation** (`*.md`, `docs/`, the licence) skips the build, the tests and the container jobs, so it finishes in seconds; anything else, and every run on `main` or a tag, runs the full pipeline.
 
 | Job | What it checks |
 |---|---|
-| **Build and test** | `dotnet restore/build` (Release) and all 324 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 53 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). Test results are uploaded as an artifact; the counters appear in the job summary. |
+| **Detect changes** | Decides whether the pull request touches anything that is built, tested or deployed (plain `git diff`, no third-party action). Skipped jobs count as passed in **CI passed**, so the check can stay required for documentation-only changes. |
+| **Build and test** | `dotnet restore/build` (Release) and all 324 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 53 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
 | **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
-| **Docker build (×6)** | Each service image builds from its Dockerfile (nothing is pushed from a pull request). |
-| **Start the Compose stack** | Builds the images and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. |
-| **CI passed** | One aggregate status for the four groups above — the check to require in branch protection. |
+| **Start the Compose stack** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. |
+| **CI passed** | One aggregate status for the jobs above (a skipped job counts as passed) — the check to require in branch protection. |
 
 **Dependency audit.** `Directory.Build.props` makes NuGet check every restored package, direct *and* transitive, against the advisory database. Locally a finding is a warning; **in CI it fails the build** (`NU1901`–`NU1904`). To fix one, upgrade the package, or pin a patched version of the transitive dependency with a direct `PackageReference` (see the `System.Text.Json` pin in `ShopEasy.Shared.csproj`). **Dependabot** (`.github/dependabot.yml`) opens weekly update pull requests for NuGet packages, the Dockerfile base images and the GitHub Actions; each runs the full CI. NuGet updates are grouped: one pull request for the OpenTelemetry, Serilog, MassTransit and test-tooling packages each, and one for every other minor or patch update across all projects; a major version arrives as its own pull request. Major bumps of the framework-bound packages **and of the .NET base images** are ignored on purpose (the services target .NET 8 LTS; moving to a newer .NET is a project decision that changes the `TargetFramework`, the Dockerfiles and the CI together), and so are major bumps of Swashbuckle and Serilog.AspNetCore and every major *and minor* bump of MassTransit: 8.5+ pulls RabbitMQ.Client 7, which removes the synchronous API the dead-letter tooling uses (the Order service stops compiling), and MassTransit 9 is no longer Apache-2.0 — both need a deliberate migration. If a base-image bump is merged anyway, the Dockerfile check above fails.
 
@@ -1012,7 +1012,7 @@ docker compose --env-file .env.example config --quiet
 
 ### CD — publishing images
 
-After **CI passed** on `main` or on a version tag, the `publish-images` job builds the six service images again and pushes them to the GitHub Container Registry as `ghcr.io/<owner>/shopeasy-<service>` (`identity`, `gateway`, `product`, `inventory`, `payment`, `order`), tagged:
+After **CI passed** on `main` or on a version tag, the `publish-images` job builds the six service images (with the layer cache of earlier runs) and pushes them to the GitHub Container Registry as `ghcr.io/<owner>/shopeasy-<service>` (`identity`, `gateway`, `product`, `inventory`, `payment`, `order`), tagged:
 
 | Tag | When |
 |---|---|
@@ -1166,7 +1166,7 @@ ShopEasy/
 ├── .env.example                   # copy to .env (git-ignored) — all secrets live there
 ├── Directory.Build.props          # NuGet vulnerability audit (errors in CI)
 ├── .github/
-│   ├── workflows/ci.yml           # CI (build, tests, deployment-file checks, image builds, start the stack) + CD (publish to GHCR)
+│   ├── workflows/ci.yml           # CI (change detection, build, tests, deployment-file checks, build and start the stack) + CD (publish to GHCR)
 │   ├── scripts/                   # Dockerfile / Kubernetes / running-container rules the CI enforces
 │   └── dependabot.yml
 ├── postgres-init.sql              # creates the 5 databases
