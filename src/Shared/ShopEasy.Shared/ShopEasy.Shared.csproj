@@ -18,6 +18,6 @@
 	  <!-- the correlation filters and the consumer retry policy are written against MassTransit (no transport here) -->
 	  <PackageReference Include="MassTransit" Version="8.2.5" />
 	  <!-- classifies database faults (NpgsqlException.IsTransient) and hardens connection strings; same version the EF provider resolves -->
-	  <PackageReference Include="Npgsql" Version="8.0.6" />
+	  <PackageReference Include="Npgsql" Version="8.0.9" />
   </ItemGroup>
 </Project>
