@@ -4,6 +4,8 @@ using System.Text.RegularExpressions;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Npgsql;
+using ShopEasy.Gateway.Resilience;
+using ShopEasy.OrderService.Services;
 using ShopEasy.Shared.Resilience;
 using ShopEasy.UnitTests.Support;
 using Xunit;
@@ -22,7 +24,7 @@ public class ResilienceConfigurationTests
     private static string Read(params string[] path) => RepositoryFiles.Read(path);
 
     // The code's defaults as "setting name -> value"
-    private static Dictionary<string, double> Defaults<T>() where T : new()
+    internal static Dictionary<string, double> Defaults<T>() where T : new()
     {
         var instance = new T();
         return typeof(T).GetProperties()
@@ -141,7 +143,11 @@ public class ResilienceConfigurationTests
         var fromExample = Regex.Matches(Read(".env.example"), @"^# (RESILIENCE_[A-Z_]+)=([0-9.]+)\s*$", RegexOptions.Multiline)
             .ToDictionary(m => m.Groups[1].Value, m => Number(m.Groups[2].Value));
 
-        fromCompose.Should().HaveCount(PostgresDefaults.Count + ConsumerDefaults.Count);
+        // every setting has its variable; the settings for calls between services are checked in
+        // CallResilienceConfigurationTests
+        fromCompose.Should().HaveCount(PostgresDefaults.Count + ConsumerDefaults.Count
+            + Defaults<InventoryCallOptions>().Count + Defaults<GatewayResilienceOptions>().Count
+            + Defaults<RetryBudgetOptions>().Count);
         fromExample.Should().BeEquivalentTo(fromCompose);
     }
 

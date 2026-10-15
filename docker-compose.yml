@@ -31,6 +31,11 @@ x-resilience-consumers: &resilience-consumers
   Resilience__Consumers__MaxIntervalSeconds: "${RESILIENCE_CONSUMER_MAX_INTERVAL_SECONDS:-10}"
   Resilience__Consumers__IntervalDeltaSeconds: "${RESILIENCE_CONSUMER_INTERVAL_DELTA_SECONDS:-2}"
 
+x-resilience-retry-budget: &resilience-retry-budget
+  Resilience__RetryBudget__Ratio: "${RESILIENCE_RETRY_BUDGET_RATIO:-0.2}"
+  Resilience__RetryBudget__MinRetriesPerWindow: "${RESILIENCE_RETRY_BUDGET_MIN_RETRIES:-10}"
+  Resilience__RetryBudget__WindowSeconds: "${RESILIENCE_RETRY_BUDGET_WINDOW_SECONDS:-10}"
+
 services:
 
   # ── PostgreSQL Database ─────────────────────────────────────────────────────
@@ -312,7 +317,11 @@ services:
     ports:
       - "8080"        # ← change from "5102:8080" to just "8080" (dynamic host port)
     environment:
-      <<: [*resilience-postgres, *resilience-consumers]
+      <<: [*resilience-postgres, *resilience-consumers, *resilience-retry-budget]
+      # Calls to the Inventory service (the stock check): deadline, retries, circuit breaker
+      Resilience__Inventory__TimeoutSeconds: "${RESILIENCE_INVENTORY_TIMEOUT_SECONDS:-3}"
+      Resilience__Inventory__MaxRetries: "${RESILIENCE_INVENTORY_MAX_RETRIES:-2}"
+      Resilience__Inventory__BreakDurationSeconds: "${RESILIENCE_INVENTORY_BREAK_SECONDS:-15}"
       # Idempotency-Key on POST /api/orders (README, "Order API"). Both are optional.
       Idempotency__RequireKey: "${ORDER_IDEMPOTENCY_REQUIRE_KEY:-false}"
       Idempotency__RetentionHours: "${ORDER_IDEMPOTENCY_RETENTION_HOURS:-24}"
@@ -360,6 +369,12 @@ services:
     ports:
       - "5000:8080"
     environment:
+      <<: *resilience-retry-budget
+      # Proxying: timeout for a silent service, connection limits, retries of GETs
+      Resilience__Gateway__ActivityTimeoutSeconds: "${RESILIENCE_GATEWAY_ACTIVITY_TIMEOUT_SECONDS:-30}"
+      Resilience__Gateway__ConnectTimeoutSeconds: "${RESILIENCE_GATEWAY_CONNECT_TIMEOUT_SECONDS:-5}"
+      Resilience__Gateway__PooledConnectionLifetimeSeconds: "${RESILIENCE_GATEWAY_POOLED_CONNECTION_LIFETIME_SECONDS:-120}"
+      Resilience__Gateway__GetRetries: "${RESILIENCE_GATEWAY_GET_RETRIES:-2}"
       ASPNETCORE_URLS: http://+:8080
       IdentityServer__Authority: "http://identity:8080"
       IdentityServer__PublicUrl: "http://localhost:5001"

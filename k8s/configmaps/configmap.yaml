@@ -38,3 +38,15 @@ data:
   # order requests without the header; RetentionHours is how long a key is remembered.
   Idempotency__RequireKey: "false"
   Idempotency__RetentionHours: "24"
+  # Calls between services (README, pattern 26). Order uses Resilience__Inventory__* and the retry
+  # budget; the gateway uses Resilience__Gateway__* and the retry budget.
+  Resilience__Inventory__TimeoutSeconds: "3"
+  Resilience__Inventory__MaxRetries: "2"
+  Resilience__Inventory__BreakDurationSeconds: "15"
+  Resilience__Gateway__ActivityTimeoutSeconds: "30"
+  Resilience__Gateway__ConnectTimeoutSeconds: "5"
+  Resilience__Gateway__PooledConnectionLifetimeSeconds: "120"
+  Resilience__Gateway__GetRetries: "2"
+  Resilience__RetryBudget__Ratio: "0.2"
+  Resilience__RetryBudget__MinRetriesPerWindow: "10"
+  Resilience__RetryBudget__WindowSeconds: "10"

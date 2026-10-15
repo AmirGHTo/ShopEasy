@@ -117,9 +117,9 @@ flowchart LR
 | Interaction | Mechanism | Why |
 |---|---|---|
 | Client to gateway | HTTPS, session cookie | The browser never holds a token ([pattern 1](#1-api-gateway-yarp--bff)) |
-| Gateway to services | HTTP through YARP, user's access token attached | One public URL; each service authorises the request on its own ([pattern 2](#2-authentication--authorization-oauth2--oidc--jwt)) |
-| Order to Product | HTTP with retries and a circuit breaker | Prices and names always come from the catalog, never from the request; the order is refused (`503`) if the catalog cannot answer |
-| Order to Inventory | gRPC for the stock check | Fast typed batch call; the answer is cached in Redis ([patterns 11 and 12](#11-eventual-vs-strong-consistency-hybrid-inventory-check)) |
+| Gateway to services | HTTP through YARP, user's access token attached | One public URL; each service authorises the request on its own ([pattern 2](#2-authentication--authorization-oauth2--oidc--jwt)). A service that goes silent is cut off after 30 s with `504`, and a GET that hit a broken connection is repeated ([pattern 26](#26-resilient-calls-between-services)) |
+| Order to Product | HTTP with a deadline, budgeted retries and a circuit breaker | Prices and names always come from the catalog, never from the request; the order is refused (`503`) if the catalog cannot answer |
+| Order to Inventory | gRPC for the stock check, with a deadline, retries after connection failures and a circuit breaker | Fast typed batch call; the answer is cached in Redis, and the cached value answers when Inventory cannot ([patterns 11, 12 and 26](#11-eventual-vs-strong-consistency-hybrid-inventory-check)) |
 | Order, Inventory and Payment among themselves | Commands and events over RabbitMQ (MassTransit) | Loose coupling; at-least-once delivery made safe by the outbox, the inbox and idempotent consumers ([patterns 5 to 8](#5-outbox-pattern)) |
 
 ### Life of an order
@@ -204,7 +204,7 @@ The saga state is saved before the next command is published, every handler acts
 | Quality | How it is achieved |
 |---|---|
 | **Consistency** | Saga with compensation, transactional outbox and inbox, row-level locking, idempotent consumers and an idempotent order API ([patterns 4 to 8](#4-saga-pattern-orchestration-based), [25](#25-idempotent-order-placement)) |
-| **Reliability** | Patient retries for outages, bounded database waits, Polly pipelines, dead-letter queues with requeue, liveness and readiness probes ([13](#13-resilience-polly), [24](#24-surviving-database-and-network-outages)) |
+| **Reliability** | Patient retries for outages, bounded database waits, deadlines, budgeted retries and circuit breakers on calls between services, dead-letter queues with requeue, liveness and readiness probes ([13](#13-resilience-polly), [24](#24-surviving-database-and-network-outages), [26](#26-resilient-calls-between-services)) |
 | **Security** | OIDC with a BFF gateway, JWT validation per service, secrets only in `.env` or Kubernetes Secrets, non-root read-only containers, network policies ([Configuration & Secrets](#configuration--secrets)) |
 | **Scalability** | Order is stateless and scales horizontally (`--scale order=N`, or an autoscaler from 2 to 10 pods on Kubernetes); outbox rows are claimed with `SELECT … FOR UPDATE SKIP LOCKED`; Identity keeps its state in PostgreSQL ([Horizontal Scaling](#horizontal-scaling)) |
 | **Observability** | Correlation id on every log line, trace and message; Seq, Jaeger, Prometheus and Grafana; saga, outbox and dead-letter monitors ([Developer Portal & Monitoring](#developer-portal--monitoring)) |
@@ -343,7 +343,7 @@ The read-model row is written in the same transaction as the order when it is pl
 The stock check before accepting an order uses a **layered hybrid** approach:
 - **Layer 1** — Redis cache (~1ms, eventual, 30s TTL)
 - **Layer 2** — gRPC to Inventory on cache miss (~150ms, strong)
-- **Layer 3** — stale cache fallback (5min TTL) if Inventory is down, so orders still flow
+- **Layer 3** — stale cache fallback (5min TTL) if Inventory is down, too slow or its circuit is open, so orders still flow ([pattern 26](#26-resilient-calls-between-services))
 - **Layer 4** — reject only if no data at all
 - **Layer 5** — the saga's `ReserveInventory` does the authoritative check inside the Inventory service's database transaction, with the stock rows locked (`SELECT … FOR UPDATE`), so concurrent reservations — on any Inventory instance — are serialized per product and cannot oversell. See [Inventory Stock Model](#inventory-stock-model).
 
@@ -351,11 +351,11 @@ This decouples order acceptance from the Inventory service being online, while t
 
 ### 12. gRPC Internal Communication
 
-Order → Inventory stock checks use gRPC instead of REST: a binary, strongly-typed contract (`inventory.proto`) with a single batch call for multiple products. ~3× faster than JSON/HTTP and the contract is compile-time enforced. REST stays available on a separate port for external clients.
+Order → Inventory stock checks use gRPC instead of REST: a binary, strongly-typed contract (`inventory.proto`) with a single batch call for multiple products. ~3× faster than JSON/HTTP and the contract is compile-time enforced. REST stays available on a separate port for external clients. Every call carries a deadline and is protected by a retry and a circuit breaker, see [pattern 26](#26-resilient-calls-between-services).
 
 ### 13. Resilience (Polly)
 
-HTTP clients use Polly pipelines: exponential-backoff retries and circuit breakers. MassTransit consumers retry too, with a different policy for infrastructure outages than for everything else — see [pattern 24](#24-surviving-database-and-network-outages).
+HTTP clients use Polly pipelines: exponential-backoff retries and circuit breakers, with the retries limited by a shared retry budget ([pattern 26](#26-resilient-calls-between-services)). MassTransit consumers retry too, with a different policy for infrastructure outages than for everything else — see [pattern 24](#24-surviving-database-and-network-outages).
 
 ### 14. Dead Letter Queues
 
@@ -452,11 +452,11 @@ Every setting has a default in the code, and the same defaults are written out w
 
 | Where | What is there | How to change one |
 |---|---|---|
-| Each service's `appsettings.json` | `Resilience:Postgres` (all five services with a database) and `Resilience:Consumers` (Order, Inventory, Payment) with the default values | Edit the file. It is baked into the image, so this needs a rebuild: use it for a value that should be the same everywhere. |
-| `docker-compose.yml` | `Resilience__Postgres__*` / `Resilience__Consumers__*` environment variables on the services that use them, each as `${RESILIENCE_…:-default}` | Put the variable in `.env` (the commented examples in `.env.example`, e.g. `RESILIENCE_PG_MAX_POOL_SIZE=30`) and run `docker compose up -d`. |
+| Each service's `appsettings.json` | `Resilience:Postgres` (all five services with a database), `Resilience:Consumers` (Order, Inventory, Payment) and, for calls between services, `Resilience:Inventory` and `Resilience:RetryBudget` (Order) and `Resilience:Gateway` and `Resilience:RetryBudget` (gateway), with the default values | Edit the file. It is baked into the image, so this needs a rebuild: use it for a value that should be the same everywhere. |
+| `docker-compose.yml` | `Resilience__Postgres__*`, `Resilience__Consumers__*` and the call settings (`Resilience__Inventory__*`, `Resilience__Gateway__*`, `Resilience__RetryBudget__*`) as environment variables on the services that use them, each as `${RESILIENCE_…:-default}` | Put the variable in `.env` (the commented examples in `.env.example`, e.g. `RESILIENCE_PG_MAX_POOL_SIZE=30`) and run `docker compose up -d`. |
 | Kubernetes `k8s/configmaps/configmap.yaml` | The same keys in the `shopeasy-config` ConfigMap, which every Deployment loads | Edit the ConfigMap, apply it, then `kubectl -n shopeasy rollout restart deployment` (environment variables are read at pod start). |
 
-Standard ASP.NET Core precedence applies: an environment variable (`:` written as `__`) beats `appsettings.json`, which beats the default in the code. `ResilienceConfigurationTests` fails if any of these copies differs from the code's defaults, so a documented value is always the value in effect.
+Standard ASP.NET Core precedence applies: an environment variable (`:` written as `__`) beats `appsettings.json`, which beats the default in the code. `ResilienceConfigurationTests` and `CallResilienceConfigurationTests` fail if any of these copies differs from the code's defaults, so a documented value is always the value in effect.
 
 Deliberate choices:
 
@@ -474,6 +474,49 @@ Deliberate choices:
 - **Retention.** A background job deletes keys older than `Idempotency:RetentionHours` (24) in one statement, safe to run on every replica.
 
 The rest of the order flow is idempotent by design as well: the saga starter skips an order that already has a saga, every Inventory and Payment consumer ignores a message it has processed (pattern 7), and cancelling twice returns the same result.
+
+### 26. Resilient Calls Between Services
+
+A service that is restarting, overloaded or silently hung is more dangerous to its callers than one that is simply down: every caller waits as long as the callee does, holds its own connections and threads meanwhile, and the slowness spreads upstream. Each call between services therefore has a deadline, retries only what is safe to repeat, and stops calling a service that keeps failing.
+
+| Call | Deadline | Retries | Circuit breaker | When it still fails |
+|---|---|---|---|---|
+| **Order to Inventory** (gRPC stock check) | 3 s per attempt. The deadline travels to Inventory, which cancels the database query as well. | Up to 2, with 0.1–1 s of jittered backoff, **only after a connection failure** (`Unavailable`: Inventory restarting, a dropped connection). A slow answer is never retried: that adds load to a service that is already struggling. | Opens when half of the recent calls (at least 5 in 30 s) failed; calls then fail at once for 15 s before one trial call is let through. | The stale cache (5 min) answers; only an order for a product with no cached value at all is rejected, with a message that the product is temporarily unavailable (pattern 11). |
+| **Order to Product** (price lookup) | 3 s per attempt, 10 s in total | Up to 2 on a 5xx, 408, 429 or network error | At least 5 calls in 30 s with half failing: open for 15 s | The order is refused with `503` and `Retry-After: 5`; a guessed or stale price is never used. |
+| **Gateway to every service** | 30 s without response headers or without further bytes of the request or response, then `504 Gateway Timeout` and the request to the service is cancelled. Connecting is cut off after 5 s. | Up to 2, **only for `GET`/`HEAD` without a body and only after a connection failure**: the request never reached the service, or the connection broke before an answer. `POST`, `PUT`, `PATCH` and `DELETE` are never repeated, because the service may have processed them. A `5xx` answer is passed through as it is. | None, see below | The gateway answers `502` (service unreachable) or `504` (service silent). |
+
+Three mechanisms keep this from making an incident worse:
+
+- **Retry budget.** Retries may add at most 20 % extra requests on top of the original ones within a 10-second window (and always a minimum of 10, so a quiet service can still retry). Without a limit, a dependency that starts failing receives every caller's retries on top of its normal load, several times over, exactly when it is least able to cope. When the budget is used up the call fails at once. The Order service keeps one budget per dependency and the gateway one for all its routes; `shopeasy_downstream_retries_total{target,outcome}` and `shopeasy_gateway_retries_total{outcome}` show how many retries were made and how many were refused by the budget.
+- **Stampede protection.** When the 30-second stock cache expires, every concurrent order for the same product would call Inventory. A single in-flight fetch per product (`StockFetchCoordinator`) serves all of them. The fetch runs with its own deadline, so one customer giving up does not fail the others, and a customer who disconnects only stops waiting.
+- **Stale answers over errors.** An open circuit or a timeout never reaches the customer as an error while a cached stock level (up to 5 minutes old) exists. The saga's reservation inside Inventory remains the authoritative check (pattern 11), so a stale cache cannot oversell.
+
+The circuit breaker state changes are counted in `shopeasy_downstream_circuit_transitions_total{target,state}`.
+
+Deliberate choices:
+
+- **No passive health checks or circuit breaker in the gateway.** Each cluster has a single destination; there is nothing to fail over to, and with every destination marked unhealthy YARP routes to all of them anyway. Timeouts and the retry budget are what protect the gateway. With several destinations per cluster (a scaled service behind a load balancer that YARP sees individually) passive health checks are the next step.
+- **Only connection failures are retried, never "slow".** A timeout means the callee may be busy with the request; sending it again doubles the work. The same reasoning is why a `5xx` answer is not retried by the gateway.
+- **.NET already retries on its own** when a pooled connection turns out to be closed by the server before the request was sent; the gateway's retry covers what is left (a connection that broke after the request was sent, a service that restarted).
+- **Connections are replaced every two minutes** (`PooledConnectionLifetimeSeconds`), so that the gateway finds new replicas of a scaled service behind one DNS name; a connection that works would otherwise be kept forever and the load would stay on the first replicas.
+- **The Idempotency-Key makes the one write that matters safe to repeat** by the client (pattern 25); the gateway never repeats it on its own.
+
+Settings (`Resilience:Inventory`, `Resilience:Gateway`, `Resilience:RetryBudget`) are written out in `appsettings.json`, Compose, `.env.example` and the ConfigMap like the other resilience settings, and invalid values stop the service at start-up:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `Resilience:Inventory:TimeoutSeconds` | 3 | Deadline of one stock-check attempt (1–60) |
+| `Resilience:Inventory:MaxRetries` | 2 | Retries after a connection failure (0–5; `0` turns retries off) |
+| `Resilience:Inventory:BreakDurationSeconds` | 15 | How long the circuit stays open (1–600) |
+| `Resilience:Gateway:ActivityTimeoutSeconds` | 30 | How long a service may stay silent before `504` (1–600). A cluster may set its own `HttpRequest:ActivityTimeout`, which wins. Raise it for a route that streams or runs a long report. |
+| `Resilience:Gateway:ConnectTimeoutSeconds` | 5 | Opening a connection (1–60) |
+| `Resilience:Gateway:PooledConnectionLifetimeSeconds` | 120 | Connections are replaced after this long (10–3600) |
+| `Resilience:Gateway:GetRetries` | 2 | Retries of a `GET`/`HEAD` after a connection failure (0–5) |
+| `Resilience:RetryBudget:Ratio` | 0.2 | Extra requests retries may add (0–1; `0` allows only the minimum) |
+| `Resilience:RetryBudget:MinRetriesPerWindow` | 10 | Retries always allowed per window |
+| `Resilience:RetryBudget:WindowSeconds` | 10 | Length of the sliding window (1–600) |
+
+The Order service's Compose variables are `RESILIENCE_INVENTORY_*` and `RESILIENCE_RETRY_BUDGET_*`, the gateway's are `RESILIENCE_GATEWAY_*` and `RESILIENCE_RETRY_BUDGET_*` (examples in `.env.example`).
 
 ---
 
@@ -594,6 +637,9 @@ Services read standard ASP.NET Core configuration, so every key can be an enviro
 | `Idempotency__RequireKey`, `Idempotency__RetentionHours` | Order | `Idempotency-Key` on `POST /api/orders`: reject requests without the header (default `false`) and how long a key is remembered (default `24` hours). See [Order API](#retrying-safely-the-idempotency-key-header). |
 | `Resilience__Postgres__*` | all with a DB | Limits on how long a service waits for PostgreSQL and how many connections it opens (lock, idle-in-transaction, command and connect timeouts, pool size, TCP keep-alive). Defaults suit most setups and are written out in `appsettings.json`, Compose and the ConfigMap; see [pattern 24](#24-surviving-database-and-network-outages). |
 | `Resilience__Consumers__*` | Order, Inventory, Payment | Retry schedule of the message consumers: patient retries for outages, quick retries for everything else. Same pattern. |
+| `Resilience__Inventory__*` | Order | Deadline, retries and circuit breaker of the stock check against Inventory; see [pattern 26](#26-resilient-calls-between-services). |
+| `Resilience__Gateway__*` | Gateway | Timeout for a silent service, connect timeout, connection lifetime and the retries of `GET` requests. Same pattern. |
+| `Resilience__RetryBudget__*` | Order, Gateway | How many extra requests retries may add to a dependency. Same pattern. |
 | `Seq__ServerUrl` | all | Where logs are shipped, default `http://seq:5341` (the Compose Seq). **Empty = off** (console only) — the Kubernetes manifests set it empty because they do not run Seq. |
 | `Testing__ForcePaymentSuccess` | Payment | Test-only: forces simulated payments to succeed. |
 
@@ -939,7 +985,7 @@ dotnet test src/Tests/ShopEasy.UnitTests
 dotnet test src/Tests/ShopEasy.IntegrationTests
 ```
 
-**Unit tests — 324 test cases.** 271 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 53 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 324 (see [CI/CD](#cicd)).
+**Unit tests — 408 test cases.** 355 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 53 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 408 (see [CI/CD](#cicd)).
 
 | Area | Where | What it covers |
 |---|---|---|
@@ -952,6 +998,8 @@ dotnet test src/Tests/ShopEasy.IntegrationTests
 | Idempotent order placement (no servers needed) | `Orders/IdempotencyKeyTests`, `OrderPlacementIdempotencyTests`, `IdempotencyConfigurationTests` | The real `POST /api/orders` action on an in-memory database with the Product service and stock cache faked: header rules and the request fingerprint (order of lines, ignored fields and whitespace do not matter); a repeated request returns the original order and response without placing another or calling the catalog and stock again, even after the stock ran out or the price changed; a different request under the same key gets 422; keys are per user; a request that was rejected (400) or unserved (503) does not use up its key; a required key; the order, outbox event, read-model row and key all saved. The appsettings, Compose, `.env.example` and ConfigMap copies of the settings equal the code's defaults. |
 | Messaging (no servers needed) | `Messaging/*` | The broker readiness gate (including against MassTransit's real health check registration), outbox delivery pausing while the bus is not ready, the dead-letter monitor and the requeue endpoint's responses. |
 | Resilience (no servers needed) | `Resilience/*`, `Messaging/ConsumerResilienceTests` | Which failures count as transient (including EF Core's wrapping, nested and aggregate exceptions, and what must *not* count: a missing file, a cancellation); the connection-string limits and that anything written in the string wins; the retry schedule and its jitter; and the policy on a real MassTransit pipeline — an outage of more than the old four attempts is ridden out without a dead letter, the patient and quick retries never multiply, a bug gets exactly 3 retries and a broken rule none. `Resilience/ResilienceConfigurationTests` keeps the copies of the settings in each `appsettings.json`, `docker-compose.yml`, `.env.example` and the Kubernetes ConfigMap equal to the code's defaults. |
+| Resilient calls (no servers needed) | `Resilience/RetryBudgetTests`, `Orders/InventoryCallPolicyTests`, `StockFetchCoordinatorTests`, `InventoryCacheServiceTests`, `HttpRetryBudgetTests`, `CallResilienceConfigurationTests` | The retry budget (ratio and minimum, the window sliding, concurrent callers, invalid settings); the stock-check policy against scripted failures: only connection failures are retried, a slow or timed-out call is not, retries stop when the budget is used up, the circuit opens and recovers, a hung gRPC call is cancelled at the deadline and counted as a failure, and the caller's own cancellation is not mistaken for either; one fetch per product for any number of concurrent callers, and a waiting caller leaving does not stop it; the stock cache layers, including the stale answer when Inventory is unavailable; the Product client's retries and the budget. The appsettings, Compose, `.env.example` and ConfigMap copies of the settings equal the code's defaults. |
+| Gateway proxying (no servers needed) | `Gateway/GatewayResilienceTests` | A real YARP gateway in front of fake services that misbehave: a `GET` over a broken connection succeeds on the retry, a `POST` over the same broken connection is never repeated, a `503` is passed through, a refused connection answers `502` quickly, a service that restarts during the retries is reached again, a service that never answers is cut off with `504` and the request to it is cancelled. The retry handler itself against scripted failures (which methods, which failures, the budget, a request body), the timeout filter and the settings validation. |
 | Logging, correlation, tracing (no servers needed) | `Messaging/LoggingTests`, `CorrelationFilterTests`, `TracingSourceTests` | The exact console line per service, the correlation id inside and outside a scope, the Seq setting; the id travelling through a real MassTransit pipeline (header → consumer → the messages it publishes), the HTTP hand-over from the gateway; MassTransit and Npgsql emitting spans under the source names the services subscribe to. |
 
 ### Tests that need PostgreSQL and RabbitMQ
@@ -977,7 +1025,7 @@ docker run -d --name shopeasy-test-mq -e RABBITMQ_DEFAULT_USER=test -e RABBITMQ_
 
 export SHOPEASY_TEST_POSTGRES="Host=localhost;Port=55432;Username=postgres;Password=test"
 export SHOPEASY_TEST_RABBITMQ="amqp://test:test@localhost:55672"
-dotnet test src/Tests/ShopEasy.UnitTests          # now 324 run, 0 skipped
+dotnet test src/Tests/ShopEasy.UnitTests          # now 408 run, 0 skipped
 
 docker rm -f shopeasy-test-pg shopeasy-test-mq
 ```
@@ -995,7 +1043,7 @@ Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new p
 | Job | What it checks |
 |---|---|
 | **Detect changes** | Decides whether the pull request touches anything that is built, tested or deployed (plain `git diff`, no third-party action). Skipped jobs count as passed in **CI passed**, so the check can stay required for documentation-only changes. |
-| **Build and test** | `dotnet restore/build` (Release) and all 324 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 53 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
+| **Build and test** | `dotnet restore/build` (Release) and all 408 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 53 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
 | **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
 | **Start the Compose stack** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. |
 | **CI passed** | One aggregate status for the jobs above (a skipped job counts as passed) — the check to require in branch protection. |
@@ -1278,7 +1326,7 @@ This project is being hardened step by step. Status:
 | 6 | Replace RabbitMQ management-API polling with a bus-ready check and AMQP dead-letter tooling; MassTransit transactional inbox/outbox for Payment/Inventory events | Done |
 | 7 | Observability (per-service log names, configurable Seq, correlation id across HTTP, outbox, saga and RabbitMQ, MassTransit + Npgsql traces), CI/CD on GitHub Actions (build, all tests incl. PostgreSQL/RabbitMQ, deployment-file validation, image builds, publish to GHCR, Dependabot), vulnerable dependencies patched and gated, saga row-locking tests on PostgreSQL, saga tests re-enabled | Done |
 | 8 | Non-root images (no SQLite, no `chmod 777`), read-only containers started by CI, Kubernetes with pinned published image tags and no local-image assumptions, Identity keys / key ring / grants shared in PostgreSQL (several replicas), network policies | Done |
-| 9 | Resilience and API safety: consumers ride out database and network outages and every database wait is bounded (pattern 24); order placement is idempotent (pattern 25). Still to do: resilient service-to-service calls (deadlines, retry budgets, gateway timeouts), an authorization model with scopes and service identities, business-level observability | In progress |
+| 9 | Resilience and API safety: consumers ride out database and network outages and every database wait is bounded (pattern 24); order placement is idempotent (pattern 25); calls between services have deadlines, budgeted retries and circuit breakers, and the gateway times out silent services (pattern 26). Still to do: an authorization model with scopes and service identities, business-level observability | In progress |
 
 **Known limitations today** (documented so nobody is surprised):
 
@@ -1300,7 +1348,8 @@ This project is being hardened step by step. Status:
 - A customer cancel (`DELETE /api/orders/{id}`) is logged and published under the *cancel request's* correlation id, not the id of the request that placed the order; `OrderId` links the two.
 - Migrations run at service start-up; with several replicas the race is only handled for the Order and Identity services.
 - A database outage longer than the patient-retry window (about 7 minutes by default) sends the messages that were in flight to the `*_error` queues; requeue them once the database is back (pattern 14). While it lasts, every consumer slot retries in parallel (bounded by the pool size and the consumers' concurrency); there is no circuit breaker that pauses consumption.
-- The HTTP calls between services (gRPC stock checks, the Product client) and the gateway's proxy routes do not have the same treatment yet: the Order service's HTTP clients have Polly pipelines, but the gRPC calls have no deadline or retry and YARP has no explicit timeouts.
+- The gateway has no circuit breaker or passive health check: each cluster has a single destination, so there is nothing to fail over to (pattern 26). The retry budget and the timeouts bound the damage, but a dead service is still attempted on every request and answered with `502` after the connection fails. The Order service's `InventoryClient` (REST) still has its older, fixed Polly settings; it is registered but not used for the stock check.
+- Redis calls have no explicit timeouts of their own: a Redis server that accepts connections and never answers stalls each cache lookup until the StackExchange.Redis defaults (5 s) apply.
 - Swagger UIs and Prometheus metrics ports are unauthenticated.
 
 ---
