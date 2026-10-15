@@ -5,7 +5,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="2.3.13" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- authentication and authorization setup shared by the APIs (token validation, scope policies) -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.32" />
     <!-- Patched versions of transitive packages with known vulnerabilities. They flow to every project that references Shared. -->
     <PackageReference Include="System.Text.Json" Version="8.0.6" />
     <PackageReference Include="System.Text.Encodings.Web" Version="8.0.0" />
