@@ -16,3 +16,21 @@ data:
   Services__ProductService: "http://product:8080"
   Services__InventoryGrpcService: "http://inventory:8090"
   DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2UNENCRYPTEDSUPPORT: "1"
+  # Resilience (README, pattern 24). These are the defaults of the code; change one here and restart
+  # the pods (kubectl -n shopeasy rollout restart deployment) for it to take effect. Services
+  # without a database or a message consumer ignore the keys that do not apply to them.
+  # Replicas x MaxPoolSize must stay below the PostgreSQL server's max_connections.
+  Resilience__Postgres__LockTimeoutSeconds: "10"
+  Resilience__Postgres__IdleInTransactionTimeoutSeconds: "60"
+  Resilience__Postgres__CommandTimeoutSeconds: "30"
+  Resilience__Postgres__ConnectTimeoutSeconds: "15"
+  Resilience__Postgres__MaxPoolSize: "20"
+  Resilience__Postgres__TcpKeepAliveSeconds: "30"
+  Resilience__Consumers__TransientRetryLimit: "12"
+  Resilience__Consumers__TransientMinIntervalSeconds: "1"
+  Resilience__Consumers__TransientMaxIntervalSeconds: "60"
+  Resilience__Consumers__JitterRatio: "0.2"
+  Resilience__Consumers__RetryLimit: "3"
+  Resilience__Consumers__MinIntervalSeconds: "1"
+  Resilience__Consumers__MaxIntervalSeconds: "10"
+  Resilience__Consumers__IntervalDeltaSeconds: "2"

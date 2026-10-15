@@ -10,6 +10,27 @@ x-hardened: &hardened
   cap_drop:
     - ALL
 
+# Resilience settings (see the README, pattern 24). The values are the defaults of the code and of
+# every service's appsettings.json; override one by putting the RESILIENCE_* variable in .env
+# (the commented examples in .env.example). Merged into the environment of the services below.
+x-resilience-postgres: &resilience-postgres
+  Resilience__Postgres__LockTimeoutSeconds: "${RESILIENCE_PG_LOCK_TIMEOUT_SECONDS:-10}"
+  Resilience__Postgres__IdleInTransactionTimeoutSeconds: "${RESILIENCE_PG_IDLE_IN_TRANSACTION_TIMEOUT_SECONDS:-60}"
+  Resilience__Postgres__CommandTimeoutSeconds: "${RESILIENCE_PG_COMMAND_TIMEOUT_SECONDS:-30}"
+  Resilience__Postgres__ConnectTimeoutSeconds: "${RESILIENCE_PG_CONNECT_TIMEOUT_SECONDS:-15}"
+  Resilience__Postgres__MaxPoolSize: "${RESILIENCE_PG_MAX_POOL_SIZE:-20}"
+  Resilience__Postgres__TcpKeepAliveSeconds: "${RESILIENCE_PG_TCP_KEEPALIVE_SECONDS:-30}"
+
+x-resilience-consumers: &resilience-consumers
+  Resilience__Consumers__TransientRetryLimit: "${RESILIENCE_CONSUMER_TRANSIENT_RETRY_LIMIT:-12}"
+  Resilience__Consumers__TransientMinIntervalSeconds: "${RESILIENCE_CONSUMER_TRANSIENT_MIN_INTERVAL_SECONDS:-1}"
+  Resilience__Consumers__TransientMaxIntervalSeconds: "${RESILIENCE_CONSUMER_TRANSIENT_MAX_INTERVAL_SECONDS:-60}"
+  Resilience__Consumers__JitterRatio: "${RESILIENCE_CONSUMER_JITTER_RATIO:-0.2}"
+  Resilience__Consumers__RetryLimit: "${RESILIENCE_CONSUMER_RETRY_LIMIT:-3}"
+  Resilience__Consumers__MinIntervalSeconds: "${RESILIENCE_CONSUMER_MIN_INTERVAL_SECONDS:-1}"
+  Resilience__Consumers__MaxIntervalSeconds: "${RESILIENCE_CONSUMER_MAX_INTERVAL_SECONDS:-10}"
+  Resilience__Consumers__IntervalDeltaSeconds: "${RESILIENCE_CONSUMER_INTERVAL_DELTA_SECONDS:-2}"
+
 services:
 
   # ── PostgreSQL Database ─────────────────────────────────────────────────────
@@ -153,6 +174,7 @@ services:
     ports:
       - "5001:8080"
     environment:
+      <<: *resilience-postgres
       ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_identity;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
       Clients__Gateway__Secret: ${GATEWAY_CLIENT_SECRET:?Set GATEWAY_CLIENT_SECRET in .env}
@@ -186,6 +208,7 @@ services:
     ports:
       - "5101:8080"
     environment:
+      <<: *resilience-postgres
       ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_products;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
       IdentityServer__Authority: "http://identity:8080"
@@ -216,6 +239,7 @@ services:
     ports:
       - "5103:8080"
     environment:
+      <<: [*resilience-postgres, *resilience-consumers]
       # Enable HTTP/2 for gRPC (required)
       ASPNETCORE_HTTP_PORTS: ""   # disable default
         # Force HTTP/2 support
@@ -254,6 +278,7 @@ services:
     ports:
       - "5104:8080"
     environment:
+      <<: [*resilience-postgres, *resilience-consumers]
       ASPNETCORE_URLS: http://+:8080
       Testing__ForcePaymentSuccess: "true"
       ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_payments;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
@@ -287,6 +312,7 @@ services:
     ports:
       - "8080"        # ← change from "5102:8080" to just "8080" (dynamic host port)
     environment:
+      <<: [*resilience-postgres, *resilience-consumers]
       ASPNETCORE_URLS: http://+:8080
       Services__InventoryService:     "http://inventory:8080"
       Services__InventoryGrpcService: "http://inventory:8090"

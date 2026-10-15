@@ -309,7 +309,7 @@ Two kinds of failure reach a message consumer, and they need opposite reactions.
 
 Which of the two it is comes from `TransientFaults`, which looks through the whole exception chain. That matters: EF Core reports a database failure as an `InvalidOperationException` ("An exception has been raised that is likely due to a transient failure") and that type used to be on the "never retry" list, so before this a database outage was **not retried at all** — the message went to the error queue on the first failure. A failure-injection test (below) reproduced that against the previous policy.
 
-Database connections are bounded as well (`PostgresConnection`, all five services). Without limits a stuck lock or a half-dead connection holds a request for as long as it lasts, and everything queues up behind it until the service itself is unresponsive. Values written in the connection string win; `0` switches a limit off. Set them as `Resilience__Postgres__<Setting>`:
+Database connections are bounded as well (`PostgresConnection`, all five services). Without limits a stuck lock or a half-dead connection holds a request for as long as it lasts, and everything queues up behind it until the service itself is unresponsive. Values written in the connection string win; `0` switches a limit off. The settings are `Resilience:Postgres:<Setting>` (see [Where the settings live](#where-the-resilience-settings-live) below):
 
 | Setting | Default | Effect |
 |---|---|---|
@@ -322,7 +322,19 @@ Database connections are bounded as well (`PostgresConnection`, all five service
 
 **Sizing the pool:** `replicas × MaxPoolSize` must stay below the server's `max_connections` minus a reserve for administrators (the Order service at its HPA maximum is the one to count). `LockTimeoutSeconds` and `IdleInTransactionTimeoutSeconds` travel to the server as connection start-up options; PgBouncer in transaction mode rejects those, so behind it set both to `0` and use `ALTER ROLE … SET lock_timeout = '10s'` instead.
 
-The consumer schedule is configurable as `Resilience__Consumers__<Setting>`: `TransientRetryLimit` (12; `0` turns the patient retries off), `TransientMinIntervalSeconds` (1), `TransientMaxIntervalSeconds` (60), `JitterRatio` (0.2), and for everything else `RetryLimit` (3), `MinIntervalSeconds` (1), `MaxIntervalSeconds` (10), `IntervalDeltaSeconds` (2). Nonsensical values stop the service at start-up rather than at the next outage.
+The consumer schedule is configurable as `Resilience:Consumers:<Setting>`: `TransientRetryLimit` (12; `0` turns the patient retries off), `TransientMinIntervalSeconds` (1), `TransientMaxIntervalSeconds` (60), `JitterRatio` (0.2), and for everything else `RetryLimit` (3), `MinIntervalSeconds` (1), `MaxIntervalSeconds` (10), `IntervalDeltaSeconds` (2). Nonsensical values stop the service at start-up rather than at the next outage.
+
+#### Where the Resilience Settings Live
+
+Every setting has a default in the code, and the same defaults are written out where an operator looks for them:
+
+| Where | What is there | How to change one |
+|---|---|---|
+| Each service's `appsettings.json` | `Resilience:Postgres` (all five services with a database) and `Resilience:Consumers` (Order, Inventory, Payment) with the default values | Edit the file. It is baked into the image, so this needs a rebuild: use it for a value that should be the same everywhere. |
+| `docker-compose.yml` | `Resilience__Postgres__*` / `Resilience__Consumers__*` environment variables on the services that use them, each as `${RESILIENCE_…:-default}` | Put the variable in `.env` (the commented examples in `.env.example`, e.g. `RESILIENCE_PG_MAX_POOL_SIZE=30`) and run `docker compose up -d`. |
+| Kubernetes `k8s/configmaps/configmap.yaml` | The same keys in the `shopeasy-config` ConfigMap, which every Deployment loads | Edit the ConfigMap, apply it, then `kubectl -n shopeasy rollout restart deployment` (environment variables are read at pod start). |
+
+Standard ASP.NET Core precedence applies: an environment variable (`:` written as `__`) beats `appsettings.json`, which beats the default in the code. `ResilienceConfigurationTests` fails if any of these copies differs from the code's defaults, so a documented value is always the value in effect.
 
 Deliberate choices:
 
@@ -446,7 +458,7 @@ Services read standard ASP.NET Core configuration, so every key can be an enviro
 | `Services__InventoryService`, `Services__InventoryGrpcService` | Order | Inventory REST and gRPC URLs. |
 | `Redis__Connection` | Product, Inventory, Order | Redis endpoint, e.g. `redis:6379`. |
 | `Telemetry__Endpoint` | all | OTLP endpoint (Jaeger), default `http://jaeger:4317`. |
-| `Resilience__Postgres__*` | all with a DB | Limits on how long a service waits for PostgreSQL and how many connections it opens (lock, idle-in-transaction, command and connect timeouts, pool size, TCP keep-alive). Defaults suit most setups; see [pattern 24](#24-surviving-database-and-network-outages). |
+| `Resilience__Postgres__*` | all with a DB | Limits on how long a service waits for PostgreSQL and how many connections it opens (lock, idle-in-transaction, command and connect timeouts, pool size, TCP keep-alive). Defaults suit most setups and are written out in `appsettings.json`, Compose and the ConfigMap; see [pattern 24](#24-surviving-database-and-network-outages). |
 | `Resilience__Consumers__*` | Order, Inventory, Payment | Retry schedule of the message consumers: patient retries for outages, quick retries for everything else. Same pattern. |
 | `Seq__ServerUrl` | all | Where logs are shipped, default `http://seq:5341` (the Compose Seq). **Empty = off** (console only) — the Kubernetes manifests set it empty because they do not run Seq. |
 | `Testing__ForcePaymentSuccess` | Payment | Test-only: forces simulated payments to succeed. |
@@ -768,7 +780,7 @@ dotnet test src/Tests/ShopEasy.UnitTests
 dotnet test src/Tests/ShopEasy.IntegrationTests
 ```
 
-**Unit tests — 265 test cases.** 219 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 46 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 265 (see [CI/CD](#cicd)).
+**Unit tests — 280 test cases.** 234 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 46 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 280 (see [CI/CD](#cicd)).
 
 | Area | Where | What it covers |
 |---|---|---|
@@ -779,7 +791,7 @@ dotnet test src/Tests/ShopEasy.IntegrationTests
 | Inventory consumers | `Inventory/*` | Reserve, commit and release including duplicates, out-of-order messages, shortages, multi-product orders and a missing inventory record. |
 | Order placement | `Orders/*` | Request validation and limits, server-side price/name resolution, the Product service client (404, 5xx, network failure, malformed response). |
 | Messaging (no servers needed) | `Messaging/*` | The broker readiness gate (including against MassTransit's real health check registration), outbox delivery pausing while the bus is not ready, the dead-letter monitor and the requeue endpoint's responses. |
-| Resilience (no servers needed) | `Resilience/*`, `Messaging/ConsumerResilienceTests` | Which failures count as transient (including EF Core's wrapping, nested and aggregate exceptions, and what must *not* count: a missing file, a cancellation); the connection-string limits and that anything written in the string wins; the retry schedule and its jitter; and the policy on a real MassTransit pipeline — an outage of more than the old four attempts is ridden out without a dead letter, the patient and quick retries never multiply, a bug gets exactly 3 retries and a broken rule none. |
+| Resilience (no servers needed) | `Resilience/*`, `Messaging/ConsumerResilienceTests` | Which failures count as transient (including EF Core's wrapping, nested and aggregate exceptions, and what must *not* count: a missing file, a cancellation); the connection-string limits and that anything written in the string wins; the retry schedule and its jitter; and the policy on a real MassTransit pipeline — an outage of more than the old four attempts is ridden out without a dead letter, the patient and quick retries never multiply, a bug gets exactly 3 retries and a broken rule none. `Resilience/ResilienceConfigurationTests` keeps the copies of the settings in each `appsettings.json`, `docker-compose.yml`, `.env.example` and the Kubernetes ConfigMap equal to the code's defaults. |
 | Logging, correlation, tracing (no servers needed) | `Messaging/LoggingTests`, `CorrelationFilterTests`, `TracingSourceTests` | The exact console line per service, the correlation id inside and outside a scope, the Seq setting; the id travelling through a real MassTransit pipeline (header → consumer → the messages it publishes), the HTTP hand-over from the gateway; MassTransit and Npgsql emitting spans under the source names the services subscribe to. |
 
 ### Tests that need PostgreSQL and RabbitMQ
@@ -804,7 +816,7 @@ docker run -d --name shopeasy-test-mq -e RABBITMQ_DEFAULT_USER=test -e RABBITMQ_
 
 export SHOPEASY_TEST_POSTGRES="Host=localhost;Port=55432;Username=postgres;Password=test"
 export SHOPEASY_TEST_RABBITMQ="amqp://test:test@localhost:55672"
-dotnet test src/Tests/ShopEasy.UnitTests          # now 265 run, 0 skipped
+dotnet test src/Tests/ShopEasy.UnitTests          # now 280 run, 0 skipped
 
 docker rm -f shopeasy-test-pg shopeasy-test-mq
 ```
@@ -821,7 +833,7 @@ Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new p
 
 | Job | What it checks |
 |---|---|
-| **Build and test** | `dotnet restore/build` (Release) and all 265 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 46 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). Test results are uploaded as an artifact; the counters appear in the job summary. |
+| **Build and test** | `dotnet restore/build` (Release) and all 280 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 46 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). Test results are uploaded as an artifact; the counters appear in the job summary. |
 | **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
 | **Docker build (×6)** | Each service image builds from its Dockerfile (nothing is pushed from a pull request). |
 | **Start the Compose stack** | Builds the images and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. |
