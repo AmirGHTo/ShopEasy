@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using MassTransit;
-using Serilog.Context;
 
 namespace ShopEasy.Shared.Messaging;
 
@@ -27,7 +26,7 @@ public class CorrelationConsumeFilter<T> : IFilter<ConsumeContext<T>> where T : 
         var orderId = OrderIdOf(context.Message);
 
         using (CorrelationContext.Push(correlationId))
-        using (orderId is null ? null : LogContext.PushProperty("OrderId", orderId))
+        using (orderId is null ? null : Serilog.Context.LogContext.PushProperty("OrderId", orderId))
         {
             await next.Send(context);
         }

@@ -14,7 +14,10 @@
 	  <PackageReference Include="Serilog.Sinks.Seq" Version="9.1.0" />
 	  <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
 	  <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
-	  <!-- interfaces only (no transport): the correlation filters are written against them -->
-	  <PackageReference Include="MassTransit.Abstractions" Version="8.2.5" />
+	  <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="8.0.2" />
+	  <!-- the correlation filters and the consumer retry policy are written against MassTransit (no transport here) -->
+	  <PackageReference Include="MassTransit" Version="8.2.5" />
+	  <!-- classifies database faults (NpgsqlException.IsTransient) and hardens connection strings; same version the EF provider resolves -->
+	  <PackageReference Include="Npgsql" Version="8.0.6" />
   </ItemGroup>
 </Project>

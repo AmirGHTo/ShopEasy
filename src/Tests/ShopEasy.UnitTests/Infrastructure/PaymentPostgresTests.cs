@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using ShopEasy.PaymentService.Consumers;
 using ShopEasy.PaymentService.Data;
 using ShopEasy.Shared.Contracts;
+using ShopEasy.Shared.Resilience;
 using ShopEasy.UnitTests.Support;
 using Xunit;
 
@@ -21,14 +22,18 @@ public class PaymentPostgresTests
         public Task Consume(ConsumeContext<PaymentSucceededEvent> context) => Task.CompletedTask;
     }
 
-    private static ServiceProvider BuildHost(PostgresTestDatabase database)
+    private static ServiceProvider BuildHost(PostgresTestDatabase database, FaultInjector? injector = null, int transientRetryLimit = 12)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<IConfiguration>(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["Testing:ForcePaymentSuccess"] = "true" })
             .Build());
-        services.AddDbContext<PaymentDbContext>(o => o.UseNpgsql(database.ConnectionString));
+        services.AddDbContext<PaymentDbContext>(o =>
+        {
+            o.UseNpgsql(database.ConnectionString);
+            if (injector is not null) o.AddInterceptors(injector);
+        });
         services.AddMassTransitTestHarness(x =>
         {
             x.AllowSlowRunners();
@@ -42,8 +47,9 @@ public class PaymentPostgresTests
             x.UsingInMemory((ctx, cfg) =>
             {
                 // As in Program.cs: a message that loses a race (for example a unique-key conflict
-                // with its twin) is retried and then takes the "already processed" path
-                cfg.UseMessageRetry(r => r.Immediate(3));
+                // with its twin) is retried and then takes the "already processed" path, and a
+                // database outage is ridden out instead of dead-lettering the message
+                cfg.UseConsumerResilience(TestResilience.FastConsumers(transientRetryLimit));
                 cfg.ReceiveEndpoint("payment-process", e =>
                 {
                     e.UseEntityFrameworkOutbox<PaymentDbContext>(ctx);
@@ -111,6 +117,73 @@ public class PaymentPostgresTests
 
         await using var check = new PaymentDbContext(options);
         (await check.Payments.CountAsync(p => p.OrderId == orderId)).Should().Be(1);
+    }
+
+    // The database drops the connection six times in a row while a payment is being processed
+    // (more than the three retries the service used to allow). The message must be processed once
+    // the database is back: one charge, one idempotency row, one result event, and no trip to the
+    // error queue.
+    [RequiresPostgresFact]
+    public async Task ADatabaseOutageWhileCharging_IsRiddenOut_AndTheOrderIsChargedExactlyOnce()
+    {
+        await using var database = await PostgresTestDatabase.CreateAsync("payoutage");
+        var injector = new FaultInjector();
+        await using var provider = BuildHost(database, injector);
+        var options = new DbContextOptionsBuilder<PaymentDbContext>().UseNpgsql(database.ConnectionString).Options;
+        await using (var setup = new PaymentDbContext(options)) await setup.Database.MigrateAsync();
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+        var orderId = Guid.NewGuid();
+
+        injector.FailNext(6);
+        await harness.Bus.Publish(Command(orderId));
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        (await harness.Consumed.Any<PaymentSucceededEvent>(
+            x => x.Context.Message.OrderId == orderId, timeout.Token)).Should().BeTrue();
+        await Task.Delay(300); // a duplicate delivery, if there were one, would arrive by now
+
+        injector.Injected.Should().Be(6, "the outage really happened");
+        var attempts = harness.Consumed.Select<ProcessPaymentCommand>().ToList();
+        attempts.Should().ContainSingle().Which.Exception.Should().BeNull("the message was never given up on");
+        harness.Consumed.Select<PaymentSucceededEvent>().Count().Should().Be(1);
+
+        await using var check = new PaymentDbContext(options);
+        (await check.Payments.CountAsync(p => p.OrderId == orderId)).Should().Be(1);
+        (await check.ProcessedEvents.CountAsync(e => e.EventId == orderId)).Should().Be(1);
+    }
+
+    // An outage that outlasts the patient retries: the message is given up on after exactly the
+    // configured number of attempts (so it can be seen in the error queue and requeued) and
+    // nothing of it is left half-written.
+    [RequiresPostgresFact]
+    public async Task AnOutageLongerThanThePatientRetries_EndsInTheErrorQueue_WithNothingHalfWritten()
+    {
+        await using var database = await PostgresTestDatabase.CreateAsync("paydown");
+        var injector = new FaultInjector();
+        await using var provider = BuildHost(database, injector, transientRetryLimit: 4);
+        var options = new DbContextOptionsBuilder<PaymentDbContext>().UseNpgsql(database.ConnectionString).Options;
+        await using (var setup = new PaymentDbContext(options)) await setup.Database.MigrateAsync();
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+        var orderId = Guid.NewGuid();
+
+        // the first attempt and the four patient retries all hit the outage; what follows (the
+        // fault bookkeeping) finds the database back
+        injector.FailNext(5);
+        await harness.Bus.Publish(Command(orderId));
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        // the pipeline finished with the failure (the message goes to the error queue)
+        (await harness.Consumed.Any<ProcessPaymentCommand>(x => x.Exception is not null, timeout.Token))
+            .Should().BeTrue();
+
+        injector.Injected.Should().Be(5);
+        await using var check = new PaymentDbContext(options);
+        (await check.Payments.CountAsync()).Should().Be(0);
+        (await check.ProcessedEvents.CountAsync()).Should().Be(0);
     }
 
     [RequiresPostgresFact]
