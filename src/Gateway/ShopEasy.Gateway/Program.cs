@@ -10,6 +10,7 @@ using Serilog.Events;
 using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Messaging;
 using ShopEasy.Shared.Middleware;
+using ShopEasy.Shared.Security;
 using System.Net.Http.Headers;
 using System.Threading.RateLimiting;
 using Yarp.ReverseProxy.Transforms;
@@ -26,7 +27,13 @@ try
     builder.Host.UseSerilog((ctx, _, cfg) => cfg
         .ConfigureShopEasy("ShopEasy.Gateway", ctx.Configuration, ctx.HostingEnvironment.EnvironmentName));
 
-    var identityAuthority = builder.Configuration["IdentityServer:Authority"] ?? "http://identity:8080";
+    var authSettings = ApiAuthenticationOptions.From(builder.Configuration);
+    authSettings.Validate();
+    var identityAuthority = authSettings.Authority;
+    var webSecurity = WebSecurityOptions.From(builder.Configuration);
+
+    // Believe the X-Forwarded-* headers of the ingress in front of the gateway, if one is configured
+    builder.Services.AddConfiguredForwardedHeaders(builder.Configuration);
     // Browser-facing URL of the IdP (the Authority is the internal Docker/k8s address)
     var identityPublicUrl = builder.Configuration["IdentityServer:PublicUrl"] ?? "http://localhost:5001";
 
@@ -42,7 +49,7 @@ try
             options.Cookie.Name = "shopeasy.session";
             options.Cookie.HttpOnly = true;
             options.Cookie.SameSite = SameSiteMode.Lax;
-            options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+            options.Cookie.SecurePolicy = webSecurity.CookieSecurePolicy;
             options.ExpireTimeSpan = TimeSpan.FromDays(30);
             options.SlidingExpiration = true;
             options.Events.OnRedirectToAccessDenied = ctx =>
@@ -58,16 +65,16 @@ try
             options.ClientSecret = builder.Configuration["Oidc:ClientSecret"]
                 ?? throw new InvalidOperationException("Oidc:ClientSecret is not configured.");
             options.ResponseType = "code";
-            options.RequireHttpsMetadata = false;
+            options.RequireHttpsMetadata = authSettings.RequireHttpsMetadata;
 
+            // What the gateway may ask for on behalf of the signed-in user; the services demand the
+            // matching scope on each endpoint (ShopEasy.Shared.Security.AccessPolicies)
             options.Scope.Clear();
             options.Scope.Add("openid");
             options.Scope.Add("profile");
             options.Scope.Add("email");
-            options.Scope.Add("products.read");
-            options.Scope.Add("products.write");
-            options.Scope.Add("orders.read");
-            options.Scope.Add("orders.write");
+            foreach (var scope in ApiScopes.Web)
+                options.Scope.Add(scope);
             options.Scope.Add("offline_access");
 
             options.SaveTokens = true;
@@ -113,7 +120,8 @@ try
     // ── Prometheus Metrics ────────────────────────────────────────────────────
     builder.Services.AddMetricServer(options =>
     {
-        options.Port = 9091; // separate port from the API
+        // separate port from the API (configurable so two services can share a host)
+        options.Port = builder.Configuration.GetValue<ushort>("Metrics:Port", 9091);
     });
 
     // ── Rate Limiting ─────────────────────────────────────────────────────────
@@ -272,6 +280,9 @@ try
         .AddGatewayResilience(builder.Configuration);
 
     var app = builder.Build();
+
+    // first, so that everything after it sees the client's address and the original scheme
+    app.UseConfiguredForwardedHeaders(builder.Configuration);
 
     app.UseMiddleware<CorrelationIdMiddleware>();
 

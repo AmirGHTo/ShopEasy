@@ -6,6 +6,7 @@ using ShopEasy.ProductService.Data;
 using ShopEasy.ProductService.Models;
 using ShopEasy.Shared.Services;
 using StackExchange.Redis;
+using ShopEasy.Shared.Security;
 
 namespace ShopEasy.ProductService.Controllers;
 
@@ -103,7 +104,7 @@ public class ProductsController(
 
     // ── POST /api/v1/products ─────────────────────────────────────────────────
     [HttpPost]
-    [Authorize(Roles = "admin")]
+    [Authorize(Policy = PolicyNames.ProductsWrite)]
     public async Task<ActionResult<ProductResponseV1>> Create(
         [FromBody] CreateProductRequest request)
     {
@@ -140,7 +141,7 @@ public class ProductsController(
 
     // ── PUT /api/v1/products/{id} ─────────────────────────────────────────────
     [HttpPut("{id:guid}")]
-    [Authorize(Roles = "admin")]
+    [Authorize(Policy = PolicyNames.ProductsWrite)]
     public async Task<ActionResult<ProductResponseV1>> Update(
         Guid id, [FromBody] UpdateProductRequest request)
     {
@@ -169,7 +170,7 @@ public class ProductsController(
 
     // ── DELETE /api/v1/products/{id} ──────────────────────────────────────────
     [HttpDelete("{id:guid}")]
-    [Authorize(Roles = "admin")]
+    [Authorize(Policy = PolicyNames.ProductsWrite)]
     public async Task<IActionResult> Delete(Guid id)
     {
         var product = await _db.Products.FindAsync(id);

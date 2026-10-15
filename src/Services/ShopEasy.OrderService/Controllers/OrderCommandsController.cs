@@ -12,6 +12,7 @@ using ShopEasy.OrderService.Services;
 using ShopEasy.Shared.Contracts;
 using ShopEasy.Shared.Messaging;
 using System.Text.Json;
+using ShopEasy.Shared.Security;
 
 namespace ShopEasy.OrderService.Controllers;
 
@@ -20,7 +21,7 @@ namespace ShopEasy.OrderService.Controllers;
 // Publishes events that update the read model asynchronously.
 [ApiController]
 [Route("api/orders")]
-[Authorize]
+[Authorize(Policy = PolicyNames.OrdersWrite)]
 [Produces("application/json")]
 
 public class OrderCommandsController(

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.ReadModels;
+using ShopEasy.Shared.Security;
 
 namespace ShopEasy.OrderService.Controllers;
 
@@ -12,7 +13,7 @@ namespace ShopEasy.OrderService.Controllers;
 // Fast, no joins, optimized for display.
 [ApiController]
 [Route("api/orders")]
-[Authorize]
+[Authorize(Policy = PolicyNames.OrdersRead)]
 [Produces("application/json")]
 public class OrderQueriesController(
     OrderDbContext db,

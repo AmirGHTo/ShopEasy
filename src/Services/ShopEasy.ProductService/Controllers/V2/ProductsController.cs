@@ -1,4 +1,5 @@
 ﻿using Asp.Versioning;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.ProductService.Data;
@@ -9,6 +10,7 @@ namespace ShopEasy.ProductService.Controllers.V2;
 [ApiController]
 [ApiVersion("2.0")]
 [Route("api/v{version:apiVersion}/products")]
+[AllowAnonymous] // the public catalog, read-only
 public class ProductsController(
     ProductDbContext db,
     ILogger<ProductsController> logger) : ControllerBase

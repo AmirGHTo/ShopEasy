@@ -1,7 +1,6 @@
 using MassTransit;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Prometheus;
@@ -14,9 +13,9 @@ using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Messaging;
 using ShopEasy.Shared.Middleware;
 using ShopEasy.Shared.Resilience;
+using ShopEasy.Shared.Security;
 using ShopEasy.Shared.Services;
 using StackExchange.Redis;
-using System.IdentityModel.Tokens.Jwt;
 
 Log.Logger = new LoggerConfiguration()
     .ConfigureShopEasy("ShopEasy.InventoryService")
@@ -73,31 +72,10 @@ try
     options.UseNpgsql(
         PostgresConnection.FromConfiguration(builder.Configuration)));
 
-    // Prevent ASP.NET from remapping "role" → long URI claim type
-    // Without this, [Authorize(Roles = "admin")] never matches
-    JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
-    JwtSecurityTokenHandler.DefaultMapInboundClaims = false;
-
-    builder.Services
-        .AddAuthentication("Bearer")
-        .AddJwtBearer("Bearer", options =>
-        {
-            options.Authority = builder.Configuration["IdentityServer:Authority"]
-                ?? "http://identity:8080";
-            options.Audience = "shopeasy-api";
-            options.RequireHttpsMetadata = false;
-
-            // Assign a NEW object instead of modifying the existing one
-            options.TokenValidationParameters = new TokenValidationParameters
-            {
-                RoleClaimType = "role",
-                NameClaimType = "name",
-                ValidateAudience = true,
-                ValidAudience = "shopeasy-api"
-            };
-        });
-
-    builder.Services.AddAuthorization();
+    // Bearer tokens issued by Identity for this API, and the scope/role policies of its endpoints
+    // (anything not marked otherwise requires a signed-in caller)
+    builder.Services.AddApiAuthentication(builder.Configuration, ApiAudiences.Inventory);
+    builder.Services.AddApiAuthorization(AccessPolicies.Inventory);
 
     // ── Prometheus Metrics ────────────────────────────────────────────────────
     builder.Services.AddMetricServer(options =>
@@ -311,27 +289,27 @@ try
     {
         options.AddCustomLabel("service", _ => "InventoryService");
     });
-    app.MapMetrics();
+    // scraped by Prometheus without credentials (see "Known limitations" in the README)
+    app.MapMetrics().AllowAnonymous();
     app.MapControllers();
 
     app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
     {
         Predicate = _ => false, // no checks — if process is running, it's live
         ResponseWriter = WriteHealthResponse
-    });
+    }).AllowAnonymous();
     // Readiness — can it serve traffic?
     app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
     {
         Predicate = check => check.Tags.Contains("ready"),
         ResponseWriter = WriteHealthResponse
-    });
+    }).AllowAnonymous();
     // Legacy endpoint — keeps docker-compose healthcheck working
     app.MapGet("/health", () => Results.Ok(new { status = "healthy" })).AllowAnonymous();
 
-    // Map gRPC endpoint — listens on same port as HTTP
-    // HTTP/2 is required for gRPC
-    app.MapGrpcService<InventoryGrpcService>();
-    app.MapGrpcHealthChecksService();
+    // gRPC stock check for the Order service: HTTP/2 only (port 8090), bearer token required
+    app.MapInventoryGrpc();
+    app.MapGrpcHealthChecksService().AllowAnonymous();
 
     app.Run();
 }
