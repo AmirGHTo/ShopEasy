@@ -15,6 +15,7 @@ using System.Net.Http.Headers;
 using System.Threading.RateLimiting;
 using Yarp.ReverseProxy.Transforms;
 using ShopEasy.Gateway.Resilience;
+using ShopEasy.Gateway.Security;
 
 Log.Logger = new LoggerConfiguration()
     .ConfigureShopEasy("ShopEasy.Gateway")
@@ -34,6 +35,11 @@ try
 
     // Believe the X-Forwarded-* headers of the ingress in front of the gateway, if one is configured
     builder.Services.AddConfiguredForwardedHeaders(builder.Configuration);
+
+    // Renewal of the access token in the session (see AccessTokenRenewal)
+    builder.Services.AddMemoryCache();
+    builder.Services.AddSingleton<IAccessTokenRefresher, AccessTokenRefresher>();
+    builder.Services.AddHttpClient(AccessTokenRefresher.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(5));
     // Browser-facing URL of the IdP (the Authority is the internal Docker/k8s address)
     var identityPublicUrl = builder.Configuration["IdentityServer:PublicUrl"] ?? "http://localhost:5001";
 
@@ -57,6 +63,9 @@ try
                 ctx.Response.StatusCode = 403;
                 return Task.CompletedTask;
             };
+
+            // renew the access token before it runs out (it lives an hour, the session up to 30 days)
+            options.Events.OnValidatePrincipal = AccessTokenRenewal.ValidateAsync;
         })
         .AddOpenIdConnect("oidc", options =>
         {
