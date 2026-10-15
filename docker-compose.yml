@@ -313,6 +313,9 @@ services:
       - "8080"        # ← change from "5102:8080" to just "8080" (dynamic host port)
     environment:
       <<: [*resilience-postgres, *resilience-consumers]
+      # Idempotency-Key on POST /api/orders (README, "Order API"). Both are optional.
+      Idempotency__RequireKey: "${ORDER_IDEMPOTENCY_REQUIRE_KEY:-false}"
+      Idempotency__RetentionHours: "${ORDER_IDEMPOTENCY_RETENTION_HOURS:-24}"
       ASPNETCORE_URLS: http://+:8080
       Services__InventoryService:     "http://inventory:8080"
       Services__InventoryGrpcService: "http://inventory:8090"

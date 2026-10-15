@@ -5,6 +5,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Npgsql;
 using ShopEasy.Shared.Resilience;
+using ShopEasy.UnitTests.Support;
 using Xunit;
 
 namespace ShopEasy.UnitTests.Resilience;
@@ -16,17 +17,9 @@ namespace ShopEasy.UnitTests.Resilience;
 // from what the service actually does.
 public class ResilienceConfigurationTests
 {
-    private static readonly string Root = FindRepositoryRoot();
+    private static readonly string Root = RepositoryFiles.Root;
 
-    private static string FindRepositoryRoot()
-    {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "ShopEasy.sln")))
-            directory = directory.Parent;
-        return directory?.FullName ?? throw new InvalidOperationException("ShopEasy.sln not found above the test output.");
-    }
-
-    private static string Read(params string[] path) => File.ReadAllText(Path.Combine([Root, .. path]));
+    private static string Read(params string[] path) => RepositoryFiles.Read(path);
 
     // The code's defaults as "setting name -> value"
     private static Dictionary<string, double> Defaults<T>() where T : new()

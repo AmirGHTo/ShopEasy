@@ -15,8 +15,10 @@ public class OrderReadModelUpdater(
     private readonly OrderDbContext _db = db;
     private readonly ILogger<OrderReadModelUpdater> _logger = logger;
 
-    // Called when order is first placed
-    public async Task CreateAsync(Order order, List<OrderItem> items)
+    // Called when an order is first placed. The summary is only added to the context: the caller
+    // saves it together with the order and its outbox entry, so an order can never exist without
+    // its row in the read model (or the other way round).
+    public void Stage(Order order, List<OrderItem> items)
     {
         var summary = new OrderSummary
         {
@@ -36,10 +38,6 @@ public class OrderReadModelUpdater(
         };
 
         _db.OrderSummaries.Add(summary);
-        await _db.SaveChangesAsync();
-
-        _logger.LogDebug(
-            "Read model created for Order {OrderId}", order.Id);
     }
 
     // Called when saga status changes
