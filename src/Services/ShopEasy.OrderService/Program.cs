@@ -10,6 +10,7 @@ using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.ReadModels;
 using ShopEasy.OrderService.Sagas;
 using ShopEasy.OrderService.Services;
+using ShopEasy.OrderService.Idempotency;
 using ShopEasy.Shared.Grpc;
 using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Messaging;
@@ -414,6 +415,16 @@ try
 
     builder.Services.AddScoped<CacheService>();
     builder.Services.AddScoped<InventoryCacheService>();
+    builder.Services.AddScoped<IInventoryStock>(sp => sp.GetRequiredService<InventoryCacheService>());
+
+    // ── Idempotent order placement (Idempotency-Key header) ───────────────────
+    builder.Services.AddOptions<IdempotencyOptions>()
+        .Bind(builder.Configuration.GetSection(IdempotencyOptions.SectionName))
+        .Validate(o => o.RetentionHours >= 1,
+            $"{IdempotencyOptions.SectionName}:{nameof(IdempotencyOptions.RetentionHours)} must be at least 1.")
+        .ValidateOnStart();
+    builder.Services.AddScoped<IdempotencyStore>();
+    builder.Services.AddHostedService<IdempotencyCleanupService>();
 
     var app = builder.Build();
 

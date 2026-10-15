@@ -1,13 +1,34 @@
-# ShopEasy — Production-Grade Microservices E-Commerce Platform
+<div align="center">
 
-An e-commerce backend built with **.NET 8** and **C#** as independent microservices: distributed transactions (saga + outbox), event-driven messaging, CQRS, resilience, observability, and container orchestration.
+# ShopEasy
+
+**An event-driven e-commerce backend built on .NET 8 microservices**
+
+Reliable order processing across independently deployable services: a saga with compensation,
+transactional messaging and an idempotent API, designed to stay correct when parts of the system fail.
+
+[![CI/CD](https://github.com/NullButCute/ShopEasy/actions/workflows/ci.yml/badge.svg)](https://github.com/NullButCute/ShopEasy/actions/workflows/ci.yml)
+![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)
+![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.13-FF6600?logo=rabbitmq&logoColor=white)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-ready-326CE5?logo=kubernetes&logoColor=white)
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+
+[Quick start](#getting-started) ·
+[Architecture](#architecture) ·
+[Order API](#order-api) ·
+[Operations](#developer-portal--monitoring) ·
+[Kubernetes](#kubernetes-deployment) ·
+[Roadmap](#production-hardening-roadmap--known-limitations)
+
+</div>
 
 ---
 
 ## Table of Contents
 
-1. [What This Is](#what-this-is)
-2. [Architecture Overview](#architecture-overview)
+1. [Overview](#overview)
+2. [Architecture](#architecture)
 3. [The Services](#the-services)
 4. [Technology Stack](#technology-stack)
 5. [Patterns & Mechanisms Explained](#patterns--mechanisms-explained)
@@ -27,111 +48,212 @@ An e-commerce backend built with **.NET 8** and **C#** as independent microservi
 
 ---
 
-## What This Is
+## Overview
 
-ShopEasy is an online store backend split into independent microservices. A customer can browse products, place an order, and have that order automatically validated, paid for, and fulfilled — with full failure recovery if anything goes wrong along the way.
+ShopEasy is the backend of an online store, split into six independently deployable services. It is built around one job and does it carefully: turn a customer's **Place order** into exactly one stock reservation, exactly one charge and one confirmed order, even when a service crashes, a message is delivered twice, the database restarts or the client retries the request.
 
-The core workflow is **what happens behind a single "Place Order" request**: a distributed transaction spans four services (Order, Inventory, Payment, and back to Order), coordinated by a saga, with automatic compensation, refunds, and timeout handling if any step fails.
+There is no distributed-transaction coordinator and no shared database. An **orchestrated saga** drives the order through Inventory and Payment, **transactional outbox and inbox** messaging keeps every state change and the message announcing it atomic, **row-level locks** keep stock correct, and **idempotency** at every edge makes repeated delivery harmless. Every failure path has a defined compensation (release the stock, refund the payment, cancel the order) that is covered by tests.
+
+| Capability | What it means here |
+|---|---|
+| **Correct order processing** | A saga coordinates Order, Inventory and Payment. A declined payment releases the stock, a late payment is refunded, and an order that stops making progress is recovered by a timeout service instead of hanging. |
+| **Safe under retries and duplicates** | Transactional outbox and inbox, idempotent consumers and an `Idempotency-Key` on the public order API: delivering or sending something twice has the effect of once. |
+| **No overselling** | Stock is reserved under row-level locks and tracked in a ledger (reserve, then commit or release), so concurrent orders on any instance cannot take the same unit twice. |
+| **Resilient** | Database and network outages are ridden out with retry policies and bounded waits. Rate limits, circuit breakers, health probes and dead-letter tooling cover the rest. |
+| **Secure by default** | OpenID Connect through a Backend-for-Frontend gateway (tokens never reach the browser), JWT validation in every service, no secrets in the repository, unprivileged read-only containers and default-deny network policies. |
+| **Observable** | One correlation id across HTTP and messages, structured logs, distributed traces, Prometheus metrics, Grafana dashboards, and built-in saga, outbox and dead-letter monitors. |
+| **Deployable** | Docker Compose for development and Kubernetes manifests with pinned images. GitHub Actions builds, tests against real PostgreSQL and RabbitMQ, validates the deployment files, starts the stack and publishes the images. |
+
+**Scope.** ShopEasy ships the APIs and an operations portal, not a customer-facing storefront, and payments go through a simulated provider. The [known limitations](#production-hardening-roadmap--known-limitations) are listed at the end of this document.
 
 ---
 
-## Architecture Overview
+## Architecture
 
+### System overview
+
+```mermaid
+flowchart LR
+    client(["<b>Browser /<br/>API client</b>"])
+
+    subgraph edge["Edge"]
+        direction TB
+        gateway["<b>API Gateway</b><br/>YARP reverse proxy + BFF<br/>session cookie · rate limiting<br/>routing · developer portal"]
+        identity["<b>Identity</b><br/>OpenID Connect / OAuth 2.0<br/>Duende IdentityServer"]
+    end
+
+    subgraph services["Business services"]
+        direction TB
+        order["<b>Order</b><br/>saga orchestrator · outbox<br/>idempotent API · read model"]
+        inventory["<b>Inventory</b><br/>stock · reservations<br/>REST and gRPC"]
+        payment["<b>Payment</b><br/>charges · refunds"]
+        product["<b>Product</b><br/>catalog · v1 and v2 API"]
+    end
+
+    subgraph backbone["Shared infrastructure"]
+        direction TB
+        rabbit[("<b>RabbitMQ</b><br/>commands and events")]
+        postgres[("<b>PostgreSQL 16</b><br/>one database per service")]
+        redis[("<b>Redis</b><br/>product and stock cache")]
+    end
+
+    obs["<b>Observability</b><br/>Seq · Jaeger · Prometheus · Grafana"]
+
+    client -->|HTTPS| gateway
+    gateway -. "sign-in" .-> identity
+    gateway -->|"user's token"| services
+    order -->|"HTTP: prices"| product
+    order -->|"gRPC: stock check"| inventory
+    services --> backbone
+    services -.-> obs
 ```
-                          ┌──────────────┐
-                          │   Customer   │
-                          └──────┬───────┘
-                                 │ HTTPS
-                                 ▼
-                       ┌───────────────────┐
-                       │   API Gateway     │  YARP + BFF
-                       │   (port 5000)     │  Auth, rate limiting, routing
-                       └─────────┬─────────┘
-                                 │
-         ┌──────────────┬────────┼────────┬──────────────┐
-         ▼              ▼        ▼         ▼              ▼
-   ┌──────────┐  ┌──────────┐ ┌──────┐ ┌─────────┐ ┌──────────┐
-   │ Identity │  │ Product  │ │Order │ │Inventory│ │ Payment  │
-   │  (5001)  │  │  (5101)  │ │(5102)│ │ (5103)  │ │  (5104)  │
-   └────┬─────┘  └────┬─────┘ └──┬───┘ └────┬────┘ └────┬─────┘
-        │             │          │          │           │
-        │ each service owns its own database (DB-per-service)
-        ▼             ▼          ▼          ▼           ▼
-   ┌─────────────────────────────────────────────────────────┐
-   │              PostgreSQL (5 separate databases)           │
-   └─────────────────────────────────────────────────────────┘
 
-   Async communication via RabbitMQ (events + commands)
-   Caching via Redis · Tracing via Jaeger · Metrics via Prometheus
-   Logs via Seq · Service-to-service via gRPC
+- **Edge.** The gateway is the only entry point. It keeps the user's session in a cookie, holds the access token server-side and attaches it to every proxied call, and enforces rate limits per route. Identity issues the tokens (authorization-code flow); each service validates them itself.
+- **Business services.** Every service owns its data and exposes only its API. No service reads another's tables.
+- **Shared infrastructure.** One PostgreSQL server with a separate database per service, RabbitMQ for commands and events, and Redis as a best-effort cache (the services keep working when it is down).
+
+### How the services talk to each other
+
+| Interaction | Mechanism | Why |
+|---|---|---|
+| Client to gateway | HTTPS, session cookie | The browser never holds a token ([pattern 1](#1-api-gateway-yarp--bff)) |
+| Gateway to services | HTTP through YARP, user's access token attached | One public URL; each service authorises the request on its own ([pattern 2](#2-authentication--authorization-oauth2--oidc--jwt)) |
+| Order to Product | HTTP with retries and a circuit breaker | Prices and names always come from the catalog, never from the request; the order is refused (`503`) if the catalog cannot answer |
+| Order to Inventory | gRPC for the stock check | Fast typed batch call; the answer is cached in Redis ([patterns 11 and 12](#11-eventual-vs-strong-consistency-hybrid-inventory-check)) |
+| Order, Inventory and Payment among themselves | Commands and events over RabbitMQ (MassTransit) | Loose coupling; at-least-once delivery made safe by the outbox, the inbox and idempotent consumers ([patterns 5 to 8](#5-outbox-pattern)) |
+
+### Life of an order
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor C as Customer
+    participant G as Gateway
+    participant O as Order
+    participant P as Product
+    participant I as Inventory
+    participant Y as Payment
+    participant MQ as RabbitMQ
+
+    C->>G: POST /api/orders (session cookie, Idempotency-Key)
+    G->>O: forward with the user's access token
+    O->>P: authoritative names and prices
+    O->>I: stock check (cached, gRPC on a miss)
+    Note over O: one transaction: order + outbox event<br/>+ read-model row + idempotency key
+    O-->>C: 201 Created (order is Pending)
+
+    rect rgb(240, 245, 255)
+    Note over O,MQ: asynchronous from here, driven by the saga
+    O->>MQ: OrderConfirmedEvent (outbox delivery)
+    MQ->>O: saga starts
+    O->>MQ: ReserveInventoryCommand
+    MQ->>I: reserve stock (row locks)
+    I->>MQ: InventoryReservedEvent
+    MQ->>O: saga waits for payment
+    O->>MQ: ProcessPaymentCommand
+    MQ->>Y: charge
+    Y->>MQ: PaymentSucceededEvent
+    MQ->>O: saga is completing
+    O->>MQ: CommitInventoryCommand
+    MQ->>I: commit the reservation
+    I->>MQ: InventoryCommittedEvent
+    MQ->>O: saga Completed, order Confirmed
+    end
 ```
 
-**Two communication styles:**
+Everything above the dashed region happens inside the request: the request is validated, every product is priced by the Product service, stock is checked against the cache (gRPC on a miss), and the order, its outbox event, its read-model row and its idempotency key are saved in **one transaction** before the customer receives `201`. Everything below it is asynchronous, so Inventory or Payment being slow or briefly down delays an order but never loses it. The details are in [Order API](#order-api) and [patterns 4 to 9](#4-saga-pattern-orchestration-based).
 
-- **Synchronous** — Gateway → services over HTTP; Order → Product over HTTP (authoritative price lookup when an order is placed); Order → Inventory over gRPC (fast, typed, binary).
-- **Asynchronous** — services publish/consume events through RabbitMQ. This is how the saga orchestrates the order lifecycle without services being tightly coupled.
+### The order saga
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Started: order placed
+    Started --> ReservingInventory: ReserveInventoryCommand sent
+    ReservingInventory --> ProcessingPayment: InventoryReserved
+    ProcessingPayment --> Completing: PaymentSucceeded
+    Completing --> Completed: InventoryCommitted
+
+    ReservingInventory --> Cancelled: InventoryReservationFailed
+    ProcessingPayment --> ReleasingInventory: PaymentFailed, customer cancel or timeout
+    ReleasingInventory --> Cancelled: InventoryReleased
+    Started --> Cancelled: customer cancel
+    Completing --> Failed: InventoryCommitFailed (payment refunded)
+
+    Completed --> [*]
+    Cancelled --> [*]
+    Failed --> [*]
+```
+
+The saga state is saved before the next command is published, every handler acts only in the state its event is valid for (a duplicate or late event can never move an order backwards), and a timeout service compensates sagas that stop making progress. The order the customer sees is `Pending` until the saga reaches `Completed` (then `Confirmed`) or ends `Cancelled`. The full compensation matrix is in [pattern 4](#4-saga-pattern-orchestration-based).
+
+### Where the data lives
+
+| Store | Holds |
+|---|---|
+| **Order** database | Orders and their lines, the outbox, saga state, the `OrderSummaries` read model, idempotency keys |
+| **Inventory** database | Stock levels, the stock ledger (reserved / committed / released per order), processed-message records, the MassTransit inbox and outbox |
+| **Payment** database | Payments and refunds, processed-message records, the MassTransit inbox and outbox |
+| **Product** database | The product catalog |
+| **Identity** database | Users, signing keys, the Data Protection key ring and issued grants, shared by every Identity replica |
+| **Redis** | Product and stock cache (a cache only: nothing depends on it for correctness) |
+| **RabbitMQ** | Durable queues per consumer; messages that keep failing land in `*_error` queues, which the operations portal lists and can requeue |
+
+### Cross-cutting qualities
+
+| Quality | How it is achieved |
+|---|---|
+| **Consistency** | Saga with compensation, transactional outbox and inbox, row-level locking, idempotent consumers and an idempotent order API ([patterns 4 to 8](#4-saga-pattern-orchestration-based), [25](#25-idempotent-order-placement)) |
+| **Reliability** | Patient retries for outages, bounded database waits, Polly pipelines, dead-letter queues with requeue, liveness and readiness probes ([13](#13-resilience-polly), [24](#24-surviving-database-and-network-outages)) |
+| **Security** | OIDC with a BFF gateway, JWT validation per service, secrets only in `.env` or Kubernetes Secrets, non-root read-only containers, network policies ([Configuration & Secrets](#configuration--secrets)) |
+| **Scalability** | Order is stateless and scales horizontally (`--scale order=N`, or an autoscaler from 2 to 10 pods on Kubernetes); outbox rows are claimed with `SELECT … FOR UPDATE SKIP LOCKED`; Identity keeps its state in PostgreSQL ([Horizontal Scaling](#horizontal-scaling)) |
+| **Observability** | Correlation id on every log line, trace and message; Seq, Jaeger, Prometheus and Grafana; saga, outbox and dead-letter monitors ([Developer Portal & Monitoring](#developer-portal--monitoring)) |
+| **Delivery** | CI gates every change; images are published to GHCR and pinned by commit; deployment files are validated against schema and security rules ([CI/CD](#cicd)) |
+
+### Deployment
+
+| | Docker Compose | Kubernetes |
+|---|---|---|
+| **Use** | Local development and a single host | A cluster |
+| **What runs** | The six services plus PostgreSQL, RabbitMQ, Redis, Seq, Jaeger, Prometheus, Grafana, pgAdmin and Redis Insight | The six services plus PostgreSQL, RabbitMQ and Redis |
+| **Hardening** | Read-only root file system, no capabilities, non-root user, health-gated start order | The same, plus pinned `sha-<commit>` images, default-deny network policies and an autoscaler for Order |
+| **Data stores** | Containers with a volume | Single-replica Deployments: use a managed service or an operator for production data |
 
 ---
 
 ## The Services
 
-| Service | Port | Responsibility |
-|---|---|---|
-| **Identity** | 5001 | OAuth2 / OpenID Connect provider (Duende IdentityServer). Issues JWTs. |
-| **Gateway** | 5000 | Single entry point. YARP reverse proxy + Backend-for-Frontend. Handles auth, rate limiting, routing, and hosts the developer monitoring portal. |
-| **Product** | 5101 | Product catalog CRUD. API-versioned (v1/v2). Redis-cached. |
-| **Order** | 5102 | Order placement and orchestration. Validates requests, prices orders from the Product service, and owns the saga, outbox, and CQRS read model. Horizontally scalable. |
-| **Inventory** | 5103 (REST) / 5105→8090 (gRPC) | Stock levels, reservation, commit, release. Exposes both REST and gRPC. |
-| **Payment** | 5104 | Payment processing and refunds (simulated provider). |
+| Service | Role | Owns | Interfaces | Port (Compose) |
+|---|---|---|---|---|
+| **Gateway** | Single entry point: YARP reverse proxy and Backend-for-Frontend. Authentication, rate limiting, routing, operations portal. | Session cookie | Public HTTP | 5000 |
+| **Identity** | OAuth 2.0 / OpenID Connect provider (Duende IdentityServer). Issues JWTs. | Users, keys, grants | OIDC endpoints | 5001 |
+| **Product** | Product catalog. API-versioned (v1 and v2), Redis-cached. | Catalog | REST | 5101 |
+| **Order** | Order placement and orchestration: validation, server-side pricing, the saga, the outbox, the CQRS read model and the idempotent order API. Horizontally scalable. | Orders, saga, outbox, read model, idempotency keys | REST, RabbitMQ | behind the gateway (scaled) |
+| **Inventory** | Stock levels, reservation, commit and release under row-level locks. | Stock and ledger | REST, gRPC, RabbitMQ | 5103 (REST), 8090 (gRPC, internal) |
+| **Payment** | Payment processing and refunds (simulated provider). | Payments | REST, RabbitMQ | 5104 |
 
-**Infrastructure containers:** PostgreSQL, pgAdmin, RabbitMQ, Redis, Redis Insight, Jaeger, Prometheus, Grafana, Seq.
+**Infrastructure containers (Compose):** PostgreSQL, RabbitMQ, Redis, Seq, Jaeger, Prometheus, Grafana, pgAdmin and Redis Insight.
 
 ---
 
 ## Technology Stack
 
-**Core**
-- .NET 8 / C# 12
-- ASP.NET Core Web API
-- Entity Framework Core 8 (with Npgsql for PostgreSQL)
-
-**Data**
-- PostgreSQL 16 — one database per service
-- Redis 7 — distributed caching
-
-**Messaging**
-- RabbitMQ 3.13 — message broker
-- MassTransit — messaging abstraction over RabbitMQ
-
-**Communication**
-- YARP — reverse proxy gateway
-- gRPC — internal service-to-service calls (Order → Inventory)
-- Polly — HTTP resilience (retries, circuit breakers)
-
-**Identity & Security**
-- Duende IdentityServer — OAuth2 / OIDC
-- JWT Bearer authentication
-- Backend-for-Frontend (BFF) pattern
-
-**Observability**
-- Serilog + Seq — structured centralized logging
-- OpenTelemetry + Jaeger — distributed tracing
-- prometheus-net + Prometheus + Grafana — metrics & dashboards
-
-**Testing**
-- xUnit, FluentAssertions, NSubstitute — unit tests
-- EF Core InMemory provider — isolated test databases
-- Integration tests against running services
-
-**Orchestration**
-- Docker & Docker Compose — local/dev
-- Kubernetes — production deployment (manifests included)
+| Area | Technology |
+|---|---|
+| **Runtime** | .NET 8, C# 12, ASP.NET Core Web API |
+| **Data** | PostgreSQL 16 (Entity Framework Core 8 with Npgsql), Redis 7 |
+| **Messaging** | RabbitMQ 3.13 through MassTransit, with transactional inbox and outbox |
+| **Communication** | YARP reverse proxy, gRPC (`inventory.proto`), HTTP with Polly resilience (retries, circuit breakers, timeouts) |
+| **Identity and security** | Duende IdentityServer (OAuth 2.0 / OIDC), JWT bearer authentication, Backend-for-Frontend pattern |
+| **Observability** | Serilog and Seq, OpenTelemetry and Jaeger, prometheus-net, Prometheus and Grafana |
+| **Testing** | xUnit, FluentAssertions, NSubstitute; tests that run against real PostgreSQL and RabbitMQ |
+| **Delivery** | Docker and Docker Compose, Kubernetes (kustomize), GitHub Actions, GitHub Container Registry |
 
 ---
 
 ## Patterns & Mechanisms Explained
 
-This is the heart of the project. Each pattern below is fully implemented.
+Each mechanism below is implemented and covered by tests. The numbers are referenced from the rest of this document.
 
 ### 1. API Gateway (YARP + BFF)
 
@@ -214,7 +336,7 @@ Reads and writes use **different models**:
 - **Write side** — normalized `Orders` + `OrderItems` tables, optimized for consistency.
 - **Read side** — a denormalized `OrderSummaries` table, pre-computed (status name, formatted amount, item summary, payment status), optimized for fast display with no joins.
 
-The read model is updated synchronously on placement and asynchronously via saga events. Same database, separate tables (a separate read database is a one-config-change upgrade for later).
+The read-model row is written in the same transaction as the order when it is placed, and kept current by the saga's events. Same database, separate tables (a separate read database is a one-config-change upgrade for later).
 
 ### 11. Eventual vs Strong Consistency (Hybrid Inventory Check)
 
@@ -342,6 +464,17 @@ Deliberate choices:
 - No circuit breaker or kill switch pauses a consumer during an outage: stopping an endpoint can lose the retries in flight, and the bounded pool and the capped pauses already limit the load on a recovering database.
 - Redelivery stays in-process (no RabbitMQ delayed-message plugin to install). The slot a message occupies while it waits is bounded by the 7-minute window, far below RabbitMQ's 30-minute `consumer_timeout`.
 
+### 25. Idempotent Order Placement
+
+`POST /api/orders` is the one call a client cannot safely repeat blindly, so it accepts an `Idempotency-Key` (usage: [Order API](#retrying-safely-the-idempotency-key-header)). The key is stored in the `IdempotencyRecords` table of the Order database together with a fingerprint of the request (SHA-256 of the products, quantities and note, so JSON formatting, line order and the ignored `productName`/`unitPrice` fields do not matter) and the response that was sent.
+
+- **Atomic.** The order, its outbox event, its read-model row and the key are saved in a single transaction, so there is never an order without its key (or the other way round) and never an order the saga does not know about.
+- **No lock, no "in progress" state.** The unique index on `(UserId, Key)` decides when two copies run at once: both see "new key", one commits, the other gets a unique-key violation, rolls back completely and answers from the winner. A request that crashes midway therefore cannot leave a key stuck.
+- **Only a placed order uses up the key.** Validation errors, an unavailable Product service or missing stock leave nothing behind.
+- **Retention.** A background job deletes keys older than `Idempotency:RetentionHours` (24) in one statement, safe to run on every replica.
+
+The rest of the order flow is idempotent by design as well: the saga starter skips an order that already has a saga, every Inventory and Payment consumer ignores a message it has processed (pattern 7), and cancelling twice returns the same result.
+
 ---
 
 ## Getting Started
@@ -458,6 +591,7 @@ Services read standard ASP.NET Core configuration, so every key can be an enviro
 | `Services__InventoryService`, `Services__InventoryGrpcService` | Order | Inventory REST and gRPC URLs. |
 | `Redis__Connection` | Product, Inventory, Order | Redis endpoint, e.g. `redis:6379`. |
 | `Telemetry__Endpoint` | all | OTLP endpoint (Jaeger), default `http://jaeger:4317`. |
+| `Idempotency__RequireKey`, `Idempotency__RetentionHours` | Order | `Idempotency-Key` on `POST /api/orders`: reject requests without the header (default `false`) and how long a key is remembered (default `24` hours). See [Order API](#retrying-safely-the-idempotency-key-header). |
 | `Resilience__Postgres__*` | all with a DB | Limits on how long a service waits for PostgreSQL and how many connections it opens (lock, idle-in-transaction, command and connect timeouts, pool size, TCP keep-alive). Defaults suit most setups and are written out in `appsettings.json`, Compose and the ConfigMap; see [pattern 24](#24-surviving-database-and-network-outages). |
 | `Resilience__Consumers__*` | Order, Inventory, Payment | Retry schedule of the message consumers: patient retries for outages, quick retries for everything else. Same pattern. |
 | `Seq__ServerUrl` | all | Where logs are shipped, default `http://seq:5341` (the Compose Seq). **Empty = off** (console only) — the Kubernetes manifests set it empty because they do not run Seq. |
@@ -557,7 +691,7 @@ All endpoints require a logged-in user (cookie via the gateway, or a Bearer toke
 
 | Method & path | Description |
 |---|---|
-| `POST /api/orders` | Place an order. Rate limited to 10 per minute per user. |
+| `POST /api/orders` | Place an order. Rate limited to 10 per minute per user. Send an `Idempotency-Key` header to make a retry safe (see [Retrying safely](#retrying-safely-the-idempotency-key-header)). |
 | `GET /api/orders?status=&page=&pageSize=` | List the current user's orders (CQRS read model). `pageSize` is clamped to 1-50. |
 | `GET /api/orders/{orderId}` | One of the current user's orders. |
 | `GET /api/orders/status-counts` | Order counts per status for the current user. |
@@ -584,13 +718,14 @@ All endpoints require a logged-in user (cookie via the gateway, or a Bearer toke
 
 The same `productId` appearing in several items is **merged into one line** (quantities added); the merged quantity must still be at most 100.
 
-**How an order is processed:** validate the request, look up every product in the Product service (name, price, active flag), check stock (Redis/gRPC, see pattern 11), then save the order and its outbox event in one transaction and return `201`. The saga then reserves stock and takes payment asynchronously.
+**How an order is processed:** validate the request, look up every product in the Product service (name, price, active flag), check stock (Redis/gRPC, see pattern 11), then save the order, its outbox event, its read-model row and (if the request has one) its idempotency key in one transaction and return `201`. The saga then reserves stock and takes payment asynchronously.
 
 | Status | Meaning |
 |---|---|
 | `201 Created` | Order accepted (status `Pending`). The saga then reserves stock, takes payment and commits the stock asynchronously; the order becomes `Confirmed` once all of that succeeded, or `Cancelled` if any step failed (stock short, payment declined, ...). The body contains the order with the **server-side** prices and `totalAmount`. |
-| `400 Bad Request` | Invalid request, unknown product, inactive product, or insufficient stock. Body: `{ "message": "Order could not be placed.", "errors": ["..."] }` with every problem listed. |
+| `400 Bad Request` | Invalid request, unknown product, inactive product, insufficient stock, or a malformed (or, when required, missing) `Idempotency-Key`. Body: `{ "message": "Order could not be placed.", "errors": ["..."] }` with every problem listed. |
 | `401 Unauthorized` | Not logged in / invalid token. |
+| `422 Unprocessable Entity` | The `Idempotency-Key` was already used for a *different* request. Use a new key for a different order. |
 | `429 Too Many Requests` | Order rate limit exceeded. Through the gateway the response includes a `Retry-After` header. |
 | `503 Service Unavailable` | The Product service could not be reached or answered in time, so the price cannot be trusted. **The order is rejected, nothing is saved.** The response has `Retry-After: 5`; retrying is safe. |
 
@@ -605,6 +740,30 @@ Example `400`:
   ]
 }
 ```
+
+#### Retrying safely: the `Idempotency-Key` header
+
+A client that loses the connection or times out does not know whether its order was placed. Repeating the request without protection could place it twice (and charge twice). Send a unique `Idempotency-Key` with the request and send the **same key again** when you retry:
+
+```bash
+curl -X POST https://shop.example.com/api/orders \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: 7b0c3f0e-5d5b-4d57-9f6e-2d5f3f6a9c11" \
+  -d '{ "items": [ { "productId": "00000000-0000-0000-0000-000000000005", "quantity": 1 } ] }'
+```
+
+| Situation | Result |
+|---|---|
+| First request with this key | Processed normally: `201`, and the response is remembered. |
+| The same request again | `201` with the **original** response (same order id and body) and an `Idempotency-Replayed: true` header. No second order, no second payment. The stock and the prices are not checked again, so the retry succeeds even if they changed in the meantime. |
+| The same key with a different request (other items, quantities or notes) | `422`. |
+| Two copies of the same request in flight at once | One order is placed; every copy gets that order back. |
+| A request that was rejected (`400`) or could not be served (`503`) | Does not use up the key: repeat it with the same key once the problem is fixed. |
+| No `Idempotency-Key` | Processed as before, with no protection against repeats. |
+
+The key is 1 to 128 characters (letters, digits and `. _ ~ : -`; a UUID is the usual choice), is scoped to the logged-in user, and is remembered for 24 hours. Both can be tuned (`Idempotency__RetentionHours`), and `Idempotency__RequireKey=true` rejects order requests that carry no key once every client sends one. `DELETE /api/orders/{id}` needs no key: cancelling is idempotent by nature, repeating it returns the same result.
+
+Replays are counted in the `shopeasy_orders_idempotent_replays_total{result}` metric (`replayed`, `key_reused_with_different_request`).
 
 ---
 
@@ -719,7 +878,7 @@ All reachable from the landing page at `http://localhost:5000`:
 | Seq (logs) | http://localhost:5341 | — |
 | Redis Insight | http://localhost:5540 | — |
 | pgAdmin | http://localhost:5050 | `admin@shopeasy.com` / `PGADMIN_PASSWORD` from `.env` |
-| Service Swagger | http://localhost:5101–5104 | — |
+| Service Swagger | Product http://localhost:5101 · Inventory http://localhost:5103 · Payment http://localhost:5104 · Order on its assigned port (`docker compose port order 8080`) | — |
 
 **pgAdmin connection** (to inspect databases): host `postgres`, port `5432`, user `shopeasy`, password = `POSTGRES_PASSWORD` from your `.env`.
 
@@ -780,7 +939,7 @@ dotnet test src/Tests/ShopEasy.UnitTests
 dotnet test src/Tests/ShopEasy.IntegrationTests
 ```
 
-**Unit tests — 280 test cases.** 234 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 46 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 280 (see [CI/CD](#cicd)).
+**Unit tests — 324 test cases.** 271 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 53 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 324 (see [CI/CD](#cicd)).
 
 | Area | Where | What it covers |
 |---|---|---|
@@ -790,6 +949,7 @@ dotnet test src/Tests/ShopEasy.IntegrationTests
 | Saga starter and first handlers | `Sagas/SagaOrchestratorTests`, `Consumers/*` | Starting a saga (including idempotency), the reserved / payment consumers, outbox entry state. |
 | Inventory consumers | `Inventory/*` | Reserve, commit and release including duplicates, out-of-order messages, shortages, multi-product orders and a missing inventory record. |
 | Order placement | `Orders/*` | Request validation and limits, server-side price/name resolution, the Product service client (404, 5xx, network failure, malformed response). |
+| Idempotent order placement (no servers needed) | `Orders/IdempotencyKeyTests`, `OrderPlacementIdempotencyTests`, `IdempotencyConfigurationTests` | The real `POST /api/orders` action on an in-memory database with the Product service and stock cache faked: header rules and the request fingerprint (order of lines, ignored fields and whitespace do not matter); a repeated request returns the original order and response without placing another or calling the catalog and stock again, even after the stock ran out or the price changed; a different request under the same key gets 422; keys are per user; a request that was rejected (400) or unserved (503) does not use up its key; a required key; the order, outbox event, read-model row and key all saved. The appsettings, Compose, `.env.example` and ConfigMap copies of the settings equal the code's defaults. |
 | Messaging (no servers needed) | `Messaging/*` | The broker readiness gate (including against MassTransit's real health check registration), outbox delivery pausing while the bus is not ready, the dead-letter monitor and the requeue endpoint's responses. |
 | Resilience (no servers needed) | `Resilience/*`, `Messaging/ConsumerResilienceTests` | Which failures count as transient (including EF Core's wrapping, nested and aggregate exceptions, and what must *not* count: a missing file, a cancellation); the connection-string limits and that anything written in the string wins; the retry schedule and its jitter; and the policy on a real MassTransit pipeline — an outage of more than the old four attempts is ridden out without a dead letter, the patient and quick retries never multiply, a bug gets exactly 3 retries and a broken rule none. `Resilience/ResilienceConfigurationTests` keeps the copies of the settings in each `appsettings.json`, `docker-compose.yml`, `.env.example` and the Kubernetes ConfigMap equal to the code's defaults. |
 | Logging, correlation, tracing (no servers needed) | `Messaging/LoggingTests`, `CorrelationFilterTests`, `TracingSourceTests` | The exact console line per service, the correlation id inside and outside a scope, the Seq setting; the id travelling through a real MassTransit pipeline (header → consumer → the messages it publishes), the HTTP hand-over from the gateway; MassTransit and Npgsql emitting spans under the source names the services subscribe to. |
@@ -802,6 +962,7 @@ What these check cannot be faked: row locks, transactions, the MassTransit outbo
 |---|---|
 | `Infrastructure/InventoryPostgresTests` | 12 orders of 3 units racing for 10 units reserve at most 3 times (the real `SELECT … FOR UPDATE`); the same command delivered 4 times at once reserves once; a consumer that publishes and then fails sends **nothing** and rolls everything back; `BeginOrJoinAsync` joins an open transaction and leaves the commit to its owner; a row lock that another process never releases makes the consumer hit the lock timeout again and again, and the reservation still goes through once the lock is gone. |
 | `Infrastructure/PaymentPostgresTests` | A payment command through the outbox saves the payment and delivers the event; the same command twice charges once and still confirms. **Failure injection:** six dropped database connections in a row (more than the old policy survived) are ridden out and the order is charged exactly once, with one idempotency row and one result event; an outage that outlasts the patient retries ends in the error queue after exactly the configured attempts, with nothing half-written. |
+| `Infrastructure/OrderIdempotencyPostgresTests` | Against the real unique index: eight copies of one request in flight at once place exactly one order (one outbox event, one read-model row, one key) and everybody receives that order; concurrent requests with different keys or without a key each place their own; concurrent requests reusing one key for different orders let one win and reject the rest with 422; a retry on another instance replays from the database; only keys older than the retention are deleted and a forgotten key is accepted as new. Checked to fail when the duplicate-key handling is removed. |
 | `Infrastructure/PostgresResilienceTests` | What each connection limit does against a real server: a waiter behind a stuck row lock gives up at the lock timeout (and, as a control, hangs without it); a session left idle inside a transaction is ended and its locks released; a session terminated by the server counts as retryable; a runaway query is cancelled at the command timeout and the connection stays usable; with the pool used up a caller fails after the connect timeout and the server never sees more than `MaxPoolSize` connections. |
 | `Infrastructure/OutboxDeliveryPostgresTests` | Ready bus → entries published and marked delivered; not ready → nothing published and no retry spent; a failing entry is retried, parked after 5 attempts and no longer blocks the others; deliveries earlier in a batch stay delivered when a later one fails; each entry's correlation id is restored while it is published. |
 | `Infrastructure/SagaPostgresTests` | The saga row lock (`SELECT … FOR UPDATE`): twelve concurrent actors lose no update (and a control test shows that **without** the lock updates are lost); a payment result racing the timeout service, and a customer cancel racing the payment result, never leave a charged order both committed and released. Checked to fail when the lock is removed. |
@@ -816,7 +977,7 @@ docker run -d --name shopeasy-test-mq -e RABBITMQ_DEFAULT_USER=test -e RABBITMQ_
 
 export SHOPEASY_TEST_POSTGRES="Host=localhost;Port=55432;Username=postgres;Password=test"
 export SHOPEASY_TEST_RABBITMQ="amqp://test:test@localhost:55672"
-dotnet test src/Tests/ShopEasy.UnitTests          # now 280 run, 0 skipped
+dotnet test src/Tests/ShopEasy.UnitTests          # now 324 run, 0 skipped
 
 docker rm -f shopeasy-test-pg shopeasy-test-mq
 ```
@@ -829,15 +990,15 @@ Everything below is in `.github/` and runs on GitHub Actions. Nothing needs to b
 
 ### CI — `.github/workflows/ci.yml`
 
-Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new push to the same branch cancels the run still in progress.
+Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new push to the same branch cancels the run still in progress. A pull request that **only changes documentation** (`*.md`, `docs/`, the licence) skips the build, the tests and the container jobs, so it finishes in seconds; anything else, and every run on `main` or a tag, runs the full pipeline.
 
 | Job | What it checks |
 |---|---|
-| **Build and test** | `dotnet restore/build` (Release) and all 280 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 46 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). Test results are uploaded as an artifact; the counters appear in the job summary. |
+| **Detect changes** | Decides whether the pull request touches anything that is built, tested or deployed (plain `git diff`, no third-party action). Skipped jobs count as passed in **CI passed**, so the check can stay required for documentation-only changes. |
+| **Build and test** | `dotnet restore/build` (Release) and all 324 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 53 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
 | **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
-| **Docker build (×6)** | Each service image builds from its Dockerfile (nothing is pushed from a pull request). |
-| **Start the Compose stack** | Builds the images and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. |
-| **CI passed** | One aggregate status for the four groups above — the check to require in branch protection. |
+| **Start the Compose stack** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. |
+| **CI passed** | One aggregate status for the jobs above (a skipped job counts as passed) — the check to require in branch protection. |
 
 **Dependency audit.** `Directory.Build.props` makes NuGet check every restored package, direct *and* transitive, against the advisory database. Locally a finding is a warning; **in CI it fails the build** (`NU1901`–`NU1904`). To fix one, upgrade the package, or pin a patched version of the transitive dependency with a direct `PackageReference` (see the `System.Text.Json` pin in `ShopEasy.Shared.csproj`). **Dependabot** (`.github/dependabot.yml`) opens weekly update pull requests for NuGet packages, the Dockerfile base images and the GitHub Actions; each runs the full CI. NuGet updates are grouped: one pull request for the OpenTelemetry, Serilog, MassTransit and test-tooling packages each, and one for every other minor or patch update across all projects; a major version arrives as its own pull request. Major bumps of the framework-bound packages **and of the .NET base images** are ignored on purpose (the services target .NET 8 LTS; moving to a newer .NET is a project decision that changes the `TargetFramework`, the Dockerfiles and the CI together), and so are major bumps of Swashbuckle and Serilog.AspNetCore and every major *and minor* bump of MassTransit: 8.5+ pulls RabbitMQ.Client 7, which removes the synchronous API the dead-letter tooling uses (the Order service stops compiling), and MassTransit 9 is no longer Apache-2.0 — both need a deliberate migration. If a base-image bump is merged anyway, the Dockerfile check above fails.
 
@@ -851,7 +1012,7 @@ docker compose --env-file .env.example config --quiet
 
 ### CD — publishing images
 
-After **CI passed** on `main` or on a version tag, the `publish-images` job builds the six service images again and pushes them to the GitHub Container Registry as `ghcr.io/<owner>/shopeasy-<service>` (`identity`, `gateway`, `product`, `inventory`, `payment`, `order`), tagged:
+After **CI passed** on `main` or on a version tag, the `publish-images` job builds the six service images (with the layer cache of earlier runs) and pushes them to the GitHub Container Registry as `ghcr.io/<owner>/shopeasy-<service>` (`identity`, `gateway`, `product`, `inventory`, `payment`, `order`), tagged:
 
 | Tag | When |
 |---|---|
@@ -1005,7 +1166,7 @@ ShopEasy/
 ├── .env.example                   # copy to .env (git-ignored) — all secrets live there
 ├── Directory.Build.props          # NuGet vulnerability audit (errors in CI)
 ├── .github/
-│   ├── workflows/ci.yml           # CI (build, tests, deployment-file checks, image builds, start the stack) + CD (publish to GHCR)
+│   ├── workflows/ci.yml           # CI (change detection, build, tests, deployment-file checks, build and start the stack) + CD (publish to GHCR)
 │   ├── scripts/                   # Dockerfile / Kubernetes / running-container rules the CI enforces
 │   └── dependabot.yml
 ├── postgres-init.sql              # creates the 5 databases
@@ -1117,7 +1278,7 @@ This project is being hardened step by step. Status:
 | 6 | Replace RabbitMQ management-API polling with a bus-ready check and AMQP dead-letter tooling; MassTransit transactional inbox/outbox for Payment/Inventory events | Done |
 | 7 | Observability (per-service log names, configurable Seq, correlation id across HTTP, outbox, saga and RabbitMQ, MassTransit + Npgsql traces), CI/CD on GitHub Actions (build, all tests incl. PostgreSQL/RabbitMQ, deployment-file validation, image builds, publish to GHCR, Dependabot), vulnerable dependencies patched and gated, saga row-locking tests on PostgreSQL, saga tests re-enabled | Done |
 | 8 | Non-root images (no SQLite, no `chmod 777`), read-only containers started by CI, Kubernetes with pinned published image tags and no local-image assumptions, Identity keys / key ring / grants shared in PostgreSQL (several replicas), network policies | Done |
-| 9 | Application-level resilience and security, in five parts: **9.1 failure injection and outage handling (database and network faults are classified, ridden out for minutes and bounded by timeouts and pool limits; proven by injected faults)** · 9.2 idempotent API edges and saga handlers · 9.3 resilient service-to-service calls (deadlines, retry budgets, gateway timeouts and health) · 9.4 authorization model (audiences, scopes, service identity) · 9.5 business-level observability and an end-to-end order test | In progress — 9.1 done |
+| 9 | Resilience and API safety: consumers ride out database and network outages and every database wait is bounded (pattern 24); order placement is idempotent (pattern 25). Still to do: resilient service-to-service calls (deadlines, retry budgets, gateway timeouts), an authorization model with scopes and service identities, business-level observability | In progress |
 
 **Known limitations today** (documented so nobody is surprised):
 
@@ -1135,11 +1296,11 @@ This project is being hardened step by step. Status:
 - The Kubernetes manifests were validated (schema and the deployment rules above) and the same hardening runs in CI under Compose, but they have not been applied to a live cluster in CI. NetworkPolicies need a network plugin that enforces them, and egress of the application pods is not restricted.
 - The gateway keeps its login cookie's Data Protection keys in memory/on its own file system, so a restart signs users out and it cannot run several replicas yet (Identity already can).
 - Without `DataProtection__CertificatePath`, Identity's key ring — and with it the signing keys — is stored in the database in clear text; the Kubernetes manifests require the certificate, Compose (local development) does not. Production use of Duende IdentityServer needs a license (see Security notes).
-- PostgreSQL, RabbitMQ and Redis in `k8s/` are single-replica Deployments with a PVC at most: fine to learn from, not highly available. Use a managed service or an operator for production data stores.
+- PostgreSQL, RabbitMQ and Redis in `k8s/` are single-replica Deployments (with a PVC at most), so they are not highly available. Use a managed service or an operator for production data stores.
 - A customer cancel (`DELETE /api/orders/{id}`) is logged and published under the *cancel request's* correlation id, not the id of the request that placed the order; `OrderId` links the two.
 - Migrations run at service start-up; with several replicas the race is only handled for the Order and Identity services.
 - A database outage longer than the patient-retry window (about 7 minutes by default) sends the messages that were in flight to the `*_error` queues; requeue them once the database is back (pattern 14). While it lasts, every consumer slot retries in parallel (bounded by the pool size and the consumers' concurrency); there is no circuit breaker that pauses consumption.
-- The HTTP calls between services (gRPC stock checks, the Product client) and the gateway's proxy routes do not have the same treatment yet: the Order service's HTTP clients have Polly pipelines, but the gRPC calls have no deadline or retry and YARP has no explicit timeouts (planned as 9.3).
+- The HTTP calls between services (gRPC stock checks, the Product client) and the gateway's proxy routes do not have the same treatment yet: the Order service's HTTP clients have Polly pipelines, but the gRPC calls have no deadline or retry and YARP has no explicit timeouts.
 - Swagger UIs and Prometheus metrics ports are unauthenticated.
 
 ---

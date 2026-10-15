@@ -34,3 +34,7 @@ data:
   Resilience__Consumers__MinIntervalSeconds: "1"
   Resilience__Consumers__MaxIntervalSeconds: "10"
   Resilience__Consumers__IntervalDeltaSeconds: "2"
+  # Idempotency-Key on POST /api/orders (Order service; README, "Order API"). RequireKey rejects
+  # order requests without the header; RetentionHours is how long a key is remembered.
+  Idempotency__RequireKey: "false"
+  Idempotency__RetentionHours: "24"

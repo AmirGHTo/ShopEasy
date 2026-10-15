@@ -3,6 +3,12 @@ using ShopEasy.Shared.Grpc;
 
 namespace ShopEasy.OrderService.Services;
 
+// What the order endpoint needs from the stock cache: lets it be replaced in tests
+public interface IInventoryStock
+{
+    Task<List<StockInfo>> GetStockBatchAsync(IEnumerable<Guid> productIds, CancellationToken ct = default);
+}
+
 // Provides stock info with Redis cache as primary source
 // and gRPC as fallback.
 //
@@ -15,7 +21,7 @@ namespace ShopEasy.OrderService.Services;
 public class InventoryCacheService(
     CacheService cache,
     InventoryGrpcClient grpcClient,
-    ILogger<InventoryCacheService> logger)
+    ILogger<InventoryCacheService> logger) : IInventoryStock
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan StaleTtl = TimeSpan.FromMinutes(5);

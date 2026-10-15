@@ -3,12 +3,15 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using ShopEasy.OrderService.Data;
+using ShopEasy.OrderService.Idempotency;
 using ShopEasy.OrderService.Metrics;
 using ShopEasy.OrderService.ReadModels;
 using ShopEasy.OrderService.Services;
 using ShopEasy.Shared.Contracts;
 using ShopEasy.Shared.Messaging;
+using System.Text.Json;
 
 namespace ShopEasy.OrderService.Controllers;
 
@@ -22,24 +25,50 @@ namespace ShopEasy.OrderService.Controllers;
 
 public class OrderCommandsController(
     OrderDbContext db,
-    ILogger<OrderCommandsController> logger, InventoryCacheService inventoryCache, OrderReadModelUpdater readModelUpdater,
+    ILogger<OrderCommandsController> logger, IInventoryStock inventoryCache, OrderReadModelUpdater readModelUpdater,
     IProductCatalogClient productCatalog,
-    OrderCancellationService cancellation) : ControllerBase
+    OrderCancellationService cancellation,
+    IdempotencyStore idempotency,
+    IOptions<IdempotencyOptions> idempotencyOptions,
+    IOptions<Microsoft.AspNetCore.Mvc.JsonOptions> jsonOptions) : ControllerBase
 {
     private readonly OrderDbContext _db = db;
     private readonly ILogger<OrderCommandsController> _logger = logger;
-    private readonly InventoryCacheService _inventoryCache = inventoryCache;
+    private readonly IInventoryStock _inventoryCache = inventoryCache;
     private readonly IProductCatalogClient _productCatalog = productCatalog;
 
     // ── POST /api/orders ──────────────────────────────────────────────────────
     // The client only chooses WHAT to buy (productId + quantity). Product names and
     // prices are always taken from the Product service — never from the request body.
+    //
+    // Idempotency-Key (optional unless Idempotency:RequireKey is set): a client that did not see
+    // the answer repeats the request with the same key and gets the original response back
+    // (with an Idempotency-Replayed header) instead of a second order. The same key with a
+    // different request is rejected with 422. Keys are remembered for Idempotency:RetentionHours.
+    // Only a request that actually placed an order uses up its key: one rejected with 400 or 503
+    // can be repeated with the same key.
     [HttpPost]
     [EnableRateLimiting("create-order")]
-    public async Task<IActionResult> PlaceOrder([FromBody] PlaceOrderRequest request)
+    [ProducesResponseType(StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public async Task<IActionResult> PlaceOrder(
+        [FromBody] PlaceOrderRequest request,
+        [FromHeader(Name = IdempotencyKey.HeaderName)] string? idempotencyKey = null)
     {
         var userId = User.FindFirst("sub")?.Value!;
         var userEmail = User.FindFirst("email")?.Value ?? "";
+
+        if (!IdempotencyKey.TryParse(
+                idempotencyKey, idempotencyOptions.Value.RequireKey, out var key, out var keyError))
+        {
+            return BadRequest(new
+            {
+                message = "Order could not be placed.",
+                errors = new[] { keyError! }
+            });
+        }
 
         // ── Step 0: Validate the request itself (shape, limits, duplicates) ───
         var validation = OrderRequestValidator.Validate(request);
@@ -53,6 +82,19 @@ public class OrderCommandsController(
                 message = "Order could not be placed.",
                 errors = validation.Errors
             });
+        }
+
+        // ── Step 0a: Is this a repeat of a request that already placed an order? ─
+        // Checked before anything is looked up, so a retry gets the original answer even if
+        // the stock or the prices have changed since.
+        string? requestHash = null;
+        if (key is not null)
+        {
+            requestHash = OrderRequestFingerprint.Compute(validation.Lines, request.Notes);
+            var previous = await idempotency.FindAsync(
+                userId, key, requestHash, HttpContext.RequestAborted);
+            if (previous.Outcome != IdempotencyOutcome.New)
+                return AnswerFromIdempotencyRecord(previous, userId, key);
         }
 
         // ── Step 0b: Resolve authoritative names and prices ───────────────────
@@ -169,7 +211,7 @@ public class OrderCommandsController(
         };
         order.TotalAmount = order.Items.Sum(i => i.LineTotal);
 
-        // ── Step 3: Save order + outbox entry atomically ──────────────────────
+        // ── Step 3: Save order + outbox entry + read model + idempotency key atomically ─
         var eventData = new OrderConfirmedEvent
         {
             OrderId = order.Id,
@@ -196,14 +238,35 @@ public class OrderCommandsController(
             CorrelationId = CorrelationContext.Current
         };
 
+        // The read model row is part of the same transaction, so an order is never visible
+        // without its summary (it appears immediately in GET /api/orders). Later status
+        // changes (Confirmed, Cancelled) are applied by the saga.
+        var response = MapToResponse(order);
+
         _db.Orders.Add(order);
         _db.OutboxEntries.Add(outboxEntry);
-        await _db.SaveChangesAsync();
+        readModelUpdater.Stage(order, orderItems);
+        if (key is not null)
+        {
+            idempotency.Add(userId, key, requestHash!, order.Id, StatusCodes.Status201Created,
+                JsonSerializer.Serialize(response, jsonOptions.Value.JsonSerializerOptions));
+        }
 
-        // ── Step 4: Update CQRS read model ────────────────────────────────────
-        // Updated synchronously so order appears immediately in GET /api/orders.
-        // Subsequent status updates (Confirmed, Cancelled) happen via saga events.
-        await readModelUpdater.CreateAsync(order, orderItems);
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (key is not null && IdempotencyStore.IsDuplicateKey(ex))
+        {
+            // A request with the same key committed first (two copies in flight at once).
+            // Nothing of ours was saved; answer from the one that won.
+            _db.ChangeTracker.Clear();
+            var winner = await idempotency.FindAsync(
+                userId, key, requestHash!, HttpContext.RequestAborted);
+            if (winner.Outcome != IdempotencyOutcome.New)
+                return AnswerFromIdempotencyRecord(winner, userId, key);
+            throw;
+        }
 
         _logger.LogInformation(
             "Order {OrderId} saved with status Pending. " +
@@ -216,7 +279,47 @@ public class OrderCommandsController(
             actionName: "GetById",
             controllerName: "OrderQueries",
             routeValues: new { orderId = order.Id },
-            value: MapToResponse(order));
+            value: response);
+    }
+
+    // The answer to a request whose Idempotency-Key is already known: the stored response for a
+    // repeat of the same request, 422 for a different request that reuses the key.
+    private IActionResult AnswerFromIdempotencyRecord(IdempotencyLookup lookup, string userId, string key)
+    {
+        var record = lookup.Record!;
+
+        if (lookup.Outcome == IdempotencyOutcome.Mismatch)
+        {
+            _logger.LogWarning(
+                "Order rejected for User {UserId}: Idempotency-Key {IdempotencyKey} was already used " +
+                "for a different request (Order {OrderId})",
+                userId, key, record.OrderId);
+            OrderMetrics.RecordIdempotentReplay("key_reused_with_different_request");
+            return UnprocessableEntity(new
+            {
+                message = "Order could not be placed.",
+                errors = new[]
+                {
+                    $"The {IdempotencyKey.HeaderName} was already used with a different request. " +
+                    "Use a new key for a different order."
+                }
+            });
+        }
+
+        _logger.LogInformation(
+            "Order request for User {UserId} repeats Idempotency-Key {IdempotencyKey}: " +
+            "returning the response for Order {OrderId} without placing another order",
+            userId, key, record.OrderId);
+        OrderMetrics.RecordIdempotentReplay("replayed");
+
+        Response.Headers["Idempotency-Replayed"] = "true";
+        Response.Headers.Location = Url.Action("GetById", "OrderQueries", new { orderId = record.OrderId });
+        return new ContentResult
+        {
+            StatusCode = record.StatusCode,
+            ContentType = "application/json; charset=utf-8",
+            Content = record.ResponseBody
+        };
     }
 
     // ── DELETE /api/orders/{id} ───────────────────────────────────────────────

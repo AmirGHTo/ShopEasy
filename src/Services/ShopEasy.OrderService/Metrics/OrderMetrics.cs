@@ -16,6 +16,15 @@ public static class OrderMetrics
                 LabelNames = new[] { "status" } // "confirmed", "rejected"
             });
 
+    private static readonly Counter IdempotentReplays = Prometheus.Metrics
+        .CreateCounter(
+            "shopeasy_orders_idempotent_replays_total",
+            "Order requests answered from a stored response because the Idempotency-Key was already used",
+            new CounterConfiguration
+            {
+                LabelNames = new[] { "result" } // "replayed", "key_reused_with_different_request"
+            });
+
     private static readonly Counter OutboxMessagesDelivered = Prometheus.Metrics
         .CreateCounter(
             "shopeasy_outbox_messages_delivered_total",
@@ -65,6 +74,9 @@ public static class OrderMetrics
         if (status == "confirmed")
             OrderAmount.Observe((double)amount);
     }
+
+    public static void RecordIdempotentReplay(string result)
+        => IdempotentReplays.WithLabels(result).Inc();
 
     public static void RecordOutboxDelivered()
         => OutboxMessagesDelivered.Inc();

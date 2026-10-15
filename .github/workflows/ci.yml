@@ -2,6 +2,8 @@ name: CI/CD
 
 # CI: runs on every pull request, every push to main and every version tag.
 #     Merge only when "CI passed" is green (see "CI/CD" in the README).
+#     A pull request that only changes documentation (*.md, docs/) skips the build, the tests
+#     and the container jobs; "CI passed" still reports, so it can stay a required check.
 # CD: after CI passed on main or on a v* tag, the service images are published to GHCR.
 #     Pull requests never publish anything.
 on:
@@ -24,9 +26,54 @@ env:
   DOTNET_NOLOGO: "1"
 
 jobs:
+  # ── Does this change touch anything that is built, tested or deployed? ───────────────────
+  # Documentation-only pull requests skip the heavy jobs below. Everything else, and every run
+  # that is not a pull request (main, tags, manual), runs the full pipeline. The jobs that are
+  # skipped count as passed in "CI passed", so branch protection keeps working.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "Not a pull request: running everything."
+            exit 0
+          fi
+          # what the pull request changes relative to its base
+          files=$(git diff --name-only "$BASE" "$HEAD")
+          echo "Changed files:"
+          echo "$files"
+          # anything that is not Markdown, docs/ or the licence counts as a code change
+          if [ -z "$files" ] || grep -qvE '\.md$|^docs/|^LICENSE$' <<< "$files"; then
+            code=true
+          else
+            code=false
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "### Change detection" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$code" = "true" ]; then
+            echo "Code, configuration or deployment files changed: full pipeline." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Documentation only: build, tests and container jobs skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   # ── Build + every test, including the ones that need PostgreSQL and RabbitMQ ─────────────
   build-and-test:
     name: Build and test
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -81,6 +128,7 @@ jobs:
         run: >-
           dotnet test src/Tests/ShopEasy.UnitTests
           --configuration Release --no-build
+          --blame-hang-timeout 5m --blame-hang-dump-type none
           --logger "trx;LogFileName=unit-tests.trx"
           --results-directory TestResults
 
@@ -113,6 +161,8 @@ jobs:
   # ── The Compose file and the Kubernetes manifests must stay valid ────────────────────────
   validate-deployment-files:
     name: Validate Compose and Kubernetes files
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -147,12 +197,17 @@ jobs:
           python3 -m pip install --quiet pyyaml
           python3 .github/scripts/check-k8s-manifests.py < "$RUNNER_TEMP/k8s-rendered.yaml"
 
-  # ── The stack must actually start (an image that builds can still fail to run) ──────────
+  # ── Every image must build AND the stack must actually start ─────────────────────────────
+  # This builds all six service images (so it is also the "does every Dockerfile build" check;
+  # nothing is pushed from a pull request, images are built and published from main) and starts
+  # them: an image that builds can still fail to run.
   # The .NET 10 base-image incident built fine and crashed on start. This starts the real
   # containers, hardened exactly as in production (non-root, read-only file system, no
   # capabilities), and waits for every health check.
   container-smoke-test:
     name: Start the Compose stack
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -191,39 +246,11 @@ jobs:
         if: always()
         run: docker compose down --volumes
 
-  # ── Every service image must build (nothing is pushed from a pull request) ───────────────
-  docker-build:
-    name: Docker build (${{ matrix.service }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { service: identity,  dockerfile: src/Identity/ShopEasy.Identity/Dockerfile }
-          - { service: gateway,   dockerfile: src/Gateway/ShopEasy.Gateway/Dockerfile }
-          - { service: product,   dockerfile: src/Services/ShopEasy.ProductService/Dockerfile }
-          - { service: inventory, dockerfile: src/Services/ShopEasy.InventoryService/Dockerfile }
-          - { service: payment,   dockerfile: src/Services/ShopEasy.PaymentService/Dockerfile }
-          - { service: order,     dockerfile: src/Services/ShopEasy.OrderService/Dockerfile }
-    steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
-      - name: Build image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          push: false
-          tags: shopeasy-${{ matrix.service }}:ci
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,scope=${{ matrix.service }},mode=max
-
   # ── Single status to require in branch protection ────────────────────────────────────────
   ci-passed:
     name: CI passed
     if: always()
-    needs: [build-and-test, validate-deployment-files, docker-build, container-smoke-test]
+    needs: [changes, build-and-test, validate-deployment-files, container-smoke-test]
     runs-on: ubuntu-latest
     steps:
       - name: All required jobs succeeded?
