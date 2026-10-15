@@ -106,6 +106,38 @@ public class StockFetchCoordinatorTests
         (await coordinator.FetchAsync([A], recovered.Fetch))[A].Should().NotBeNull();
     }
 
+    // Whoever sees the answer of a fetch and then asks again must start a new fetch: a finished fetch
+    // is never "in flight", not even for the instant between its answer and the clean-up. That
+    // instant is tiny, so many callers run at once to make the threads compete the way they do on a
+    // busy server (or a small CI runner).
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ARequestMadeAfterAFetchHasAnswered_StartsANewFetch(bool theFetchFails)
+    {
+        var workers = Enumerable.Range(0, Environment.ProcessorCount * 8).Select(_ => Task.Run(async () =>
+        {
+            for (var round = 0; round < 400; round++)
+            {
+                var coordinator = new StockFetchCoordinator();
+                var first = new GatedFetch { Fail = theFetchFails ? new InventoryUnavailableException("down") : null };
+                first.Release();
+
+                try { await coordinator.FetchAsync([A], first.Fetch); }
+                catch (InventoryUnavailableException) when (theFetchFails) { }
+
+                var second = new GatedFetch();
+                second.Release();
+                var result = await coordinator.FetchAsync([A], second.Fetch);
+
+                second.Calls.Should().ContainSingle("the second request must not join the finished fetch");
+                result[A].Should().NotBeNull();
+            }
+        })).ToList();
+
+        await Task.WhenAll(workers);
+    }
+
     [Fact]
     public async Task ARequestThatGivesUpWaiting_DoesNotCancelTheFetchOthersNeed()
     {
