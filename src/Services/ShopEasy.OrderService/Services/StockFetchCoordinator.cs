@@ -54,25 +54,33 @@ public sealed class StockFetchCoordinator
         List<(Guid Id, TaskCompletionSource<StockLevel?> Source)> owned,
         Func<IReadOnlyList<Guid>, Task<IReadOnlyList<StockLevel>>> fetch)
     {
+        Dictionary<Guid, StockLevel>? levels = null;
+        Exception? failure = null;
         try
         {
-            var levels = await fetch(owned.Select(o => o.Id).ToList());
-            var byProduct = levels.ToDictionary(l => l.ProductId);
-            foreach (var (id, source) in owned)
-                source.TrySetResult(byProduct.GetValueOrDefault(id));
+            levels = (await fetch(owned.Select(o => o.Id).ToList())).ToDictionary(l => l.ProductId);
         }
         catch (Exception ex)
         {
-            foreach (var (_, source) in owned)
-                source.TrySetException(ex);
+            failure = ex;
         }
-        finally
+
+        // The fetch is over, so it stops being "in flight" BEFORE the requests that waited for it
+        // are woken. The other way round, a request that sees the answer and asks again straight
+        // away could still find the finished fetch in the table and take its (possibly failed)
+        // answer instead of asking Inventory.
+        lock (_gate)
         {
-            lock (_gate)
-            {
-                foreach (var (id, _) in owned)
-                    _inFlight.Remove(id);
-            }
+            foreach (var (id, _) in owned)
+                _inFlight.Remove(id);
+        }
+
+        foreach (var (id, source) in owned)
+        {
+            if (failure is null)
+                source.TrySetResult(levels!.GetValueOrDefault(id));
+            else
+                source.TrySetException(failure);
         }
     }
 }

@@ -1,13 +1,13 @@
-﻿using ShopEasy.Shared.Grpc;
+using ShopEasy.Shared.Grpc;
 
 namespace ShopEasy.OrderService.Services;
 
 // gRPC client for the Inventory service: the internal stock check (a binary, typed, batched
-// call). Every call goes through InventoryCallPolicy (deadline, retry after connection failures,
-// circuit breaker) and reports failure as InventoryUnavailableException.
+// call). Authentication, deadline, retry and circuit breaker are InventoryServiceCall's business;
+// every failure is reported as InventoryUnavailableException.
 public class InventoryGrpcClient(
     InventoryGrpc.InventoryGrpcClient client,
-    InventoryCallPolicy policy,
+    InventoryServiceCall serviceCall,
     ILogger<InventoryGrpcClient> logger) : IStockSource
 {
     public async Task<IReadOnlyList<StockLevel>> GetStockBatchAsync(
@@ -18,8 +18,9 @@ public class InventoryGrpcClient(
 
         logger.LogDebug("gRPC GetStockBatch for {Count} products", request.ProductIds.Count);
 
-        var response = await policy.ExecuteAsync(
-            (deadline, token) => client.GetStockBatchAsync(request, deadline: deadline, cancellationToken: token).ResponseAsync,
+        var response = await serviceCall.ExecuteAsync(
+            (headers, deadline, attempt) => client.GetStockBatchAsync(
+                request, headers: headers, deadline: deadline, cancellationToken: attempt).ResponseAsync,
             ct);
 
         return response.Items

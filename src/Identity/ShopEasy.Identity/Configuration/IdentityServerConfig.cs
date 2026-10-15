@@ -1,4 +1,6 @@
 using Duende.IdentityServer.Models;
+using ShopEasy.Shared.Security;
+using Scopes = ShopEasy.Shared.Security.ApiScopes;
 
 namespace ShopEasy.Identity.Configuration;
 
@@ -13,37 +15,45 @@ public static class IdentityServerConfig
             new IdentityResources.Email(),    // email, email_verified
         };
 
-    // API scopes define what services/actions clients can access
+    private static readonly string[] IdentityScopes = { "openid", "profile", "email" };
+
+    // API scopes are the permissions a client can be granted for an API. Services enforce them on
+    // their endpoints (AccessPolicies in ShopEasy.Shared): a token without the scope gets 403.
     public static IEnumerable<ApiScope> ApiScopes =>
         new[]
         {
-            // Coarse-grained scopes (what the gateway requests for users)
-            new ApiScope("products.read",     "Read product catalog"),
-            new ApiScope("products.write",    "Create and manage products"),
-            new ApiScope("orders.read",       "Read own orders"),
-            new ApiScope("orders.write",      "Place and manage orders"),
-
-            // Fine-grained scopes (for service-to-service communication)
-            new ApiScope("inventory.read",    "Read stock levels (internal)"),
-            new ApiScope("inventory.write",   "Adjust stock levels (internal)"),
-            new ApiScope("payment.charge",    "Process payments (internal)"),
+            new ApiScope(Scopes.ProductsRead,   "Read the product catalog"),
+            new ApiScope(Scopes.ProductsWrite,  "Create and manage products"),
+            new ApiScope(Scopes.OrdersRead,     "Read orders"),
+            new ApiScope(Scopes.OrdersWrite,    "Place and cancel orders"),
+            new ApiScope(Scopes.InventoryRead,  "Read stock levels"),
+            new ApiScope(Scopes.InventoryWrite, "Adjust stock levels"),
+            new ApiScope(Scopes.PaymentRead,    "Read payments"),
         };
 
-    // API resources group scopes and define the audience claim in the JWT
+    // One API resource per API. The resource name becomes the audience ("aud") of every token that
+    // carries one of its scopes, and each service accepts only tokens whose audience is its own:
+    // a token obtained for Inventory is useless against Payment, and the token the Order service
+    // gets for itself names Inventory only.
     public static IEnumerable<ApiResource> ApiResources =>
         new[]
         {
-            new ApiResource("shopeasy-api", "ShopEasy Platform API")
+            new ApiResource(ApiAudiences.Product, "ShopEasy Product API")
             {
-                // All services validate tokens with audience = "shopeasy-api"
-                Scopes =
-                {
-                    "products.read", "products.write",
-                    "orders.read",   "orders.write",
-                    "inventory.read", "inventory.write",
-                    "payment.charge"
-                }
-            }
+                Scopes = { Scopes.ProductsRead, Scopes.ProductsWrite }
+            },
+            new ApiResource(ApiAudiences.Order, "ShopEasy Order API")
+            {
+                Scopes = { Scopes.OrdersRead, Scopes.OrdersWrite }
+            },
+            new ApiResource(ApiAudiences.Inventory, "ShopEasy Inventory API")
+            {
+                Scopes = { Scopes.InventoryRead, Scopes.InventoryWrite }
+            },
+            new ApiResource(ApiAudiences.Payment, "ShopEasy Payment API")
+            {
+                Scopes = { Scopes.PaymentRead }
+            },
         };
 
     // Clients are registered applications that can request tokens
@@ -89,12 +99,9 @@ public static class IdentityServerConfig
                 // Cookie-based session for the BFF
                 AllowOfflineAccess = true, // enables Refresh Tokens
 
-                AllowedScopes =
-                {
-                    "openid", "profile", "email",
-                    "products.read", "products.write",
-                    "orders.read", "orders.write"
-                },
+                // The scopes the gateway may ask for on behalf of a signed-in user. They are not
+                // enough on their own: the services also check the user's role for administration.
+                AllowedScopes = IdentityScopes.Concat(Scopes.Web).ToList(),
 
                 // Token lifetimes
                 AccessTokenLifetime  = 3600,        // 1 hour
@@ -123,12 +130,8 @@ public static class IdentityServerConfig
 
                 AllowOfflineAccess = true,
 
-                AllowedScopes =
-                {
-                    "openid", "profile", "email",
-                    "products.read", "products.write",
-                    "orders.read", "orders.write"
-                },
+                // Customer shopping only: no catalog or stock administration scopes
+                AllowedScopes = IdentityScopes.Concat(Scopes.Mobile).ToList(),
 
                 AccessTokenLifetime = 1800, // 30 min (shorter for mobile)
                 AbsoluteRefreshTokenLifetime = 7776000, // 90 days
@@ -138,7 +141,8 @@ public static class IdentityServerConfig
 
             // ─────────────────────────────────────────────────────────
             // Client 3: Order Service (machine-to-machine)
-            // Calls Inventory and Payment services as itself
+            // Reads stock levels from Inventory as itself (the stock check
+            // over gRPC); it holds no other permission
             // ─────────────────────────────────────────────────────────
             new Client
             {
@@ -148,12 +152,7 @@ public static class IdentityServerConfig
 
                 AllowedGrantTypes = GrantTypes.ClientCredentials,
 
-                AllowedScopes =
-                {
-                    "inventory.read",
-                    "inventory.write",
-                    "payment.charge"
-                },
+                AllowedScopes = Scopes.OrderService.ToList(),
 
                 AccessTokenLifetime = 900, // 15 min for service tokens
             },

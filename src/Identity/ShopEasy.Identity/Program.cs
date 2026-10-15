@@ -12,6 +12,7 @@ using ShopEasy.Identity.Storage;
 using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Middleware;
 using ShopEasy.Shared.Resilience;
+using ShopEasy.Shared.Security;
 
 Log.Logger = new LoggerConfiguration()
     .ConfigureShopEasy("ShopEasy.Identity")
@@ -48,23 +49,30 @@ try
         options.Port = builder.Configuration.GetValue<ushort>("Metrics:Port", 9091);
     });
 
+    // Secure flag of the login cookies (Security:CookieSecurePolicy): "Always" for a deployment
+    // reached over HTTPS; the default follows the request, so the local http://localhost demo works
+    var webSecurity = WebSecurityOptions.From(builder.Configuration);
+
+    // Believe the X-Forwarded-* headers of the ingress in front of Identity, if one is configured
+    builder.Services.AddConfiguredForwardedHeaders(builder.Configuration);
+
     builder.Services.ConfigureApplicationCookie(options =>
     {
         options.Cookie.SameSite = SameSiteMode.Lax;
-        options.Cookie.SecurePolicy = CookieSecurePolicy.None;
+        options.Cookie.SecurePolicy = webSecurity.CookieSecurePolicy;
         options.Cookie.HttpOnly = true;
     });
     builder.Services.ConfigureExternalCookie(options =>
     {
         options.Cookie.SameSite = SameSiteMode.Lax;
-        options.Cookie.SecurePolicy = CookieSecurePolicy.None;
+        options.Cookie.SecurePolicy = webSecurity.CookieSecurePolicy;
     });
 
 
     builder.Services.Configure<CookiePolicyOptions>(options =>
     {
         options.MinimumSameSitePolicy = SameSiteMode.Lax;
-        options.Secure = CookieSecurePolicy.None;
+        options.Secure = webSecurity.CookieSecurePolicy;
     });
 
     // ── Duende IdentityServer ────────────────────────────────────────────────
@@ -115,6 +123,9 @@ try
         }));
 
     var app = builder.Build();
+
+    // first, so that everything after it sees the client's address and the original scheme
+    app.UseConfiguredForwardedHeaders(builder.Configuration);
 
     app.UseMiddleware<CorrelationIdMiddleware>();
 

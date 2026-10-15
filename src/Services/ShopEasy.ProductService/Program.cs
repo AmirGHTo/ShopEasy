@@ -1,5 +1,4 @@
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Prometheus;
@@ -9,9 +8,9 @@ using ShopEasy.ProductService.Data;
 using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Middleware;
 using ShopEasy.Shared.Resilience;
+using ShopEasy.Shared.Security;
 using ShopEasy.Shared.Services;
 using StackExchange.Redis;
-using System.IdentityModel.Tokens.Jwt;
 
 Log.Logger = new LoggerConfiguration()
     .ConfigureShopEasy("ShopEasy.ProductService")
@@ -35,32 +34,10 @@ try
     // 3. Validates the signature, expiry, issuer, and audience
     // 4. Populates HttpContext.User with claims from the token
 
-    // Prevent ASP.NET from remapping "role" → long URI claim type
-    // Without this, [Authorize(Roles = "admin")] never matches
-    JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
-    JwtSecurityTokenHandler.DefaultMapInboundClaims = false;
-
-    builder.Services
-        .AddAuthentication("Bearer")
-        .AddJwtBearer("Bearer", options =>
-        {
-            options.Authority = builder.Configuration["IdentityServer:Authority"]
-                ?? "http://identity:8080";
-            options.Audience = "shopeasy-api";
-            options.RequireHttpsMetadata = false;
-
-            // Assign a NEW object instead of modifying the existing one
-            options.TokenValidationParameters = new TokenValidationParameters
-            {
-                RoleClaimType = "role",
-                NameClaimType = "name",
-                ValidateAudience = true,
-                ValidAudience = "shopeasy-api"
-            };
-        });
-
-
-    builder.Services.AddAuthorization();
+    // Bearer tokens issued by Identity for this API, and the scope/role policies of its endpoints
+    // (anything not marked otherwise requires a signed-in caller)
+    builder.Services.AddApiAuthentication(builder.Configuration, ApiAudiences.Product);
+    builder.Services.AddApiAuthorization(AccessPolicies.Product);
 
     builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing
@@ -197,7 +174,8 @@ try
     // ── Prometheus Metrics ────────────────────────────────────────────────────
     builder.Services.AddMetricServer(options =>
     {
-        options.Port = 9091; // separate port from the API
+        // separate port from the API (configurable so two services can share a host)
+        options.Port = builder.Configuration.GetValue<ushort>("Metrics:Port", 9091);
     });
 
     var app = builder.Build();
@@ -250,7 +228,8 @@ try
     {
         options.AddCustomLabel("service", _ => "ProductService");
     });
-    app.MapMetrics();
+    // scraped by Prometheus without credentials (see "Known limitations" in the README)
+    app.MapMetrics().AllowAnonymous();
     app.MapControllers();
 
     // Liveness — is the process alive?
@@ -258,14 +237,14 @@ try
     {
         Predicate = _ => false, // no checks — if process is running, it's live
         ResponseWriter = WriteHealthResponse
-    });
+    }).AllowAnonymous();
 
     // Readiness — can it serve traffic?
     app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
     {
         Predicate = check => check.Tags.Contains("ready"),
         ResponseWriter = WriteHealthResponse
-    });
+    }).AllowAnonymous();
 
     // Legacy endpoint — keeps docker-compose healthcheck working
     app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))

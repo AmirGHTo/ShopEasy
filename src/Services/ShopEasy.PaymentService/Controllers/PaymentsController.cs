@@ -2,12 +2,13 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.PaymentService.Data;
+using ShopEasy.Shared.Security;
 
 namespace ShopEasy.PaymentService.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize]
+[Authorize(Policy = PolicyNames.PaymentRead)]
 public class PaymentsController : ControllerBase
 {
     private readonly PaymentDbContext _db;
@@ -36,7 +37,7 @@ public class PaymentsController : ControllerBase
 
     // ── GET /api/payments ─────────────────────────────────────────────────────
     [HttpGet]
-    [Authorize(Roles = "admin")]
+    [Authorize(Policy = PolicyNames.PaymentMonitor)]
     public async Task<IActionResult> GetAll()
     {
         var payments = await _db.Payments

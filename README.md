@@ -265,6 +265,53 @@ A single entry point (`localhost:5000`) that routes requests to internal service
 
 Identity issues JWTs via the OpenID Connect authorization-code flow. The gateway exchanges the code for tokens and stores them server-side. Services validate JWTs independently. Service-to-service calls (Order → Inventory) use the **Client Credentials** grant — a separate machine-to-machine token with no user involved.
 
+Every service decides for itself whether a call is allowed, and three things are checked, in this order:
+
+| Check | Question | Failure |
+|---|---|---|
+| **Audience** (`aud`) | Is this token meant for this API? Identity has one API resource per API: `product-api`, `order-api`, `inventory-api`, `payment-api`. A valid token issued for another API is useless here. | `401` |
+| **Scope** (`scope`) | What was the client allowed to do with the token? For example `orders.write`. | `403` |
+| **Role** (`role`) | What may the user do? Administration needs the `admin` role **and** the scope: a role without the scope (a client that was never given administration rights) is refused, and so is a scope without the role. | `403` |
+
+What each client may ask for is fixed in Identity (`IdentityServerConfig`), from the lists in `ShopEasy.Shared/Security/ApiContract.cs`:
+
+| Client | Scopes |
+|---|---|
+| Web gateway, for the signed-in user | `products.read`, `products.write`, `orders.read`, `orders.write`, `inventory.read`, `inventory.write`, `payment.read` |
+| Mobile app (public client, PKCE) | `products.read`, `orders.read`, `orders.write`, `inventory.read`, `payment.read` — no administration scopes |
+| Order service, for itself (client credentials) | `inventory.read` only |
+
+What each endpoint needs (the policies are in `ShopEasy.Shared/Security/AccessPolicies.cs`):
+
+| API | Endpoint | Needs |
+|---|---|---|
+| Product | `GET /api/v1/products…`, `GET /api/v2/products…` | nothing: the public catalog |
+| | `POST`, `PUT`, `DELETE /api/v1/products…` | `products.write` and admin |
+| Order | `GET /api/orders…`, `POST /api/orders`, `DELETE /api/orders/{id}` | `orders.read` for reading, `orders.write` for placing and cancelling; the order list and details are always the caller's own, cancelling is allowed to the owner or an admin |
+| | `/api/outbox/*` (outbox, sagas, dead letters) | `orders.read` and admin; requeueing dead letters also needs `orders.write` |
+| Inventory | `GET /api/inventory`, `GET /api/inventory/{id}` | `inventory.read` |
+| | `GET /api/inventory/{id}/transactions` | `inventory.read` and admin |
+| | `POST /api/inventory/{id}/adjust` | `inventory.write` and admin |
+| | gRPC stock check (port 8090) | `inventory.read` on a token a service got for itself, see below |
+| Payment | `GET /api/payments/order/{id}` | `payment.read`; a user sees only their own payment, an admin any |
+| | `GET /api/payments` | `payment.read` and admin |
+
+**Closed unless opened.** An endpoint with no attribute requires a signed-in caller (the fallback policy), so a new endpoint is never public by accident; health checks and the metrics endpoint are marked anonymous on purpose. `Security/EndpointAccessTests` calls every endpoint of the four APIs with seven kinds of caller (nobody, customer, admin, a client without API scopes, an admin without API scopes, a token for another API, the Order service's token) against the real controllers, and fails when an endpoint is missing from its table.
+
+**Service identity.** The Order service asks Identity for its own token (`order-service` client, client credentials). It names Inventory as its audience and carries `inventory.read`, the only scope the client may request: Identity answers `invalid_scope` to anything else, and the other APIs refuse the token for its audience. Inventory's gRPC endpoint accepts only such a token, one that names a client and no user: a customer's or an administrator's token is refused with `403` even when it carries the scope. The Order service caches the token for its 15-minute life and renews it a minute early. While Identity is unreachable it keeps using the old token until it is about to expire (and then falls back to the cached stock levels, [pattern 26](#26-resilient-calls-between-services)); if Inventory refuses the token it is dropped, a new one is fetched on the next call and an error is logged.
+
+**Deploying behind HTTPS.** Tokens are validated against Identity's discovery document and signing keys, fetched from `IdentityServer:Authority`. Inside a private network that is the plain-HTTP internal address, which is why `IdentityServer:RequireHttpsMetadata` is off by default: whoever can alter that traffic could hand the services their own signing key, so that network has to be trusted (network policies, a mesh). With an `https://` authority switch it on and the services refuse anything else. For a deployment reached over HTTPS, also set (all are in `.env.example`, the Compose file and the ConfigMap):
+
+```
+Security__CookieSecurePolicy=Always       # Secure flag on the session and login cookies (gateway, Identity)
+ForwardedHeaders__Enabled=true            # believe the X-Forwarded-* headers of the ingress in front of them,
+ForwardedHeaders__KnownNetworks=10.0.0.0/8   # but only from these networks / addresses (KnownProxies)
+```
+
+Without the forwarded headers a service behind TLS termination sees plain HTTP: it would build `http://` login redirects and rate-limit the proxy instead of the client. Turning the headers on without listing the proxy stops the service at start-up, because believing everybody would let any client claim any address and scheme.
+
+**Upgrading.** Tokens issued before this model carry the old audience (`shopeasy-api`) and are refused by the services: deploy Identity first, then the services and the gateway, and expect users to sign in again.
+
 ### 3. Database per Service
 
 Each service owns its own PostgreSQL database (`shopeasy_orders`, `shopeasy_inventory`, etc). No service reads another service's tables directly. This is the foundation of microservice independence — a schema change in one service can never break another.
@@ -628,13 +675,16 @@ Services read standard ASP.NET Core configuration, so every key can be an enviro
 | `RabbitMQ__Host`, `RabbitMQ__Username`, `RabbitMQ__Password` | Order, Inventory, Payment | Username and password are **required** (no `guest` fallback). |
 | `RabbitMQ__Port` | Order | AMQP port used by the dead-letter tooling. Default `5672`. |
 | `RabbitMQ__ManagementUiUrl` | Order | Optional, e.g. `http://localhost:15672`. Only adds a "View" link to the dead-letter page; the service never calls it. |
-| `Metrics__Port` | Order, Inventory, Payment | Port of the Prometheus metrics listener. Default `9091`; change it when running several services on one machine. |
+| `Metrics__Port` | all services | Port of the Prometheus metrics listener. Default `9091`; change it when running several services on one machine. |
 | `ServiceAuth__ClientId`, `ServiceAuth__ClientSecret` | Order | **Required** when the service token is used. |
 | `Services__ProductService` | Order | Product service base URL used for price lookup. Default `http://product:8080`. |
-| `Services__InventoryService`, `Services__InventoryGrpcService` | Order | Inventory REST and gRPC URLs. |
+| `Services__InventoryGrpcService` | Order | Inventory's gRPC address for the stock check. Default `http://inventory:8090`. |
 | `Redis__Connection` | Product, Inventory, Order | Redis endpoint, e.g. `redis:6379`. |
 | `Telemetry__Endpoint` | all | OTLP endpoint (Jaeger), default `http://jaeger:4317`. |
 | `Idempotency__RequireKey`, `Idempotency__RetentionHours` | Order | `Idempotency-Key` on `POST /api/orders`: reject requests without the header (default `false`) and how long a key is remembered (default `24` hours). See [Order API](#retrying-safely-the-idempotency-key-header). |
+| `IdentityServer__RequireHttpsMetadata` | all APIs, Gateway | Fetch Identity's discovery document and signing keys only over HTTPS. Default `false`; switch on together with an `https://` `IdentityServer__Authority` (see [pattern 2](#2-authentication--authorization-oauth2--oidc--jwt)). |
+| `Security__CookieSecurePolicy` | Gateway, Identity | `Always`, `SameAsRequest` (default) or `None`: when the session and login cookies get the Secure flag. Use `Always` behind HTTPS. A misspelt value stops the service. |
+| `ForwardedHeaders__Enabled`, `ForwardedHeaders__KnownNetworks`, `ForwardedHeaders__KnownProxies` | Gateway, Identity | Believe the `X-Forwarded-*` headers of a reverse proxy, but only from the listed CIDR networks / addresses (comma-separated). Default off; enabling without listing the proxy stops the service. |
 | `Resilience__Postgres__*` | all with a DB | Limits on how long a service waits for PostgreSQL and how many connections it opens (lock, idle-in-transaction, command and connect timeouts, pool size, TCP keep-alive). Defaults suit most setups and are written out in `appsettings.json`, Compose and the ConfigMap; see [pattern 24](#24-surviving-database-and-network-outages). |
 | `Resilience__Consumers__*` | Order, Inventory, Payment | Retry schedule of the message consumers: patient retries for outages, quick retries for everything else. Same pattern. |
 | `Resilience__Inventory__*` | Order | Deadline, retries and circuit breaker of the stock check against Inventory; see [pattern 26](#26-resilient-calls-between-services). |
@@ -985,7 +1035,7 @@ dotnet test src/Tests/ShopEasy.UnitTests
 dotnet test src/Tests/ShopEasy.IntegrationTests
 ```
 
-**Unit tests — 408 test cases.** 355 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 53 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 408 (see [CI/CD](#cicd)).
+**Unit tests — 544 test cases.** 491 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 53 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 544 (see [CI/CD](#cicd)).
 
 | Area | Where | What it covers |
 |---|---|---|
@@ -1000,6 +1050,7 @@ dotnet test src/Tests/ShopEasy.IntegrationTests
 | Resilience (no servers needed) | `Resilience/*`, `Messaging/ConsumerResilienceTests` | Which failures count as transient (including EF Core's wrapping, nested and aggregate exceptions, and what must *not* count: a missing file, a cancellation); the connection-string limits and that anything written in the string wins; the retry schedule and its jitter; and the policy on a real MassTransit pipeline — an outage of more than the old four attempts is ridden out without a dead letter, the patient and quick retries never multiply, a bug gets exactly 3 retries and a broken rule none. `Resilience/ResilienceConfigurationTests` keeps the copies of the settings in each `appsettings.json`, `docker-compose.yml`, `.env.example` and the Kubernetes ConfigMap equal to the code's defaults. |
 | Resilient calls (no servers needed) | `Resilience/RetryBudgetTests`, `Orders/InventoryCallPolicyTests`, `StockFetchCoordinatorTests`, `InventoryCacheServiceTests`, `HttpRetryBudgetTests`, `CallResilienceConfigurationTests` | The retry budget (ratio and minimum, the window sliding, concurrent callers, invalid settings); the stock-check policy against scripted failures: only connection failures are retried, a slow or timed-out call is not, retries stop when the budget is used up, the circuit opens and recovers, a hung gRPC call is cancelled at the deadline and counted as a failure, and the caller's own cancellation is not mistaken for either; one fetch per product for any number of concurrent callers, and a waiting caller leaving does not stop it; the stock cache layers, including the stale answer when Inventory is unavailable; the Product client's retries and the budget. The appsettings, Compose, `.env.example` and ConfigMap copies of the settings equal the code's defaults. |
 | Gateway proxying (no servers needed) | `Gateway/GatewayResilienceTests` | A real YARP gateway in front of fake services that misbehave: a `GET` over a broken connection succeeds on the retry, a `POST` over the same broken connection is never repeated, a `503` is passed through, a refused connection answers `502` quickly, a service that restarts during the retries is reached again, a service that never answers is cut off with `504` and the request to it is cancelled. The retry handler itself against scripted failures (which methods, which failures, the budget, a request body), the timeout filter and the settings validation. |
+| Authorization (no servers needed) | `Security/*`, `Orders/TokenServiceTests`, `Orders/InventoryServiceCallTests` | Bearer-token validation with real signed tokens: another API's audience, expired, signed by somebody else, issued by somebody else, unsigned and garbage tokens are all refused, and claims keep the names Identity issued. The access table: every endpoint of the four APIs against seven kinds of caller, using the real controllers and policies, plus a check that no endpoint is missing from the table; the gRPC stock check accepts only a service's token. The policies themselves (scope matching, scope AND role, user token versus service token, closed by default). Identity's configuration: one resource per API, every scope in exactly one, the order-service client limited to `inventory.read`, no administration scopes for the mobile app. The service token: the grant and scope requested, reuse until it is about to expire, one request for concurrent callers, no hammering of an Identity that is down, the old token kept while it is still valid, a rejected token dropped. Forwarded headers (a listed proxy is believed, anyone else is not) and the cookie settings; the appsettings, Compose, `.env.example` and ConfigMap copies of the settings equal the code's defaults. |
 | Logging, correlation, tracing (no servers needed) | `Messaging/LoggingTests`, `CorrelationFilterTests`, `TracingSourceTests` | The exact console line per service, the correlation id inside and outside a scope, the Seq setting; the id travelling through a real MassTransit pipeline (header → consumer → the messages it publishes), the HTTP hand-over from the gateway; MassTransit and Npgsql emitting spans under the source names the services subscribe to. |
 
 ### Tests that need PostgreSQL and RabbitMQ
@@ -1025,7 +1076,7 @@ docker run -d --name shopeasy-test-mq -e RABBITMQ_DEFAULT_USER=test -e RABBITMQ_
 
 export SHOPEASY_TEST_POSTGRES="Host=localhost;Port=55432;Username=postgres;Password=test"
 export SHOPEASY_TEST_RABBITMQ="amqp://test:test@localhost:55672"
-dotnet test src/Tests/ShopEasy.UnitTests          # now 408 run, 0 skipped
+dotnet test src/Tests/ShopEasy.UnitTests          # now 544 run, 0 skipped
 
 docker rm -f shopeasy-test-pg shopeasy-test-mq
 ```
@@ -1043,7 +1094,7 @@ Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new p
 | Job | What it checks |
 |---|---|
 | **Detect changes** | Decides whether the pull request touches anything that is built, tested or deployed (plain `git diff`, no third-party action). Skipped jobs count as passed in **CI passed**, so the check can stay required for documentation-only changes. |
-| **Build and test** | `dotnet restore/build` (Release) and all 408 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 53 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
+| **Build and test** | `dotnet restore/build` (Release) and all 544 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 53 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
 | **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
 | **Start the Compose stack** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. |
 | **CI passed** | One aggregate status for the jobs above (a skipped job counts as passed) — the check to require in branch protection. |
@@ -1326,7 +1377,7 @@ This project is being hardened step by step. Status:
 | 6 | Replace RabbitMQ management-API polling with a bus-ready check and AMQP dead-letter tooling; MassTransit transactional inbox/outbox for Payment/Inventory events | Done |
 | 7 | Observability (per-service log names, configurable Seq, correlation id across HTTP, outbox, saga and RabbitMQ, MassTransit + Npgsql traces), CI/CD on GitHub Actions (build, all tests incl. PostgreSQL/RabbitMQ, deployment-file validation, image builds, publish to GHCR, Dependabot), vulnerable dependencies patched and gated, saga row-locking tests on PostgreSQL, saga tests re-enabled | Done |
 | 8 | Non-root images (no SQLite, no `chmod 777`), read-only containers started by CI, Kubernetes with pinned published image tags and no local-image assumptions, Identity keys / key ring / grants shared in PostgreSQL (several replicas), network policies | Done |
-| 9 | Resilience and API safety: consumers ride out database and network outages and every database wait is bounded (pattern 24); order placement is idempotent (pattern 25); calls between services have deadlines, budgeted retries and circuit breakers, and the gateway times out silent services (pattern 26). Still to do: an authorization model with scopes and service identities, business-level observability | In progress |
+| 9 | Resilience and API safety: consumers ride out database and network outages and every database wait is bounded (pattern 24); order placement is idempotent (pattern 25); calls between services have deadlines, budgeted retries and circuit breakers, and the gateway times out silent services (pattern 26); every API checks audience, scope and role, and the internal gRPC call needs a service identity (pattern 2). Still to do: business-level observability and a contract and end-to-end test in CI | In progress |
 
 **Known limitations today** (documented so nobody is surprised):
 
@@ -1351,6 +1402,9 @@ This project is being hardened step by step. Status:
 - The gateway has no circuit breaker or passive health check: each cluster has a single destination, so there is nothing to fail over to (pattern 26). The retry budget and the timeouts bound the damage, but a dead service is still attempted on every request and answered with `502` after the connection fails. The Order service's `InventoryClient` (REST) still has its older, fixed Polly settings; it is registered but not used for the stock check.
 - Redis calls have no explicit timeouts of their own: a Redis server that accepts connections and never answers stalls each cache lookup until the StackExchange.Redis defaults (5 s) apply.
 - Swagger UIs and Prometheus metrics ports are unauthenticated.
+- Traffic between the services is plain HTTP inside the network, so bearer tokens (a user's lasts one hour, a service's 15 minutes) cross it in the clear. Network policies limit who can reach whom; TLS on every service or a mesh with mutual TLS is needed to protect the tokens in transit.
+- The gateway forwards one access token that names every API in its audience, so a service that receives it could replay it against another API. Scopes and roles still limit what it can do there, but only separate tokens per API (token exchange) would close that.
+- The gateway asks for a refresh token but never uses it: the access token is not renewed, so API calls fail with `401` one hour after login (while the session cookie lasts up to 30 days) until the user signs in again.
 
 ---
 

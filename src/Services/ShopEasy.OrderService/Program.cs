@@ -1,6 +1,5 @@
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Prometheus;
@@ -16,9 +15,9 @@ using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Messaging;
 using ShopEasy.Shared.Middleware;
 using ShopEasy.Shared.Resilience;
+using ShopEasy.Shared.Security;
 using ShopEasy.Shared.Services;
 using StackExchange.Redis;
-using System.IdentityModel.Tokens.Jwt;
 using System.Threading.RateLimiting;
 
 Log.Logger = new LoggerConfiguration()
@@ -38,31 +37,10 @@ try
     options.UseNpgsql(
         PostgresConnection.FromConfiguration(builder.Configuration)));
 
-    // Prevent ASP.NET from remapping "role" → long URI claim type
-    // Without this, [Authorize(Roles = "admin")] never matches
-    JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
-    JwtSecurityTokenHandler.DefaultMapInboundClaims = false;
-
-    builder.Services
-        .AddAuthentication("Bearer")
-        .AddJwtBearer("Bearer", options =>
-        {
-            options.Authority = builder.Configuration["IdentityServer:Authority"]
-                ?? "http://identity:8080";
-            options.Audience = "shopeasy-api";
-            options.RequireHttpsMetadata = false;
-
-            // Assign a NEW object instead of modifying the existing one
-            options.TokenValidationParameters = new TokenValidationParameters
-            {
-                RoleClaimType = "role",
-                NameClaimType = "name",
-                ValidateAudience = true,
-                ValidAudience = "shopeasy-api"
-            };
-        });
-
-    builder.Services.AddAuthorization();
+    // Bearer tokens issued by Identity for this API, and the scope/role policies of its endpoints
+    // (anything not marked otherwise requires a signed-in caller)
+    builder.Services.AddApiAuthentication(builder.Configuration, ApiAudiences.Order);
+    builder.Services.AddApiAuthorization(AccessPolicies.Order);
 
     // ── Token Service (for Client Credentials / M2M calls) ───────────────────
     // Row-level locking (SELECT ... FOR UPDATE) for every saga state transition
@@ -82,36 +60,14 @@ try
         .ValidateOnStart();
     builder.Services.AddSingleton<InventoryCallPolicy>();
     builder.Services.AddSingleton<StockFetchCoordinator>();
+    builder.Services.AddSingleton<InventoryServiceCall>();
 
     builder.Services.AddSingleton<ITokenService, TokenService>();
 
-    // ── HTTP Client for IdP (used by TokenService to request service tokens) ──
-    builder.Services.AddHttpClient("idp");
-
-    // ── Typed HTTP Client for InventoryService with Polly resilience ──────────
-    // This is production-grade: automatic retries with exponential backoff,
-    // circuit breaker to stop calling a failing service, and timeouts.
-    builder.Services.AddHttpClient<InventoryClient>(client =>
-        {
-            client.BaseAddress = new Uri(builder.Configuration["Services:InventoryService"] ?? "http://inventory:8080");
-            client.Timeout = TimeSpan.FromSeconds(10);
-        })
-        .AddHttpMessageHandler<CorrelationIdHandler>()
-        .AddStandardResilienceHandler(options =>
-        {
-            // Retry up to 3 times with exponential backoff
-            options.Retry.MaxRetryAttempts = 3;
-            options.Retry.Delay = TimeSpan.FromSeconds(1);
-
-            // Circuit breaker: after 5 failures in 30s, stop calling for 30s
-            options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(30);
-            options.CircuitBreaker.FailureRatio = 0.5;
-            options.CircuitBreaker.MinimumThroughput = 5;
-            options.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(30);
-
-            // Total timeout per request (including retries)
-            options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(30);
-        });
+    // The token endpoint of Identity, used by TokenService. Bounded: when Identity is down the
+    // service token is simply not renewed (the cached one is used while it is valid) instead of
+    // every stock check waiting out the default 100 seconds.
+    builder.Services.AddHttpClient("idp", client => client.Timeout = TimeSpan.FromSeconds(5));
 
     // ── Typed HTTP Client for ProductService (server-side price lookup) ───────
     // PlaceOrder never trusts client-supplied prices: it asks the Product service.
@@ -515,7 +471,8 @@ try
     {
         options.AddCustomLabel("service", _ => "OrderService"); 
     });
-    app.MapMetrics();
+    // scraped by Prometheus without credentials (see "Known limitations" in the README)
+    app.MapMetrics().AllowAnonymous();
 
     app.MapControllers();
 
@@ -524,14 +481,14 @@ try
     {
         Predicate = _ => false, // no checks — if process is running, it's live
         ResponseWriter = WriteHealthResponse
-    });
+    }).AllowAnonymous();
 
     // Readiness — can it serve traffic?
     app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
     {
         Predicate = check => check.Tags.Contains("ready"),
         ResponseWriter = WriteHealthResponse
-    });
+    }).AllowAnonymous();
 
     // Legacy endpoint — keeps docker-compose healthcheck working
     app.MapGet("/health", () => Results.Ok(new { status = "healthy" })).AllowAnonymous();

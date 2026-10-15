@@ -5,6 +5,7 @@ using ShopEasy.InventoryService.Data;
 using ShopEasy.InventoryService.Metrics;
 using ShopEasy.Shared.Services;
 using StackExchange.Redis;
+using ShopEasy.Shared.Security;
 
 namespace ShopEasy.InventoryService.Controllers;
 
@@ -35,7 +36,7 @@ public class InventoryController : ControllerBase
 
     // ── GET /api/inventory ────────────────────────────────────────────────────
     [HttpGet]
-    [Authorize]
+    [Authorize(Policy = PolicyNames.InventoryRead)]
     public async Task<IActionResult> GetAll()
     {
         // Cache the full inventory list for 30 seconds
@@ -70,7 +71,7 @@ public class InventoryController : ControllerBase
     // Called synchronously by OrderService before confirming an order.
     // Short cache TTL (30s) — stock changes frequently.
     [HttpGet("{productId:guid}")]
-    [Authorize]
+    [Authorize(Policy = PolicyNames.InventoryRead)]
     public async Task<IActionResult> GetByProduct(Guid productId)
     {
         var cacheKey = CacheKeys.Inventory(productId);
@@ -109,7 +110,7 @@ public class InventoryController : ControllerBase
     // ── POST /api/inventory/{productId}/adjust ────────────────────────────────
     // Admin only — manually adjust stock (e.g. receiving new shipment)
     [HttpPost("{productId:guid}/adjust")]
-    [Authorize(Roles = "admin")]
+    [Authorize(Policy = PolicyNames.InventoryAdjust)]
     public async Task<IActionResult> Adjust(
         Guid productId, [FromBody] AdjustStockRequest request)
     {
@@ -155,7 +156,7 @@ public class InventoryController : ControllerBase
 
     // ── GET /api/inventory/{productId}/transactions ───────────────────────────
     [HttpGet("{productId:guid}/transactions")]
-    [Authorize(Roles = "admin")]
+    [Authorize(Policy = PolicyNames.InventoryAudit)]
     public async Task<IActionResult> GetTransactions(Guid productId)
     {
         // Transactions are audit data — not cached, always fresh

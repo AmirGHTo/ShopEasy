@@ -7,12 +7,21 @@ data:
   ASPNETCORE_URLS: "http://+:8080"
   ASPNETCORE_ENVIRONMENT: "Production"
   IdentityServer__Authority: "http://identity:8080"
+  # Fetch Identity's discovery document and signing keys only over HTTPS. Switch on as soon as the
+  # authority above is an https:// address; the in-cluster default is plain HTTP (README, "Authorization").
+  IdentityServer__RequireHttpsMetadata: "false"
+  # Secure flag of the login and session cookies (gateway, Identity): Always for a deployment reached
+  # over HTTPS. With an ingress that terminates TLS also enable ForwardedHeaders and list the ingress
+  # controller's network, otherwise the services see plain HTTP.
+  Security__CookieSecurePolicy: "SameAsRequest"
+  ForwardedHeaders__Enabled: "false"
+  ForwardedHeaders__KnownNetworks: ""
+  ForwardedHeaders__KnownProxies: ""
   RabbitMQ__Host: "rabbitmq"
   Redis__Connection: "redis:6379"
   # Seq (log explorer) is part of the Docker Compose stack only. Empty = do not ship logs to Seq;
   # logs still go to the container console. Set it to the URL of your own Seq to use one.
   Seq__ServerUrl: ""
-  Services__InventoryService: "http://inventory:8080"
   Services__ProductService: "http://product:8080"
   Services__InventoryGrpcService: "http://inventory:8090"
   DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2UNENCRYPTEDSUPPORT: "1"

@@ -3,12 +3,13 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.Services;
+using ShopEasy.Shared.Security;
 
 namespace ShopEasy.OrderService.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize(Roles = "admin")]
+[Authorize(Policy = PolicyNames.OrdersMonitor)]
 public class OutboxController(
     OrderDbContext db,
     DeadLetterMonitor deadLetterMonitor,
@@ -152,6 +153,7 @@ public class OutboxController(
     //   200 moved (count in the body) · 400 not a known error queue
     //   404 the error queue does not exist (nothing has failed there) · 503 RabbitMQ unreachable
     [HttpPost("deadletters/{queueName}/requeue")]
+    [Authorize(Policy = PolicyNames.OrdersMonitorWrite)]
     public async Task<IActionResult> Requeue(string queueName, CancellationToken ct)
     {
         if (!ErrorQueues.IsMonitored(queueName))
