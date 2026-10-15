@@ -1,5 +1,4 @@
 ﻿using ShopEasy.Shared.Services;
-using ShopEasy.Shared.Grpc;
 
 namespace ShopEasy.OrderService.Services;
 
@@ -10,17 +9,18 @@ public interface IInventoryStock
 }
 
 // Provides stock info with Redis cache as primary source
-// and gRPC as fallback.
+// and the Inventory service as fallback.
 //
 // Consistency layers:
 //   Layer 1: Redis cache hit    → ~1ms,   eventual (30s TTL)
-//   Layer 2: Redis cache miss   → ~150ms, strong (gRPC → DB)
-//   Layer 3: gRPC down          → stale cache (5min TTL)
+//   Layer 2: Redis cache miss   → ~150ms, strong (gRPC → DB), one shared call per product
+//   Layer 3: Inventory down     → stale cache (5min TTL)
 //   Layer 4: Everything down    → reject order
 //   Layer 5: Saga reservation   → authoritative check in InventoryService (row locking planned)
 public class InventoryCacheService(
     CacheService cache,
-    InventoryGrpcClient grpcClient,
+    IStockSource source,
+    StockFetchCoordinator coordinator,
     ILogger<InventoryCacheService> logger) : IInventoryStock
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
@@ -29,70 +29,6 @@ public class InventoryCacheService(
     private static string StaleKey(Guid productId) =>
         $"inventory:stale:{productId}";
 
-    public async Task<StockInfo?> GetStockAsync(
-        Guid productId, CancellationToken ct = default)
-    {
-        var cacheKey = CacheKeys.Inventory(productId);
-
-        // Layer 1 — Redis cache
-        var cached = await cache.GetAsync<StockInfo>(cacheKey);
-        if (cached is not null)
-        {
-            logger.LogDebug(
-                "Stock cache HIT for {ProductId}: {Available} available",
-                productId, cached.AvailableQuantity);
-            return cached;
-        }
-
-        // Layer 2 — Cache miss, fetch via gRPC
-        logger.LogDebug(
-            "Stock cache MISS for {ProductId} — fetching via gRPC", productId);
-
-        try
-        {
-            var response = await grpcClient.GetStockAsync(productId, ct);
-            if (response is null) return null;
-
-            var stockInfo = new StockInfo(
-                ProductId: productId,
-                ProductName: response.ProductName,
-                AvailableQuantity: response.AvailableQty,
-                IsLowStock: response.IsLowStock,
-                Quantity: response.Quantity,
-                ReservedQty: response.ReservedQty,
-                IsStale: false,
-                CachedAt: DateTime.UtcNow);
-
-            await cache.SetAsync(cacheKey, stockInfo, CacheTtl);
-            await cache.SetAsync(StaleKey(productId), stockInfo, StaleTtl);
-
-            return stockInfo;
-        }
-        catch (Grpc.Core.RpcException ex)
-        {
-            logger.LogWarning(ex,
-                "gRPC unavailable for {ProductId} — checking stale cache",
-                productId);
-
-            // Layer 3 — stale cache fallback
-            var stale = await cache.GetAsync<StockInfo>(StaleKey(productId));
-            if (stale is not null)
-            {
-                var age = (DateTime.UtcNow - stale.CachedAt).TotalSeconds;
-                logger.LogWarning(
-                    "Using stale cache for {ProductId} ({Age}s old). " +
-                    "Saga will verify actual stock.",
-                    productId, (int)age);
-                return stale with { IsStale = true };
-            }
-
-            logger.LogError(
-                "No stock data for {ProductId} — gRPC down, no cache. " +
-                "Rejecting order.", productId);
-            return null;
-        }
-    }
-
     public async Task<List<StockInfo>> GetStockBatchAsync(
         IEnumerable<Guid> productIds, CancellationToken ct = default)
     {
@@ -100,7 +36,7 @@ public class InventoryCacheService(
         var cacheMiss = new List<Guid>();
 
         // Check cache for each product
-        foreach (var productId in productIds)
+        foreach (var productId in productIds.Distinct())
         {
             var cached = await cache.GetAsync<StockInfo>(CacheKeys.Inventory(productId));
             if (cached is not null)
@@ -109,7 +45,7 @@ public class InventoryCacheService(
                 cacheMiss.Add(productId);
         }
 
-        if (!cacheMiss.Any())
+        if (cacheMiss.Count == 0)
         {
             logger.LogDebug(
                 "Stock batch cache HIT — all {Count} products in cache",
@@ -118,55 +54,74 @@ public class InventoryCacheService(
         }
 
         logger.LogDebug(
-            "Stock batch cache MISS for {MissCount}/{Total} products — gRPC fetch",
+            "Stock batch cache MISS for {MissCount}/{Total} products — asking Inventory",
             cacheMiss.Count, results.Count + cacheMiss.Count);
 
         try
         {
-            var grpcResults = await grpcClient.GetStockBatchAsync(cacheMiss, ct);
+            // Requests that miss the same product at the same time share one call to Inventory
+            var fetched = await coordinator.FetchAsync(cacheMiss, FetchAndCacheAsync, ct);
 
-            foreach (var response in grpcResults)
+            foreach (var productId in cacheMiss)
             {
-                if (!Guid.TryParse(response.ProductId, out var productId)) continue;
-
-                var stockInfo = new StockInfo(
-                    ProductId: productId,
-                    ProductName: response.ProductName,
-                    AvailableQuantity: response.AvailableQty,
-                    IsLowStock: response.IsLowStock,
-                    Quantity: response.Quantity,
-                    ReservedQty: response.ReservedQty,
-                    IsStale: false,
-                    CachedAt: DateTime.UtcNow);
-
-                await cache.SetAsync(
-                    CacheKeys.Inventory(productId), stockInfo, CacheTtl);
-                await cache.SetAsync(
-                    StaleKey(productId), stockInfo, StaleTtl);
-
-                results.Add(stockInfo);
+                if (fetched.TryGetValue(productId, out var level) && level is not null)
+                    results.Add(ToStockInfo(level));
             }
         }
-        catch (Grpc.Core.RpcException ex)
+        catch (InventoryUnavailableException ex)
         {
             logger.LogWarning(ex,
-                "gRPC batch unavailable — falling back to stale cache " +
+                "Inventory unavailable — falling back to stale cache " +
                 "for {Count} products", cacheMiss.Count);
 
             foreach (var productId in cacheMiss)
             {
+                // Layer 3 — stale cache fallback
                 var stale = await cache.GetAsync<StockInfo>(StaleKey(productId));
                 if (stale is not null)
                 {
                     var age = (DateTime.UtcNow - stale.CachedAt).TotalSeconds;
                     logger.LogWarning(
-                        "Stale cache for {ProductId} ({Age}s old)",
+                        "Stale cache for {ProductId} ({Age}s old). " +
+                        "Saga will verify actual stock.",
                         productId, (int)age);
                     results.Add(stale with { IsStale = true });
+                }
+                else
+                {
+                    // Layer 4 — nothing to go on: the order endpoint rejects this product
+                    logger.LogError(
+                        "No stock data for {ProductId} — Inventory down, no cache. " +
+                        "Rejecting order.", productId);
                 }
             }
         }
 
         return results;
     }
+
+    // The one call to Inventory for a group of products, and the cache writes that follow it
+    private async Task<IReadOnlyList<StockLevel>> FetchAndCacheAsync(IReadOnlyList<Guid> productIds)
+    {
+        var levels = await source.GetStockBatchAsync(productIds);
+
+        foreach (var level in levels)
+        {
+            var stockInfo = ToStockInfo(level);
+            await cache.SetAsync(CacheKeys.Inventory(level.ProductId), stockInfo, CacheTtl);
+            await cache.SetAsync(StaleKey(level.ProductId), stockInfo, StaleTtl);
+        }
+
+        return levels;
+    }
+
+    private static StockInfo ToStockInfo(StockLevel level) => new(
+        ProductId: level.ProductId,
+        ProductName: level.ProductName,
+        AvailableQuantity: level.AvailableQuantity,
+        IsLowStock: level.IsLowStock,
+        Quantity: level.Quantity,
+        ReservedQty: level.ReservedQuantity,
+        IsStale: false,
+        CachedAt: DateTime.UtcNow);
 }

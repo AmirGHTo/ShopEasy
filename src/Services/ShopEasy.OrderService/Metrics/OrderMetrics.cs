@@ -25,6 +25,24 @@ public static class OrderMetrics
                 LabelNames = new[] { "result" } // "replayed", "key_reused_with_different_request"
             });
 
+    private static readonly Counter DownstreamRetries = Prometheus.Metrics
+        .CreateCounter(
+            "shopeasy_downstream_retries_total",
+            "Retries of calls to another service, and retries refused because the retry budget was used up",
+            new CounterConfiguration
+            {
+                LabelNames = new[] { "target", "outcome" } // outcome: "retried", "budget_exhausted"
+            });
+
+    private static readonly Counter CircuitTransitions = Prometheus.Metrics
+        .CreateCounter(
+            "shopeasy_downstream_circuit_transitions_total",
+            "Circuit breaker state changes for calls to another service",
+            new CounterConfiguration
+            {
+                LabelNames = new[] { "target", "state" } // state: "open", "half_open", "closed"
+            });
+
     private static readonly Counter OutboxMessagesDelivered = Prometheus.Metrics
         .CreateCounter(
             "shopeasy_outbox_messages_delivered_total",
@@ -77,6 +95,12 @@ public static class OrderMetrics
 
     public static void RecordIdempotentReplay(string result)
         => IdempotentReplays.WithLabels(result).Inc();
+
+    public static void RecordRetry(string target, string outcome)
+        => DownstreamRetries.WithLabels(target, outcome).Inc();
+
+    public static void RecordCircuitTransition(string target, string state)
+        => CircuitTransitions.WithLabels(target, state).Inc();
 
     public static void RecordOutboxDelivered()
         => OutboxMessagesDelivered.Inc();

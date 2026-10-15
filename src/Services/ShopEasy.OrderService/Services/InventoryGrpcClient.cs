@@ -2,69 +2,31 @@
 
 namespace ShopEasy.OrderService.Services;
 
-// gRPC client for InventoryService
-// Replaces the HTTP InventoryClient for internal stock checks
-// 3-5x faster, strongly typed, compile-time contract enforcement
-public class InventoryGrpcClient
+// gRPC client for the Inventory service: the internal stock check (a binary, typed, batched
+// call). Every call goes through InventoryCallPolicy (deadline, retry after connection failures,
+// circuit breaker) and reports failure as InventoryUnavailableException.
+public class InventoryGrpcClient(
+    InventoryGrpc.InventoryGrpcClient client,
+    InventoryCallPolicy policy,
+    ILogger<InventoryGrpcClient> logger) : IStockSource
 {
-    private readonly InventoryGrpc.InventoryGrpcClient _client;
-    private readonly ILogger<InventoryGrpcClient> _logger;
-
-    public InventoryGrpcClient(
-        InventoryGrpc.InventoryGrpcClient client,
-        ILogger<InventoryGrpcClient> logger)
+    public async Task<IReadOnlyList<StockLevel>> GetStockBatchAsync(
+        IReadOnlyCollection<Guid> productIds, CancellationToken ct = default)
     {
-        _client = client;
-        _logger = logger;
-    }
+        var request = new GetStockBatchRequest();
+        request.ProductIds.AddRange(productIds.Select(id => id.ToString()));
 
-    public async Task<StockResponse?> GetStockAsync(
-        Guid productId,
-        CancellationToken ct = default)
-    {
-        try
-        {
-            _logger.LogDebug(
-                "gRPC GetStock for product {ProductId}", productId);
+        logger.LogDebug("gRPC GetStockBatch for {Count} products", request.ProductIds.Count);
 
-            var response = await _client.GetStockAsync(
-                new GetStockRequest { ProductId = productId.ToString() },
-                cancellationToken: ct);
+        var response = await policy.ExecuteAsync(
+            (deadline, token) => client.GetStockBatchAsync(request, deadline: deadline, cancellationToken: token).ResponseAsync,
+            ct);
 
-            return response.Found ? response : null;
-        }
-        catch (Grpc.Core.RpcException ex)
-        {
-            _logger.LogError(ex,
-                "gRPC GetStock failed for product {ProductId}: {Status}",
-                productId, ex.Status);
-            throw;
-        }
-    }
-
-    public async Task<List<StockResponse>> GetStockBatchAsync(
-        IEnumerable<Guid> productIds,
-        CancellationToken ct = default)
-    {
-        try
-        {
-            var request = new GetStockBatchRequest();
-            request.ProductIds.AddRange(productIds.Select(id => id.ToString()));
-
-            _logger.LogDebug(
-                "gRPC GetStockBatch for {Count} products",
-                request.ProductIds.Count);
-
-            var response = await _client.GetStockBatchAsync(
-                request, cancellationToken: ct);
-
-            return response.Items.ToList();
-        }
-        catch (Grpc.Core.RpcException ex)
-        {
-            _logger.LogError(ex,
-                "gRPC GetStockBatch failed: {Status}", ex.Status);
-            throw;
-        }
+        return response.Items
+            .Where(item => item.Found && Guid.TryParse(item.ProductId, out _))
+            .Select(item => new StockLevel(
+                Guid.Parse(item.ProductId), item.ProductName, item.Quantity,
+                item.ReservedQty, item.AvailableQty, item.IsLowStock))
+            .ToList();
     }
 }
