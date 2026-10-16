@@ -64,7 +64,7 @@ There is no distributed-transaction coordinator and no shared database. An **orc
 | **Observable** | One correlation id across HTTP and messages, structured logs, distributed traces, Prometheus metrics, Grafana dashboards, and built-in saga, outbox and dead-letter monitors. |
 | **Deployable** | Docker Compose for development and Kubernetes manifests with pinned images. GitHub Actions builds, tests against real PostgreSQL and RabbitMQ, validates the deployment files, starts the stack and publishes the images. |
 
-**Scope.** ShopEasy ships the APIs and an operations portal, not a customer-facing storefront, and payments go through a simulated provider. The [known limitations](#production-hardening-roadmap--known-limitations) are listed at the end of this document.
+**Scope.** ShopEasy ships the APIs and an operations portal, not a customer-facing storefront, and payments go through a simulated provider. The [known limitations](#production-hardening-roadmap--known-limitations) are listed at the end of this document, and where the project is going (storefront, cart, search, shipping and the services after them) is in the [roadmap](docs/ROADMAP.md).
 
 ---
 
