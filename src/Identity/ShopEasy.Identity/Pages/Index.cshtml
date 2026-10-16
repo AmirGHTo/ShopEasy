@@ -12,6 +12,10 @@
 <ul>
   <li><a href="/.well-known/openid-configuration">Discovery Document</a></li>
   <li><a href="/Account/ChangePassword">Change your password</a> (asks you to sign in first)</li>
+  @if (User.IsInRole("admin"))
+  {
+    <li><a href="/Admin/Users">Accounts</a> (administrators)</li>
+  }
 </ul>
 </body>
 </html>

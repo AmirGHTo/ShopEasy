@@ -38,6 +38,7 @@ try
     // Self-service sign-up (customers only) and the per-client limits on sign-in and sign-up
     builder.Services.Configure<RegistrationSettings>(builder.Configuration.GetSection(RegistrationSettings.SectionName));
     builder.Services.AddAuthRateLimiting(AuthRateLimitSettings.From(builder.Configuration));
+    builder.Services.AddScoped<AccountAdministration>();
 
     builder.Services.AddMetricServer(options =>
     {
@@ -57,6 +58,12 @@ try
         options.Cookie.SameSite = SameSiteMode.Lax;
         options.Cookie.SecurePolicy = webSecurity.CookieSecurePolicy;
         options.Cookie.HttpOnly = true;
+        // a signed-in user without the role (a customer on an administrators' page) gets a plain 403
+        options.Events.OnRedirectToAccessDenied = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return Task.CompletedTask;
+        };
     });
     // A changed password gets a new security stamp; the other browser sessions of Identity notice it
     // at their next check, which is every 30 minutes by default. Check every minute instead.
