@@ -13,10 +13,12 @@ on:
     tags: ["v*.*.*"]
   workflow_dispatch:
 
-# A new push to the same branch cancels the run that is still going for the previous one
+# A new push to a pull request cancels the run that is still going for the previous one. Runs on
+# main and on tags are never cancelled while they run: a merge right after another must not stop
+# the earlier one from publishing its images (the newest queued run replaces older queued ones).
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
