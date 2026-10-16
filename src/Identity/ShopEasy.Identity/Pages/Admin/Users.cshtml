@@ -78,6 +78,12 @@
                             <button type="submit" class="small danger" onclick="return confirm('Disable this account? It stops being able to sign in.')">Disable</button>
                         }
                     </form>
+                    <form method="post" asp-page-handler="TemporaryPassword">
+                        <input type="hidden" name="id" value="@row.Id" />
+                        <input type="hidden" name="q" value="@Model.Q" />
+                        <input type="hidden" name="p" value="@Model.P" />
+                        <button type="submit" class="small" onclick="return confirm('Set a temporary password? The current password stops working and the account is signed out everywhere.')">Temporary password</button>
+                    </form>
                 }
                 </td>
             </tr>
