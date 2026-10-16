@@ -586,13 +586,17 @@ cd ShopEasy
 # Create your local config — every secret lives in .env (git-ignored), never in the repo
 cp .env.example .env
 #   → edit .env and replace every "change-me-*" value
-#   → for local demos also set SEED_DEMO_USERS=true, SEED_ADMIN_PASSWORD, SEED_CUSTOMER_PASSWORD
+#   → set BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD: without them nobody can log in
+#     as an administrator (see "How to Use It → 1. Log in")
+#   → for local demos you can instead set SEED_DEMO_USERS=true, SEED_ADMIN_PASSWORD, SEED_CUSTOMER_PASSWORD
 #     and EXPOSE_ACCESS_TOKEN=true (needed for the Swagger "Authorize" flow)
 
 docker-compose up --build
 ```
 
 First build takes a few minutes. When it settles, every service will have run its database migrations automatically against PostgreSQL.
+
+> **Updating an existing checkout?** `git pull` never touches your `.env`. When `.env.example` gains a setting, add it to your `.env` yourself, then rebuild the service that uses it (for the first administrator: `docker-compose up -d --build identity`).
 
 > Every setting and secret is explained in [Configuration & Secrets](#configuration--secrets).
 
@@ -654,6 +658,7 @@ cp .env.example .env     # Windows cmd: copy .env.example .env
 | `GRAFANA_ANONYMOUS_ENABLED` | no (`false`) | Allow read-only anonymous Grafana access. Keep `false` outside your laptop. |
 | `SEED_DEMO_USERS` | no (`false`) | `true` creates `alice@shopeasy.com` (admin) and `bob@shopeasy.com` (customer) at Identity startup. **Local development only.** |
 | `SEED_ADMIN_PASSWORD` / `SEED_CUSTOMER_PASSWORD` | only if seeding | Passwords for the demo users. Must satisfy the Identity policy: at least 8 characters with an uppercase letter, a lowercase letter and a digit. |
+| `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | no (empty) | The **first administrator**: Identity creates this account at start-up, but only while no administrator exists yet (details under [How to Use It](#1-log-in)). The password must satisfy the Identity policy; it is a secret, so it lives here (or in a Kubernetes Secret) and nowhere in the repository. |
 | `EXPOSE_ACCESS_TOKEN` | no (`false`) | `true` enables `GET /account/token` on the gateway, which returns the raw JWT so you can paste it into Swagger's *Authorize* button (it is not needed for the browser console examples in this README). Off by default because the BFF pattern exists to keep tokens out of the browser. While it is off, `/account/token` answers `404` with a JSON message explaining how to turn it on. After changing it, recreate the gateway: `docker-compose up -d gateway`. |
 
 Generate strong random values, e.g. `openssl rand -base64 24`, or in PowerShell: `-join ((48..57)+(65..90)+(97..122) | Get-Random -Count 32 | % {[char]$_})`.
@@ -735,14 +740,35 @@ dotnet user-secrets set "RabbitMQ:Password" "<RABBITMQ_PASSWORD>"
 
 ### 1. Log in
 
-Open `http://localhost:5000` and log in. Demo users are only created when `SEED_DEMO_USERS=true` in your `.env`:
+A fresh install has **no user accounts at all**, and there is no default password anywhere in the repository. The first administrator is created from configuration:
+
+```bash
+# in .env — choose your own values
+BOOTSTRAP_ADMIN_EMAIL=you@example.com
+BOOTSTRAP_ADMIN_PASSWORD=YourStr0ngPassword     # 8+ characters with a digit, a lower- and an upper-case letter
+
+docker-compose up --build        # first start; on an existing stack: docker-compose up -d --build identity
+```
+
+Then open `http://localhost:5000` and sign in with that email and password. Identity logs `Created the first administrator …` when it has done so.
+
+How it behaves:
+
+- **Only while no administrator exists.** Once one does, both settings are ignored and never change an existing account, so remove the password from `.env` after your first sign-in. Changing it later has no effect.
+- If the email already belongs to an account, that account is made the administrator and its password is left alone.
+- A password that breaks the policy, or an email without a password, stops Identity's start-up with a message that says which setting is wrong (the password itself is never logged).
+- It is safe to start several Identity replicas at once; exactly one account results.
+- On Kubernetes the email is `Bootstrap__AdminEmail` in the ConfigMap and the password is the optional `bootstrap-admin-password` key in the `shopeasy-secrets` Secret.
+- There is no password change, reset or sign-up page yet (see the known limitations). If you lose the password, delete that user from the Identity database (or wipe the local data with `docker-compose down -v`) and start again with new settings.
+
+For local demos you can instead let Identity create two throw-away users with `SEED_DEMO_USERS=true`:
 
 ```
 alice@shopeasy.com  → admin     (password = SEED_ADMIN_PASSWORD)
 bob@shopeasy.com    → customer  (password = SEED_CUSTOMER_PASSWORD)
 ```
 
-In production leave seeding off and create the **first administrator** from configuration instead: set `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` (Kubernetes: `Bootstrap__AdminEmail` in the ConfigMap, the optional `bootstrap-admin-password` key in the Secret). At start-up Identity creates that account and gives it the `admin` role, but only while no administrator exists: afterwards the settings are ignored and never change an existing account, so remove the password once you have signed in. If the email already belongs to an account, that account is made the administrator. A password that breaks the policy (8+ characters with a digit, a lower- and an upper-case letter) or an email without a password stops the start-up with a message that says which. Further accounts are not self-service yet (see the known limitations).
+Because `alice` is an administrator, the first-administrator settings are then ignored. Never use the demo users outside your laptop.
 
 ### 2. Place an order
 
@@ -1332,7 +1358,9 @@ ShopEasy/
 
 **Services cannot log in to Postgres after you edited `.env`** — Postgres only applies `POSTGRES_PASSWORD` when it first creates the data volume. Restore the old password, or wipe local data with `docker-compose down -v`.
 
-**`/sagas`, `/outbox` or `/deadletters` redirect to a login page** — expected: they require a login (as an admin to see data). Seed demo users with `SEED_DEMO_USERS=true` in `.env`.
+**`/sagas`, `/outbox` or `/deadletters` redirect to a login page** — expected: they require a login (as an admin to see data). No account exists until you create one: set `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` in `.env` and run `docker-compose up -d --build identity` (see [How to Use It](#1-log-in)).
+
+**I set `BOOTSTRAP_ADMIN_*` but cannot sign in** — check `docker-compose logs identity | grep -i administrator`. `Created the first administrator …` means it worked (check the email and password you typed). `An administrator already exists …` means an admin was there before, so the settings were ignored; this is also the case after ever running with `SEED_DEMO_USERS=true` (sign in as `alice@shopeasy.com`, or wipe the data with `docker-compose down -v`). Nothing in the log at all usually means the identity image was not rebuilt after editing `.env`.
 
 **`/account/token` returns 404 with a message** — it is disabled unless `EXPOSE_ACCESS_TOKEN=true` in `.env` (local development only). Set it, then run `docker-compose up -d gateway` to recreate the gateway container with the new value, and open `/account/token` again while logged in.
 
