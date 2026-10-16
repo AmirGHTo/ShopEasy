@@ -191,6 +191,7 @@ try
     app.UseRouting();
     app.UseRateLimiter();
     app.UseCookiePolicy();
+    app.UseMiddleware<PasswordChangeRequiredMiddleware>(); // before IdentityServer answers /connect/authorize
     app.UseIdentityServer(); // Includes UseAuthentication()
     app.UseAuthorization();
     app.MapRazorPages().RequireAuthorization();

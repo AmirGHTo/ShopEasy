@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Security.Claims;
 using Duende.IdentityServer.Services;
 using FluentAssertions;
 using Microsoft.AspNetCore.Authentication;
@@ -6,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Abstractions;
+using Microsoft.AspNetCore.Mvc.Routing;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
@@ -61,6 +63,7 @@ public class ChangePasswordTests
             {
                 PageContext = new PageContext(new ActionContext(Http, new RouteData(), new PageActionDescriptor())),
             };
+            Page.Url = new UrlHelper(Page.PageContext);
             CreateUserAndSignIn().GetAwaiter().GetResult();
             // the accessor keeps the context in an AsyncLocal: set it here, not inside the async method
             _scope.ServiceProvider.GetRequiredService<IHttpContextAccessor>().HttpContext = Http;
@@ -86,6 +89,25 @@ public class ChangePasswordTests
         }
 
         public string SignInCookie { get; private set; } = "";
+
+        // The account signed in with a temporary password: the requirement is on the account and on
+        // the principal of this request, as it is after an administrator set one
+        public async Task RequireAChange()
+        {
+            (await Users.AddClaimAsync(User, MustChangePassword.NewClaim())).Succeeded.Should().BeTrue();
+            Http.User = new ClaimsPrincipal(new ClaimsIdentity(
+                Http.User.Claims.Append(MustChangePassword.NewClaim()), IdentityConstants.ApplicationScheme));
+        }
+
+        // What a browser that was handed this response's cookie is then authenticated as
+        public async Task<ClaimsPrincipal> PrincipalOfTheNewCookie()
+        {
+            var next = new DefaultHttpContext { RequestServices = _scope.ServiceProvider };
+            next.Request.Headers.Cookie = Http.Response.Headers.SetCookie.ToString().Split(';')[0];
+            var auth = await next.AuthenticateAsync(IdentityConstants.ApplicationScheme);
+            auth.Succeeded.Should().BeTrue();
+            return auth.Principal!;
+        }
 
         public void Fill(string current = Current, string next = Next, string? confirm = null) =>
             Page.Input = new ChangePasswordModel.InputModel
@@ -190,6 +212,74 @@ public class ChangePasswordTests
 
         site.Errors.Should().ContainSingle().Which.Should().Contain("differs");
         await site.Grants.DidNotReceiveWithAnyArgs().RemoveAllGrantsAsync(default!, default, default);
+    }
+
+    [Fact]
+    public async Task ATemporaryPassword_IsReplaced_TheRequirementEnds_AndTheUserGoesOnToWhereTheyWereGoing()
+    {
+        using var site = new Site();
+        await site.RequireAChange();
+        site.Page.ReturnUrl = "/connect/authorize/callback?client_id=gateway";
+        site.Fill();
+
+        var result = await site.Page.OnPostAsync();
+
+        result.Should().BeOfType<LocalRedirectResult>().Which.Url.Should().Be("/connect/authorize/callback?client_id=gateway");
+        (await site.Users.GetClaimsAsync(site.User)).Should().NotContain(c => c.Type == MustChangePassword.ClaimType);
+        // the cookie renewed by the change no longer carries it, or the user would be sent back here
+        var principal = await site.PrincipalOfTheNewCookie();
+        MustChangePassword.IsSet(principal).Should().BeFalse();
+        (await site.PasswordIs(Next)).Should().BeTrue();
+        await site.Grants.Received(1).RemoveAllGrantsAsync(site.User.Id, Arg.Any<string?>(), Arg.Any<string?>());
+    }
+
+    [Fact]
+    public async Task WhileTheRequirementLasts_TheRequirementIsShown_ButNotAfterTheChange()
+    {
+        using var site = new Site();
+        site.Page.OnGet();
+        site.Page.Required.Should().BeFalse();
+
+        await site.RequireAChange();
+        site.Page.OnGet();
+        site.Page.Required.Should().BeTrue();
+
+        site.Fill();
+        var result = await site.Page.OnPostAsync(); // no return address: the page itself answers
+        result.Should().BeOfType<PageResult>();
+        site.Page.Required.Should().BeFalse();
+        site.Page.Message.Should().Contain("changed");
+    }
+
+    [Fact]
+    public async Task ARefusedChange_KeepsTheRequirement_AndTheTemporaryPassword()
+    {
+        using var site = new Site();
+        await site.RequireAChange();
+        site.Fill(current: "Wr0ngPassword");
+
+        await site.Page.OnPostAsync();
+
+        site.Page.Required.Should().BeTrue();
+        (await site.Users.GetClaimsAsync(site.User)).Should().Contain(c => c.Type == MustChangePassword.ClaimType);
+        (await site.PasswordIs(Current)).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("https://evil.example/")]
+    [InlineData("//evil.example/")]
+    [InlineData("/\\evil.example")]
+    [InlineData("javascript:alert(1)")]
+    public async Task AReturnAddressOnAnotherSite_IsNeverFollowed(string returnUrl)
+    {
+        using var site = new Site();
+        site.Page.ReturnUrl = returnUrl;
+        site.Fill();
+
+        var result = await site.Page.OnPostAsync();
+
+        result.Should().BeOfType<PageResult>();
+        (await site.PasswordIs(Next)).Should().BeTrue();
     }
 
     [Fact]

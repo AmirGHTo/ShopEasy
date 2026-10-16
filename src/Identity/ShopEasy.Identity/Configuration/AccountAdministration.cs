@@ -90,6 +90,34 @@ public class AccountAdministration(
         return AdminOutcome.Done($"{user.Email} is disabled. Tokens already issued stop working when they expire.");
     }
 
+    // For a user who cannot sign in (a forgotten password: there is no e-mail to reset it by). The
+    // password is generated here and returned once; the account has to replace it at its next
+    // sign-in. The old password stops working and so do the account's sessions and refresh tokens.
+    public async Task<TemporaryPasswordOutcome> SetTemporaryPasswordAsync(string actorId, string userId)
+    {
+        var user = await users.FindByIdAsync(userId);
+        if (user is null)
+            return TemporaryPasswordOutcome.Refused(AdminOutcome.NoSuchAccount.Message);
+        if (user.Id == actorId)
+            return TemporaryPasswordOutcome.Refused("Change your own password on the Change password page.");
+
+        var password = TemporaryPassword.Generate();
+        // also updates the security stamp: the Identity session of that account ends within a minute
+        Check(await users.ResetPasswordAsync(user, await users.GeneratePasswordResetTokenAsync(user), password));
+        if (!(await users.GetClaimsAsync(user)).Any(c => c.Type == MustChangePassword.ClaimType))
+            Check(await users.AddClaimAsync(user, MustChangePassword.NewClaim()));
+        // a lockout from too many wrong passwords is over (the user is about to sign in); a disabled account stays disabled
+        if (!IsDisabled(user))
+        {
+            Check(await users.SetLockoutEndDateAsync(user, null));
+            Check(await users.ResetAccessFailedCountAsync(user));
+        }
+        await grants.RemoveAllGrantsAsync(user.Id);
+
+        logger.LogWarning("Administrator {ActorId} set a temporary password for account {UserId}", actorId, user.Id);
+        return new TemporaryPasswordOutcome(true, $"{user.Email} has a temporary password.", user.Email, password);
+    }
+
     private const string LastAdministrator =
         "This is the last administrator that is not disabled: make another account an administrator first.";
 

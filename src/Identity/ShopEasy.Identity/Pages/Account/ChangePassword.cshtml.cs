@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using ShopEasy.Identity.Configuration;
 using ShopEasy.Identity.Data;
 
 namespace ShopEasy.Identity.Pages.Account;
@@ -11,6 +12,8 @@ namespace ShopEasy.Identity.Pages.Account;
 // A signed-in user changes their own password. Everything that was issued under the old one stops
 // working: the refresh tokens (so the gateway session and any other app end at their next token
 // renewal) and, through the new security stamp, the other browser sessions of Identity itself.
+// An account that signed in with a temporary password set by an administrator lands here first
+// (PasswordChangeRequiredMiddleware) and is sent on to where it was going once it has chosen its own.
 [Authorize]
 public class ChangePasswordModel : PageModel
 {
@@ -32,7 +35,11 @@ public class ChangePasswordModel : PageModel
     }
 
     [BindProperty] public InputModel Input { get; set; } = new();
+    [BindProperty(SupportsGet = true)] public string? ReturnUrl { get; set; }
     public string? Message { get; set; }
+
+    // True while the account still has to replace a temporary password
+    public bool Required { get; private set; }
 
     public class InputModel
     {
@@ -42,10 +49,11 @@ public class ChangePasswordModel : PageModel
         public string ConfirmPassword { get; set; } = "";
     }
 
-    public void OnGet() { }
+    public void OnGet() => Required = MustChangePassword.IsSet(User);
 
     public async Task<IActionResult> OnPostAsync()
     {
+        Required = MustChangePassword.IsSet(User);
         if (!ModelState.IsValid)
             return Page();
 
@@ -82,10 +90,20 @@ public class ChangePasswordModel : PageModel
             return Page();
         }
 
+        // the temporary password is gone: nothing more is required of this account (before the
+        // cookie is renewed, so that the new one no longer carries the requirement)
+        var pending = (await _users.GetClaimsAsync(user)).Where(c => c.Type == MustChangePassword.ClaimType).ToList();
+        if (pending.Count > 0)
+            await _users.RemoveClaimsAsync(user, pending);
+
         // keep this browser signed in under the new security stamp, then end every other session
         await _signIn.RefreshSignInAsync(user);
         await _grants.RemoveAllGrantsAsync(user.Id);
         _logger.LogInformation("Password of account {UserId} changed", user.Id);
+
+        Required = false;
+        if (Url.IsLocalUrl(ReturnUrl))
+            return LocalRedirect(ReturnUrl!);
 
         Message = "Your password was changed. Other sessions and apps will ask you to sign in again.";
         return Page();

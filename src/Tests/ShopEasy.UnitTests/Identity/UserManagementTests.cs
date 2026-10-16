@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Duende.IdentityServer.Services;
 using FluentAssertions;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -39,8 +40,10 @@ public abstract class AdminTestBase : IAsyncLifetime
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddDbContext<ApplicationDbContext>(o => o.UseInMemoryDatabase(Guid.NewGuid().ToString()));
+        services.AddDataProtection().UseEphemeralDataProtectionProvider();
         services.AddIdentity<ApplicationUser, IdentityRole>(IdentityPolicy.Configure)
-            .AddEntityFrameworkStores<ApplicationDbContext>();
+            .AddEntityFrameworkStores<ApplicationDbContext>()
+            .AddDefaultTokenProviders();
         _provider = services.BuildServiceProvider();
         _scope = _provider.CreateScope();
         Users = _scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
