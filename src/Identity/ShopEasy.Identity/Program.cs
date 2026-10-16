@@ -35,6 +35,10 @@ try
         .AddEntityFrameworkStores<ApplicationDbContext>()
         .AddDefaultTokenProviders();
 
+    // Self-service sign-up (customers only) and the per-client limits on sign-in and sign-up
+    builder.Services.Configure<RegistrationSettings>(builder.Configuration.GetSection(RegistrationSettings.SectionName));
+    builder.Services.AddAuthRateLimiting(AuthRateLimitSettings.From(builder.Configuration));
+
     builder.Services.AddMetricServer(options =>
     {
         // separate port from the API (configurable so two instances can share a host)
@@ -174,6 +178,7 @@ try
     });
     app.UseStaticFiles();
     app.UseRouting();
+    app.UseRateLimiter();
     app.UseCookiePolicy();
     app.UseIdentityServer(); // Includes UseAuthentication()
     app.UseAuthorization();
