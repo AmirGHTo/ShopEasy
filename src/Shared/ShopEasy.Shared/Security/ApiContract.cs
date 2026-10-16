@@ -48,6 +48,7 @@ public static class ApiScopes
 public static class Roles
 {
     public const string Admin = "admin";
+    public const string Customer = "customer";
 }
 
 // The claims the APIs read, as Identity issues them (inbound claim mapping is switched off, so the

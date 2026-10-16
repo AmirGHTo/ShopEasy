@@ -77,6 +77,13 @@ spec:
                   key: order-client-secret
             - name: Seed__Enabled
               value: "false"
+            # only used while no administrator exists (and Bootstrap__AdminEmail is set)
+            - name: Bootstrap__AdminPassword
+              valueFrom:
+                secretKeyRef:
+                  name: shopeasy-secrets
+                  key: bootstrap-admin-password
+                  optional: true
             - name: DataProtection__CertificatePath
               value: /etc/shopeasy/dataprotection/key-ring.pfx
             - name: DataProtection__CertificatePassword
