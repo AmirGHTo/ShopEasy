@@ -79,7 +79,7 @@ public class LoginModel : PageModel
         if (result.IsLockedOut)
         {
             _logger.LogWarning("User account {Email} locked out", Input.Email);
-            ErrorMessage = "Account locked out. Please try again later.";
+            ErrorMessage = "This account is locked or disabled. Try again later, or ask an administrator.";
         }
         else
         {

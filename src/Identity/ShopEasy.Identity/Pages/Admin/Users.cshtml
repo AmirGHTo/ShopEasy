@@ -1,0 +1,100 @@
+@page
+@model ShopEasy.Identity.Pages.Admin.UsersModel
+@{
+    ViewData["Title"] = "Accounts — ShopEasy";
+    Layout = null;
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@ViewData["Title"]</title>
+    <partial name="_AuthStyles" />
+</head>
+<body>
+<div class="card wide">
+    <div class="logo">
+        <h1>ShopEasy</h1>
+        <p>Accounts</p>
+    </div>
+
+    @if (!string.IsNullOrEmpty(Model.Message))
+    {
+        <div class="success">@Model.Message</div>
+    }
+    @if (!string.IsNullOrEmpty(Model.Error))
+    {
+        <div class="error">@Model.Error</div>
+    }
+
+    <form method="get" class="search">
+        <input type="text" name="q" value="@Model.Q" placeholder="Search by email" />
+        <button type="submit">Search</button>
+    </form>
+
+    <table>
+        <thead>
+            <tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+        @foreach (var row in Model.Rows)
+        {
+            <tr>
+                <td>@row.Email @if (row.IsYou) { <span class="you">(you)</span> }</td>
+                <td>@row.Name</td>
+                <td>@row.Role</td>
+                <td>@row.Status</td>
+                <td class="actions">
+                @if (!row.IsYou)
+                {
+                    <form method="post" asp-page-handler="Role">
+                        <input type="hidden" name="id" value="@row.Id" />
+                        <input type="hidden" name="q" value="@Model.Q" />
+                        <input type="hidden" name="p" value="@Model.P" />
+                        @if (row.IsAdmin)
+                        {
+                            <input type="hidden" name="role" value="customer" />
+                            <button type="submit" class="small" onclick="return confirm('Make this account a customer?')">Make customer</button>
+                        }
+                        else
+                        {
+                            <input type="hidden" name="role" value="admin" />
+                            <button type="submit" class="small" onclick="return confirm('Make this account an administrator?')">Make admin</button>
+                        }
+                    </form>
+                    <form method="post" asp-page-handler="Enabled">
+                        <input type="hidden" name="id" value="@row.Id" />
+                        <input type="hidden" name="q" value="@Model.Q" />
+                        <input type="hidden" name="p" value="@Model.P" />
+                        @if (row.IsDisabled)
+                        {
+                            <input type="hidden" name="enabled" value="true" />
+                            <button type="submit" class="small">Enable</button>
+                        }
+                        else
+                        {
+                            <input type="hidden" name="enabled" value="false" />
+                            <button type="submit" class="small danger" onclick="return confirm('Disable this account? It stops being able to sign in.')">Disable</button>
+                        }
+                    </form>
+                }
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+    @if (Model.Rows.Count == 0)
+    {
+        <p class="rules">No accounts found.</p>
+    }
+
+    <p class="switch">
+        @Model.Total @(Model.Total == 1 ? "account" : "accounts") · page @Model.P of @Model.Pages
+        @if (Model.P > 1) { <text> · </text><a asp-page="/Admin/Users" asp-route-q="@Model.Q" asp-route-p="@(Model.P - 1)">Previous</a> }
+        @if (Model.P < Model.Pages) { <text> · </text><a asp-page="/Admin/Users" asp-route-q="@Model.Q" asp-route-p="@(Model.P + 1)">Next</a> }
+        · <a href="/">Back</a>
+    </p>
+</div>
+</body>
+</html>
