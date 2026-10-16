@@ -28,19 +28,19 @@ resources:
 images:
   - name: shopeasy-identity
     newName: ghcr.io/nullbutcute/shopeasy-identity
-    newTag: sha-29f7e1f
+    newTag: sha-a91b103
   - name: shopeasy-gateway
     newName: ghcr.io/nullbutcute/shopeasy-gateway
-    newTag: sha-29f7e1f
+    newTag: sha-a91b103
   - name: shopeasy-product
     newName: ghcr.io/nullbutcute/shopeasy-product
-    newTag: sha-29f7e1f
+    newTag: sha-a91b103
   - name: shopeasy-inventory
     newName: ghcr.io/nullbutcute/shopeasy-inventory
-    newTag: sha-29f7e1f
+    newTag: sha-a91b103
   - name: shopeasy-payment
     newName: ghcr.io/nullbutcute/shopeasy-payment
-    newTag: sha-29f7e1f
+    newTag: sha-a91b103
   - name: shopeasy-order
     newName: ghcr.io/nullbutcute/shopeasy-order
-    newTag: sha-29f7e1f
+    newTag: sha-a91b103
