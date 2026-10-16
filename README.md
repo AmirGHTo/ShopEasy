@@ -1076,7 +1076,10 @@ To reliably force a successful payment for the refund test, set `Testing__ForceP
 # Unit tests — need nothing but the .NET 8 SDK
 dotnet test src/Tests/ShopEasy.UnitTests
 
-# Integration tests (run with the stack up)
+# End-to-end test — needs the Compose stack running (see "End-to-end test" below)
+dotnet test src/Tests/ShopEasy.EndToEndTests
+
+# Older API tests that call single services directly (not run by CI)
 dotnet test src/Tests/ShopEasy.IntegrationTests
 ```
 
@@ -1134,20 +1137,42 @@ docker rm -f shopeasy-test-pg shopeasy-test-mq
 
 `SHOPEASY_TEST_POSTGRES` is a server connection string **without** a database name (the role needs `CREATEDB`). 
 
+### End-to-end test
+
+`src/Tests/ShopEasy.EndToEndTests` uses the running system the way a customer does: through the gateway only, against the real containers. It creates an account on Identity's sign-up page, signs in through the gateway's OpenID Connect redirects (the test never handles a token, only the session cookie) and then shops. Every service takes part: Identity, gateway, Product, Order and its saga, Inventory, Payment and RabbitMQ.
+
+| Scenario | What it proves |
+|---|---|
+| A customer buys | An order whose request claims a price of one cent is priced by the catalog; it is accepted as `Pending`, the saga reserves the stock, takes the payment and the order becomes `Confirmed`; Inventory then holds fewer units by exactly the quantity ordered, Payment holds one charge for the total, the order is in the customer's list, and a confirmed order can no longer be cancelled (`409`). |
+| The same request again | One `Idempotency-Key` placed twice gives the same order with `Idempotency-Replayed: true`, a different request under that key is refused (`422`), and one order and one unit off the shelf result. |
+| An order that cannot be filled | An unknown product and a quantity above the stock are each refused (`400`) with the reason; nothing is saved and the stock is unchanged. |
+| Who may see what | A visitor sees the catalog but not orders and cannot place one; a customer is known by the account they created; another customer is told the order does not exist (`404`) and may not read its payment (`403`); monitoring endpoints refuse a customer. |
+
+CI runs it in the **Compose stack and end-to-end test** job, right after the containers are up, with the throw-away values of `.env.example`. Compose starts the payment provider in "always succeeds" mode (`Testing__ForcePaymentSuccess`), so a failure here means a broken system, not a declined payment. To run it yourself:
+
+```bash
+docker compose up -d --build --wait postgres rabbitmq redis identity product inventory payment order gateway
+dotnet test src/Tests/ShopEasy.EndToEndTests
+```
+
+It expects the gateway at `http://localhost:5000` and Identity at `http://localhost:5001` (`E2E_GATEWAY_URL` and `E2E_IDENTITY_URL` change that). Each run creates two accounts (sign-up is limited to 10 per hour per address, see `RATE_LIMIT_REGISTRATION_ATTEMPTS`) and makes 7 of the 10 order requests a minute that the Order service allows, so wait a minute between two runs. The accounts and orders stay in the database; `docker compose down -v` clears them.
+
+Not covered, on purpose: a declined payment and the compensation after it (the provider is forced to succeed here; the saga tests and the PostgreSQL tests cover the compensation), and cancelling an order while the saga is still running (it depends on timing, and the saga tests cover every stage).
+
 ## CI/CD
 
 Everything below is in `.github/` and runs on GitHub Actions. Nothing needs to be installed or configured by hand for the **CI** part; the **CD** part publishes images with the repository's built-in token.
 
 ### CI — `.github/workflows/ci.yml`
 
-Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new push to the same branch cancels the run still in progress. A pull request that **only changes documentation** (`*.md`, `docs/`, the licence) skips the build, the tests and the container jobs, so it finishes in seconds; anything else, and every run on `main` or a tag, runs the full pipeline.
+Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new push to a pull request cancels the run still in progress; runs on `main` and on tags always finish, so that a quick second merge cannot stop the first one from publishing its images. A pull request that **only changes documentation** (`*.md`, `docs/`, the licence) skips the build, the tests and the container jobs, so it finishes in seconds; anything else, and every run on `main` or a tag, runs the full pipeline.
 
 | Job | What it checks |
 |---|---|
 | **Detect changes** | Decides whether the pull request touches anything that is built, tested or deployed (plain `git diff`, no third-party action). Skipped jobs count as passed in **CI passed**, so the check can stay required for documentation-only changes. |
 | **Build and test** | `dotnet restore/build` (Release) and all 665 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 54 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
 | **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, they take the shared ConfigMap (so a setting changed there reaches every service), third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
-| **Start the Compose stack** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. |
+| **Compose stack and end-to-end test** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. Last, it runs the [end-to-end test](#end-to-end-test) against those containers: a customer signs up, signs in, buys something and the order is confirmed, which no unit test can show because it needs every service, the broker and the databases working together. |
 | **CI passed** | One aggregate status for the jobs above (a skipped job counts as passed) — the check to require in branch protection. |
 
 **Dependency audit.** `Directory.Build.props` makes NuGet check every restored package, direct *and* transitive, against the advisory database. Locally a finding is a warning; **in CI it fails the build** (`NU1901`–`NU1904`). To fix one, upgrade the package, or pin a patched version of the transitive dependency with a direct `PackageReference` (see the `System.Text.Json` pin in `ShopEasy.Shared.csproj`). **Dependabot** (`.github/dependabot.yml`) opens weekly update pull requests for NuGet packages, the Dockerfile base images and the GitHub Actions; each runs the full CI. NuGet updates are grouped: one pull request for the OpenTelemetry, Serilog, MassTransit and test-tooling packages each, and one for every other minor or patch update across all projects; a major version arrives as its own pull request. Major bumps of the framework-bound packages **and of the .NET base images** are ignored on purpose (the services target .NET 8 LTS; moving to a newer .NET is a project decision that changes the `TargetFramework`, the Dockerfiles and the CI together), and so are major bumps of Swashbuckle and Serilog.AspNetCore and every major *and minor* bump of MassTransit: 8.5+ pulls RabbitMQ.Client 7, which removes the synchronous API the dead-letter tooling uses (the Order service stops compiling), and MassTransit 9 is no longer Apache-2.0 — both need a deliberate migration. If a base-image bump is merged anyway, the Dockerfile check above fails.
@@ -1357,7 +1382,8 @@ ShopEasy/
 │           └── Data/              # DbContext, UnitOfWork (join the MassTransit outbox transaction)
 └── src/Tests/
     ├── ShopEasy.UnitTests/        # unit tests + Infrastructure/ (needs PostgreSQL / RabbitMQ, see Testing)
-    └── ShopEasy.IntegrationTests/
+    ├── ShopEasy.EndToEndTests/    # a customer signs up and buys, against the running Compose stack
+    └── ShopEasy.IntegrationTests/ # older tests of single services (not run by CI)
 ```
 
 ---
@@ -1430,7 +1456,7 @@ This project is being hardened step by step. Status:
 | 6 | Replace RabbitMQ management-API polling with a bus-ready check and AMQP dead-letter tooling; MassTransit transactional inbox/outbox for Payment/Inventory events | Done |
 | 7 | Observability (per-service log names, configurable Seq, correlation id across HTTP, outbox, saga and RabbitMQ, MassTransit + Npgsql traces), CI/CD on GitHub Actions (build, all tests incl. PostgreSQL/RabbitMQ, deployment-file validation, image builds, publish to GHCR, Dependabot), vulnerable dependencies patched and gated, saga row-locking tests on PostgreSQL, saga tests re-enabled | Done |
 | 8 | Non-root images (no SQLite, no `chmod 777`), read-only containers started by CI, Kubernetes with pinned published image tags and no local-image assumptions, Identity keys / key ring / grants shared in PostgreSQL (several replicas), network policies | Done |
-| 9 | Resilience and API safety: consumers ride out database and network outages and every database wait is bounded (pattern 24); order placement is idempotent (pattern 25); calls between services have deadlines, budgeted retries and circuit breakers, and the gateway times out silent services (pattern 26); every API checks audience, scope and role, and the internal gRPC call needs a service identity (pattern 2). Still to do: business-level observability and a contract and end-to-end test in CI | In progress |
+| 9 | Resilience and API safety: consumers ride out database and network outages and every database wait is bounded (pattern 24); order placement is idempotent (pattern 25); calls between services have deadlines, budgeted retries and circuit breakers, and the gateway times out silent services (pattern 26); every API checks audience, scope and role, and the internal gRPC call needs a service identity (pattern 2). An end-to-end test of the order journey runs in CI. Still to do: business-level observability and contract tests between the services | In progress |
 
 **Known limitations today** (documented so nobody is surprised):
 
@@ -1443,7 +1469,7 @@ This project is being hardened step by step. Status:
 - Inventory endpoints process one message at a time per instance (`ConcurrentMessageLimit = 1`). Correctness no longer depends on it (row locks do), so it can be raised for throughput.
 - `InventoryDbContext` has no unique database constraint on the ledger; idempotency relies on the row locks.
 - The CI only becomes a *gate* once branch protection requires the `CI passed` check (a one-time repository setting, see CI/CD). Until then it reports but does not block.
-- The integration tests in `src/Tests/ShopEasy.IntegrationTests` call a running stack and are not run by CI yet; the unit-test project (with real PostgreSQL and RabbitMQ) is.
+- The older tests in `src/Tests/ShopEasy.IntegrationTests` call single services directly and are not run by CI; the end-to-end test and the unit-test project (with real PostgreSQL and RabbitMQ) are. The end-to-end test covers the happy path and the refusals, not a declined payment or a cancel while the saga runs.
 - Images are published to GHCR and the manifests pin them by commit, but nothing deploys them automatically (that needs credentials for a specific cluster), and the pinned tag in `k8s/kustomization.yaml` is bumped by hand (`k8s/set-image-tag.sh`). No container image vulnerability scan (Trivy) or code scanning (CodeQL) runs yet.
 - The Kubernetes manifests were validated (schema and the deployment rules above) and the same hardening runs in CI under Compose, but they have not been applied to a live cluster in CI. NetworkPolicies need a network plugin that enforces them, and egress of the application pods is not restricted.
 - The gateway keeps its login cookie's Data Protection keys in memory/on its own file system, so a restart signs users out and it cannot run several replicas yet (Identity already can).
