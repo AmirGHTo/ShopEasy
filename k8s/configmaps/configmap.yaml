@@ -17,6 +17,14 @@ data:
   # First administrator (Identity only): the account is created at start-up while no admin exists.
   # Its password is the optional "bootstrap-admin-password" key of the shopeasy-secrets Secret.
   Bootstrap__AdminEmail: ""
+  # Customers creating their own account (Identity); "false" closes sign-up. The limits are the
+  # submissions of the sign-in and sign-up forms one client address may make per window; behind an
+  # ingress they only count per client once ForwardedHeaders is enabled below.
+  Registration__Enabled: "true"
+  RateLimiting__Login__PermitLimit: "10"
+  RateLimiting__Login__WindowSeconds: "60"
+  RateLimiting__Registration__PermitLimit: "10"
+  RateLimiting__Registration__WindowSeconds: "3600"
   ForwardedHeaders__Enabled: "false"
   ForwardedHeaders__KnownNetworks: ""
   ForwardedHeaders__KnownProxies: ""

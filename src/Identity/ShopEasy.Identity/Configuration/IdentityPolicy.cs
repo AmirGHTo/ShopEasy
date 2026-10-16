@@ -6,6 +6,9 @@ namespace ShopEasy.Identity.Configuration;
 // (the demo seeder, the first administrator, tests) is held to the same ones.
 public static class IdentityPolicy
 {
+    // What the sign-up page tells people; keep it in step with Configure
+    public const string PasswordRules = "At least 8 characters, with a digit, a lower-case and an upper-case letter.";
+
     public static void Configure(IdentityOptions options)
     {
         options.Password.RequireDigit = true;

@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.Extensions.Options;
+using ShopEasy.Identity.Configuration;
 using ShopEasy.Identity.Data;
 
 namespace ShopEasy.Identity.Pages.Account;
@@ -18,16 +20,19 @@ public class LoginModel : PageModel
     public LoginModel(
         SignInManager<ApplicationUser> signInManager,
         IIdentityServerInteractionService interaction,
+        IOptions<RegistrationSettings> registration,
         ILogger<LoginModel> logger)
     {
         _signInManager  = signInManager;
         _interaction    = interaction;
+        RegistrationEnabled = registration.Value.Enabled;
         _logger         = logger;
     }
 
     [BindProperty] public InputModel Input { get; set; } = new();
     public string? ReturnUrl { get; set; }
     public string? ErrorMessage { get; set; }
+    public bool RegistrationEnabled { get; }
 
     public class InputModel
     {

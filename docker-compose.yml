@@ -204,6 +204,13 @@ services:
       # The first administrator of a real deployment: created once, only while no admin exists
       Bootstrap__AdminEmail: "${BOOTSTRAP_ADMIN_EMAIL:-}"
       Bootstrap__AdminPassword: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      # Customers creating their own account, and how often one client may submit the sign-in and
+      # sign-up forms (README, "How to Use It")
+      Registration__Enabled: "${REGISTRATION_ENABLED:-true}"
+      RateLimiting__Login__PermitLimit: "${RATE_LIMIT_LOGIN_ATTEMPTS:-10}"
+      RateLimiting__Login__WindowSeconds: "${RATE_LIMIT_LOGIN_WINDOW_SECONDS:-60}"
+      RateLimiting__Registration__PermitLimit: "${RATE_LIMIT_REGISTRATION_ATTEMPTS:-10}"
+      RateLimiting__Registration__WindowSeconds: "${RATE_LIMIT_REGISTRATION_WINDOW_SECONDS:-3600}"
     # Signing keys, Data Protection keys and issued grants are stored in PostgreSQL (no volume).
     # Optional: encrypt the key ring with a certificate you mount (see the README, "Identity key
     # protection"): DataProtection__CertificatePath / DataProtection__CertificatePassword.

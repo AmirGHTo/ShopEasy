@@ -1,0 +1,51 @@
+@page
+@model ShopEasy.Identity.Pages.Account.RegisterModel
+@{
+    ViewData["Title"] = "Create account — ShopEasy";
+    Layout = null;
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@ViewData["Title"]</title>
+    <partial name="_AuthStyles" />
+</head>
+<body>
+<div class="card">
+    <div class="logo">
+        <h1>ShopEasy</h1>
+        <p>Create your account</p>
+    </div>
+
+    @if (!string.IsNullOrEmpty(Model.ErrorMessage))
+    {
+        <div class="error">@Model.ErrorMessage</div>
+    }
+    <div asp-validation-summary="All" class="error"></div>
+
+    <form method="post" asp-page="/Account/Register" asp-route-returnUrl="@Model.ReturnUrl">
+        <label asp-for="Input.FirstName">First name</label>
+        <input asp-for="Input.FirstName" type="text" autocomplete="given-name" />
+
+        <label asp-for="Input.LastName">Last name</label>
+        <input asp-for="Input.LastName" type="text" autocomplete="family-name" />
+
+        <label asp-for="Input.Email">Email address</label>
+        <input asp-for="Input.Email" type="email" autocomplete="email" placeholder="you@example.com" />
+
+        <label asp-for="Input.Password">Password</label>
+        <input asp-for="Input.Password" type="password" autocomplete="new-password" />
+        <p class="rules">@ShopEasy.Identity.Configuration.IdentityPolicy.PasswordRules</p>
+
+        <label asp-for="Input.ConfirmPassword">Confirm password</label>
+        <input asp-for="Input.ConfirmPassword" type="password" autocomplete="new-password" />
+
+        <button type="submit">Create account</button>
+    </form>
+
+    <p class="switch">Already have an account? <a asp-page="/Account/Login" asp-route-returnUrl="@Model.ReturnUrl">Sign in</a></p>
+</div>
+</body>
+</html>
