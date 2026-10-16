@@ -5,8 +5,8 @@ using Microsoft.AspNetCore.RateLimiting;
 
 namespace ShopEasy.Identity.Configuration;
 
-// Settings under "RateLimiting": how many sign-in and sign-up submissions one client may make per
-// window. The per-account lockout stops guessing one password; this stops one client from trying
+// Settings under "RateLimiting": how many sign-in (and password-change) and sign-up submissions one
+// client may make per window. The per-account lockout stops guessing one password; this stops one client from trying
 // many accounts, or from creating accounts in bulk.
 public class AuthRateLimitSettings
 {
@@ -41,6 +41,7 @@ public class AuthRateLimitSettings
 public static class AuthRateLimiting
 {
     private const string LoginPath = "/Account/Login";
+    private const string ChangePasswordPath = "/Account/ChangePassword";
     private const string RegisterPath = "/Account/Register";
 
     // Only the submissions are limited (POST), per client address; everything else is untouched.
@@ -65,7 +66,9 @@ public static class AuthRateLimiting
     {
         if (!HttpMethods.IsPost(request.Method))
             return ("", null);
-        if (request.Path.Equals(LoginPath, StringComparison.OrdinalIgnoreCase))
+        // changing the password checks the current one, so it shares the sign-in budget
+        if (request.Path.Equals(LoginPath, StringComparison.OrdinalIgnoreCase)
+            || request.Path.Equals(ChangePasswordPath, StringComparison.OrdinalIgnoreCase))
             return ("login", settings.Login);
         if (request.Path.Equals(RegisterPath, StringComparison.OrdinalIgnoreCase))
             return ("register", settings.Registration);

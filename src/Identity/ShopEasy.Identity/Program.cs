@@ -58,6 +58,10 @@ try
         options.Cookie.SecurePolicy = webSecurity.CookieSecurePolicy;
         options.Cookie.HttpOnly = true;
     });
+    // A changed password gets a new security stamp; the other browser sessions of Identity notice it
+    // at their next check, which is every 30 minutes by default. Check every minute instead.
+    builder.Services.Configure<SecurityStampValidatorOptions>(options =>
+        options.ValidationInterval = TimeSpan.FromMinutes(1));
     builder.Services.ConfigureExternalCookie(options =>
     {
         options.Cookie.SameSite = SameSiteMode.Lax;
