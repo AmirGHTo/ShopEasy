@@ -9,6 +9,8 @@ kubeconform only checks that the YAML is *valid*; these are the deployment rules
     built images that nobody could reproduce);
   * their containers run as non-root, cannot gain privileges, have a read-only root file system and
     no Linux capabilities;
+  * they take the shared ConfigMap (`envFrom`), because the settings an operator is told to change
+    there (cookie security, forwarded headers, sign-up, ...) only reach a pod that reads it;
   * third-party images carry an explicit version tag (not `latest`);
   * the namespace denies ingress by default.
 
@@ -62,6 +64,8 @@ for doc in yaml.safe_load_all(sys.stdin):
                 errors.append(f"{where}: must drop ALL capabilities")
             if "limits" not in container.get("resources", {}):
                 errors.append(f"{where}: needs resource limits")
+            if not any(ref.get("configMapRef", {}).get("name") == "shopeasy-config" for ref in container.get("envFrom", [])):
+                errors.append(f"{where}: must take the shared ConfigMap (envFrom: configMapRef: shopeasy-config)")
         elif ":" not in image.rsplit("/", 1)[-1] or image.endswith(":latest"):
             errors.append(f"{where}: third-party image '{image}' needs an explicit version tag")
 
@@ -75,4 +79,4 @@ if errors:
         print(f"::error::{message}")
     sys.exit(1)
 
-print(f"OK: {len(seen_apps)} service Deployments pinned, non-root, read-only; ingress denied by default")
+print(f"OK: {len(seen_apps)} service Deployments pinned, non-root, read-only, on the shared ConfigMap; ingress denied by default")

@@ -361,12 +361,4 @@ public class SignUpTests
         configMap.Should().Contain($"RateLimiting__Registration__PermitLimit: \"{defaults.Registration.PermitLimit}\"");
         configMap.Should().Contain($"RateLimiting__Registration__WindowSeconds: \"{defaults.Registration.WindowSeconds}\"");
     }
-
-    // The ConfigMap only helps a service that takes it: Identity reads its settings from it
-    [Fact]
-    public void TheIdentityDeployment_TakesTheSharedConfigMap()
-    {
-        RepositoryFiles.Read("k8s", "identity", "identity.yaml")
-            .Should().MatchRegex(@"envFrom:\s*\n\s*- configMapRef:\s*\n\s*name: shopeasy-config");
-    }
 }
