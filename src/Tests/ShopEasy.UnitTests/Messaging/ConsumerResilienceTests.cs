@@ -63,7 +63,7 @@ public class ConsumerResilienceTests
 
         var provider = services.BuildServiceProvider(true);
         var harness = provider.GetRequiredService<ITestHarness>();
-        await harness.Start();
+        await harness.StartWithinLimitAsync();
         return (provider, harness);
     }
 
@@ -80,7 +80,7 @@ public class ConsumerResilienceTests
         // six failed attempts: the previous policy (three retries) gave up after the fourth
         var script = new Script { FailFirst = 6, Failure = DatabaseDown };
         var (provider, harness) = await StartAsync(script, Fast());
-        await using var _ = provider;
+        await using var _ = provider.StopWithinLimit();
 
         await harness.Bus.Publish(new Job { Id = Guid.NewGuid() });
         await script.Succeeded.Task.WaitAsync(TimeSpan.FromSeconds(20));
@@ -94,7 +94,7 @@ public class ConsumerResilienceTests
     {
         var script = new Script { FailFirst = 5, Failure = () => new DbUpdateException("save failed", DatabaseDown()) };
         var (provider, harness) = await StartAsync(script, Fast());
-        await using var _ = provider;
+        await using var _ = provider.StopWithinLimit();
 
         await harness.Bus.Publish(new Job { Id = Guid.NewGuid() });
         await script.Succeeded.Task.WaitAsync(TimeSpan.FromSeconds(20));
@@ -107,7 +107,7 @@ public class ConsumerResilienceTests
     {
         var script = new Script { FailFirst = int.MaxValue, Failure = DatabaseDown };
         var (provider, harness) = await StartAsync(script, Fast(transientLimit: 5));
-        await using var _ = provider;
+        await using var _ = provider.StopWithinLimit();
 
         await harness.Bus.Publish(new Job { Id = Guid.NewGuid() });
 
@@ -121,7 +121,7 @@ public class ConsumerResilienceTests
     {
         var script = new Script { FailFirst = int.MaxValue, Failure = () => new ApplicationException("a bug") };
         var (provider, harness) = await StartAsync(script, Fast());
-        await using var _ = provider;
+        await using var _ = provider.StopWithinLimit();
 
         await harness.Bus.Publish(new Job { Id = Guid.NewGuid() });
 
@@ -134,7 +134,7 @@ public class ConsumerResilienceTests
     {
         var script = new Script { FailFirst = int.MaxValue, Failure = () => new InvalidOperationException("rule") };
         var (provider, harness) = await StartAsync(script, Fast());
-        await using var _ = provider;
+        await using var _ = provider.StopWithinLimit();
 
         await harness.Bus.Publish(new Job { Id = Guid.NewGuid() });
 
@@ -147,7 +147,7 @@ public class ConsumerResilienceTests
     {
         var script = new Script { FailFirst = 1, Failure = () => new ApplicationException("unique key conflict with the twin message") };
         var (provider, harness) = await StartAsync(script, Fast());
-        await using var _ = provider;
+        await using var _ = provider.StopWithinLimit();
 
         await harness.Bus.Publish(new Job { Id = Guid.NewGuid() });
         await script.Succeeded.Task.WaitAsync(TimeSpan.FromSeconds(20));
@@ -160,7 +160,7 @@ public class ConsumerResilienceTests
     {
         var script = new Script { FailFirst = int.MaxValue, Failure = DatabaseDown };
         var (provider, harness) = await StartAsync(script, Fast(transientLimit: 0));
-        await using var _ = provider;
+        await using var _ = provider.StopWithinLimit();
 
         await harness.Bus.Publish(new Job { Id = Guid.NewGuid() });
 
