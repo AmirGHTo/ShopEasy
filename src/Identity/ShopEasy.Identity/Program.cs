@@ -31,15 +31,7 @@ try
     options.UseNpgsql(
         PostgresConnection.FromConfiguration(builder.Configuration)));
 
-    builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
-        {
-            options.Password.RequireDigit           = true;
-            options.Password.RequireLowercase        = true;
-            options.Password.RequireUppercase        = true;
-            options.Password.RequireNonAlphanumeric  = false;
-            options.Password.RequiredLength          = 8;
-            options.User.RequireUniqueEmail          = true;
-        })
+    builder.Services.AddIdentity<ApplicationUser, IdentityRole>(IdentityPolicy.Configure)
         .AddEntityFrameworkStores<ApplicationDbContext>()
         .AddDefaultTokenProviders();
 
@@ -152,11 +144,14 @@ try
             // Demo users are opt-in (Seed:Enabled=true) — never seed known credentials in production
             if (app.Configuration.GetValue<bool>("Seed:Enabled"))
                 await DatabaseSeeder.SeedUsersAsync(scope.ServiceProvider);
+
+            // The roles, and the first administrator when one is configured and none exists yet
+            await AdminBootstrap.RunAsync(scope.ServiceProvider);
             logger.LogInformation("Database migrations applied.");
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Failed to apply migrations");
+            logger.LogError(ex, "Failed to prepare the database (migrations, roles, first administrator)");
             throw;
         }
     }

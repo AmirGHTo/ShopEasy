@@ -201,6 +201,9 @@ services:
       Seed__Enabled: "${SEED_DEMO_USERS:-false}"
       Seed__AdminPassword: ${SEED_ADMIN_PASSWORD:-}
       Seed__CustomerPassword: ${SEED_CUSTOMER_PASSWORD:-}
+      # The first administrator of a real deployment: created once, only while no admin exists
+      Bootstrap__AdminEmail: "${BOOTSTRAP_ADMIN_EMAIL:-}"
+      Bootstrap__AdminPassword: ${BOOTSTRAP_ADMIN_PASSWORD:-}
     # Signing keys, Data Protection keys and issued grants are stored in PostgreSQL (no volume).
     # Optional: encrypt the key ring with a certificate you mount (see the README, "Identity key
     # protection"): DataProtection__CertificatePath / DataProtection__CertificatePassword.
