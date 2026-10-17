@@ -156,4 +156,5 @@ public static class CancelReason
     public const string Admin = "admin";
     public const string Timeout = "timeout";
     public const string InventoryCommitFailed = "inventory_commit_failed";
+    public const string ReleaseNotConfirmed = "release_not_confirmed";
 }
