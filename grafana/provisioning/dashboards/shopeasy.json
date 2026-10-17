@@ -82,7 +82,7 @@
       },
       "targets": [
         {
-          "expr": "shopeasy_sagas_active",
+          "expr": "max(shopeasy_sagas_active)",
           "legendFormat": "Active"
         }
       ]
@@ -140,6 +140,91 @@
         {
           "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))",
           "legendFormat": "p95 {{service}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Order Outcomes (5m)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(shopeasy_order_outcomes_total[5m])) by (outcome, reason)",
+          "legendFormat": "{{outcome}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Orders Refused at the Door (5m)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(shopeasy_orders_rejected_total[5m])) by (reason)",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Payments (5m)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(shopeasy_payments_total[5m])) by (result)",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Confirmed Sales (last hour)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 28
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(shopeasy_orders_confirmed_amount_total[1h]))",
+          "legendFormat": "Amount"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Oldest Active Order (seconds)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 28
+      },
+      "targets": [
+        {
+          "expr": "max(shopeasy_saga_oldest_active_age_seconds)",
+          "legendFormat": "Age"
         }
       ]
     }
