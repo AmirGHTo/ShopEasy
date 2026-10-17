@@ -154,6 +154,7 @@ public class InventoryReservationFailedConsumer(
         await transaction.CommitAsync();
 
         OrderMetrics.RecordSagaCancelled(DateTime.UtcNow - saga.CreatedAt);
+        OrderMetrics.RecordOrderCancelled(CancelReason.StockUnavailable);
     }
 }
 
@@ -389,7 +390,10 @@ public class InventoryCommitFailedConsumer(
         await publishEndpoint.Publish(refund, context.CancellationToken);
 
         if (failedSaga)
+        {
             OrderMetrics.RecordSagaFailed();
+            OrderMetrics.RecordOrderCancelled(CancelReason.InventoryCommitFailed);
+        }
     }
 }
 
@@ -497,5 +501,6 @@ public class InventoryReleasedConsumer(
         await transaction.CommitAsync();
 
         OrderMetrics.RecordSagaCancelled(DateTime.UtcNow - saga.CreatedAt);
+        OrderMetrics.RecordOrderCancelled(FailureReasons.CancelReasonOf(saga.FailureReason));
     }
 }

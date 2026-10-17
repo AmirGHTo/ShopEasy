@@ -113,6 +113,9 @@ public static class OrderMetrics
         ConfirmedAmount.Inc((double)amount);
     }
 
+    public static void RecordOrderCancelled(string reason)
+        => OrderOutcomes.WithLabels("cancelled", reason).Inc();
+
     public static void RecordIdempotentReplay(string result)
         => IdempotentReplays.WithLabels(result).Inc();
 
@@ -142,4 +145,15 @@ public static class OrderMetrics
 
     public static void RecordSagaFailed()
         => SagaDuration.WithLabels("failed").Observe(0);
+}
+
+// The values of the "reason" label of shopeasy_order_outcomes_total for a cancelled order
+public static class CancelReason
+{
+    public const string StockUnavailable = "stock_unavailable";
+    public const string PaymentDeclined = "payment_declined";
+    public const string Customer = "customer";
+    public const string Admin = "admin";
+    public const string Timeout = "timeout";
+    public const string InventoryCommitFailed = "inventory_commit_failed";
 }

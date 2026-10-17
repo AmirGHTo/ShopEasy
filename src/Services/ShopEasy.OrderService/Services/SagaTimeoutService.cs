@@ -174,7 +174,7 @@ public class SagaTimeoutService(
                 await publishEndpoint.Publish(
                     new ReleaseInventoryCommand { OrderId = saga.OrderId }, ct);
                 saga.Status = SagaStatus.ReleasingInventory;
-                saga.FailureReason = "Timed out waiting for payment";
+                saga.FailureReason = FailureReasons.TimedOutWaitingForPayment;
                 saga.UpdatedAt = DateTime.UtcNow;
                 break;
 
