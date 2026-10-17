@@ -1,6 +1,7 @@
 ﻿using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.PaymentService.Data;
+using ShopEasy.PaymentService.Metrics;
 using ShopEasy.Shared.Contracts;
 
 namespace ShopEasy.PaymentService.Consumers;
@@ -95,6 +96,7 @@ public class ProcessPaymentConsumer(
 
         if (success)
         {
+            PaymentMetrics.RecordSucceeded(cmd.Amount);
             logger.LogInformation(
                 "Payment {PaymentId} succeeded for Order {OrderId}",
                 payment.Id, cmd.OrderId);
@@ -107,6 +109,7 @@ public class ProcessPaymentConsumer(
         }
         else
         {
+            PaymentMetrics.RecordDeclined(cmd.Amount);
             logger.LogWarning(
                 "Payment FAILED for Order {OrderId}: {Reason}",
                 cmd.OrderId, failureReason);
