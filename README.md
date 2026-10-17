@@ -1147,6 +1147,7 @@ docker rm -f shopeasy-test-pg shopeasy-test-mq
 | The same request again | One `Idempotency-Key` placed twice gives the same order with `Idempotency-Replayed: true`, a different request under that key is refused (`422`), and one order and one unit off the shelf result. |
 | An order that cannot be filled | An unknown product and a quantity above the stock are each refused (`400`) with the reason; nothing is saved and the stock is unchanged. |
 | Who may see what | A visitor sees the catalog but not orders and cannot place one; a customer is known by the account they created; another customer is told the order does not exist (`404`) and may not read its payment (`403`); monitoring endpoints refuse a customer. |
+| Order budgets | A customer who sends 10 order requests in a minute gets the eleventh refused (`429`), and another customer is not affected: both the gateway and the Order service limit per user, not per client address. |
 
 CI runs it in the **Compose stack and end-to-end test** job, right after the containers are up, with the throw-away values of `.env.example`. Compose starts the payment provider in "always succeeds" mode (`Testing__ForcePaymentSuccess`), so a failure here means a broken system, not a declined payment. To run it yourself:
 
@@ -1155,7 +1156,7 @@ docker compose up -d --build --wait postgres rabbitmq redis identity product inv
 dotnet test src/Tests/ShopEasy.EndToEndTests
 ```
 
-It expects the gateway at `http://localhost:5000` and Identity at `http://localhost:5001` (`E2E_GATEWAY_URL` and `E2E_IDENTITY_URL` change that). Each run creates two accounts (sign-up is limited to 10 per hour per address, see `RATE_LIMIT_REGISTRATION_ATTEMPTS`) and makes 7 of the 10 order requests a minute that the Order service allows, so wait a minute between two runs. The accounts and orders stay in the database; `docker compose down -v` clears them.
+It expects the gateway at `http://localhost:5000` and Identity at `http://localhost:5001` (`E2E_GATEWAY_URL` and `E2E_IDENTITY_URL` change that). Each run creates three accounts, and sign-up is limited to 10 per hour per address (`RATE_LIMIT_REGISTRATION_ATTEMPTS`), so raise that limit in `.env` if you run it more than three times an hour. The accounts and orders stay in the database; `docker compose down -v` clears them.
 
 Not covered, on purpose: a declined payment and the compensation after it (the provider is forced to succeed here; the saga tests and the PostgreSQL tests cover the compensation), and cancelling an order while the saga is still running (it depends on timing, and the saga tests cover every stage).
 

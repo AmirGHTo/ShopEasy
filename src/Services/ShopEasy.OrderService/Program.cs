@@ -462,9 +462,11 @@ try
         };
     });
 
-    app.UseRateLimiter();
     app.UseAuthentication();
     app.UseAuthorization();
+    // After authentication: the "create-order" limit is per user, and a limiter that runs before it
+    // cannot see the user and would count every customer against the gateway's one address
+    app.UseRateLimiter();
 
     // Expose /metrics endpoint for Prometheus scraping
     app.UseHttpMetrics(options =>
