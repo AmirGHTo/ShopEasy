@@ -205,9 +205,11 @@ jobs:
   # them: an image that builds can still fail to run.
   # The .NET 10 base-image incident built fine and crashed on start. This starts the real
   # containers, hardened exactly as in production (non-root, read-only file system, no
-  # capabilities), and waits for every health check.
+  # capabilities), waits for every health check, and then has a customer sign up and buy something
+  # through the gateway (the end-to-end test), which only works when every service, the broker and
+  # the databases work together.
   container-smoke-test:
-    name: Start the Compose stack
+    name: Compose stack and end-to-end test
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -239,6 +241,30 @@ jobs:
         run: |
           curl --fail --silent --show-error http://localhost:5000/health
           echo
+
+      # The system as a customer uses it: sign up, sign in through the gateway, place an order and
+      # wait for the saga to confirm it. Compose starts the payment provider in "always succeeds"
+      # mode, so a failure here is a broken system, not a declined payment.
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: End-to-end test (a customer signs up, signs in and buys)
+        run: >-
+          dotnet test src/Tests/ShopEasy.EndToEndTests
+          --configuration Release
+          --blame-hang-timeout 5m --blame-hang-dump-type none
+          --logger "trx;LogFileName=end-to-end.trx"
+          --results-directory TestResults/end-to-end
+
+      - name: Upload end-to-end results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: end-to-end-results
+          path: TestResults/end-to-end/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Container logs (on failure)
         if: failure()

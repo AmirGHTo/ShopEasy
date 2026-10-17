@@ -22,6 +22,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ShopEasy.UnitTests", "src\T
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ShopEasy.IntegrationTests", "src\Tests\ShopEasy.IntegrationTests\ShopEasy.IntegrationTests.csproj", "{83925D89-25C8-4E40-8F6F-0A9DC4336DFE}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ShopEasy.EndToEndTests", "src\Tests\ShopEasy.EndToEndTests\ShopEasy.EndToEndTests.csproj", "{EBD386AF-5966-46D4-9B15-CE41D2D7B585}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -64,6 +66,10 @@ Global
 		{83925D89-25C8-4E40-8F6F-0A9DC4336DFE}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{83925D89-25C8-4E40-8F6F-0A9DC4336DFE}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{83925D89-25C8-4E40-8F6F-0A9DC4336DFE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EBD386AF-5966-46D4-9B15-CE41D2D7B585}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EBD386AF-5966-46D4-9B15-CE41D2D7B585}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EBD386AF-5966-46D4-9B15-CE41D2D7B585}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EBD386AF-5966-46D4-9B15-CE41D2D7B585}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -71,6 +77,7 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{053AF938-4CFF-47A7-8C5C-2C34B108B198} = {FA9DDA92-6001-4C1A-AAE1-238EAD296C95}
 		{83925D89-25C8-4E40-8F6F-0A9DC4336DFE} = {FA9DDA92-6001-4C1A-AAE1-238EAD296C95}
+		{EBD386AF-5966-46D4-9B15-CE41D2D7B585} = {FA9DDA92-6001-4C1A-AAE1-238EAD296C95}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {30059EEA-5D03-43AD-AE5F-59E7640F6895}
