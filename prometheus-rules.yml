@@ -1,0 +1,49 @@
+# Alert rules for the business metrics. Firing alerts are listed at http://localhost:9090/alerts;
+# sending them anywhere (e-mail, chat, a pager) needs an Alertmanager, which is not part of this stack.
+groups:
+  - name: shopeasy-orders
+    rules:
+      - alert: OrderStuck
+        expr: max(shopeasy_saga_oldest_active_age_seconds) > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: An order has been in progress for more than 10 minutes
+          description: The oldest active order is {{ $value | humanizeDuration }} old. The saga timeout service should have settled it long before.
+
+      - alert: OrderFailed
+        expr: sum(increase(shopeasy_order_outcomes_total{outcome="failed"}[15m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: The orchestrator gave up on an order, and a person has to look at it
+
+      - alert: StockMayHaveLeaked
+        expr: sum(increase(shopeasy_order_outcomes_total{reason="release_not_confirmed"}[15m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: An order was cancelled but the release of its reserved stock was never confirmed
+
+      - alert: OutboxBacklog
+        expr: max(shopeasy_outbox_pending_messages) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 50 events are waiting in the Order outbox, so the broker is probably unreachable
+
+  - name: shopeasy-payments
+    rules:
+      - alert: PaymentsDeclinedHigh
+        expr: |
+          sum(increase(shopeasy_payments_total{result="declined"}[15m]))
+            / sum(increase(shopeasy_payments_total{result=~"succeeded|declined"}[15m])) > 0.3
+          and sum(increase(shopeasy_payments_total{result=~"succeeded|declined"}[15m])) >= 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 30% of the last payments were declined
+          description: The simulated provider declines about 10%. A rate this high points to a broken provider or a bad deployment.

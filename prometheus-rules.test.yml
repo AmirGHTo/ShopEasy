@@ -1,0 +1,77 @@
+# Run with: promtool test rules prometheus-rules.test.yml
+rule_files:
+  - prometheus-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    name: an order that stays in progress raises OrderStuck after the grace period
+    input_series:
+      - series: shopeasy_saga_oldest_active_age_seconds
+        values: "700x20"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: OrderStuck
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: OrderStuck
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: An order has been in progress for more than 10 minutes
+              description: The oldest active order is 11m 40s old. The saga timeout service should have settled it long before.
+
+  - interval: 1m
+    name: a young order raises nothing
+    input_series:
+      - series: shopeasy_saga_oldest_active_age_seconds
+        values: "100x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: OrderStuck
+        exp_alerts: []
+
+  - interval: 1m
+    name: a failed order raises OrderFailed at once
+    input_series:
+      - series: shopeasy_order_outcomes_total{outcome="failed", reason="orchestrator_error"}
+        values: "0 0 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: OrderFailed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: The orchestrator gave up on an order, and a person has to look at it
+
+  - interval: 1m
+    name: many declined payments raise PaymentsDeclinedHigh, the usual rate does not
+    input_series:
+      - series: shopeasy_payments_total{result="succeeded"}
+        values: "0+3x30"
+      - series: shopeasy_payments_total{result="declined"}
+        values: "0+2x30"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: PaymentsDeclinedHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: More than 30% of the last payments were declined
+              description: The simulated provider declines about 10%. A rate this high points to a broken provider or a bad deployment.
+
+  - interval: 1m
+    name: the usual share of declined payments raises nothing
+    input_series:
+      - series: shopeasy_payments_total{result="succeeded"}
+        values: "0+9x30"
+      - series: shopeasy_payments_total{result="declined"}
+        values: "0+1x30"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: PaymentsDeclinedHigh
+        exp_alerts: []

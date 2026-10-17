@@ -192,6 +192,14 @@ jobs:
             ghcr.io/yannh/kubeconform:v0.6.7 \
             -strict -summary -ignore-missing-schemas /rendered/k8s-rendered.yaml /secrets
 
+      # The Prometheus configuration must be valid together with the alert rules, and the rules must
+      # fire (and stay quiet) on the series in prometheus-rules.test.yml.
+      - name: Prometheus configuration and alert rules (promtool)
+        run: |
+          for check in "check config prometheus.yml" "test rules prometheus-rules.test.yml"; do
+            docker run --rm --entrypoint promtool -v "$PWD:/work:ro" -w /work prom/prometheus:v2.51.0 $check
+          done
+
       # kubeconform says the YAML is valid; this says it is safe: images pinned to a commit, no
       # root, read-only root file system, no capabilities, ingress denied by default.
       - name: Kubernetes deployment rules
