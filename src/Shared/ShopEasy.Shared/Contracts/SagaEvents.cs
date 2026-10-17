@@ -42,6 +42,15 @@ public record PaymentSucceededEvent
     public decimal Amount { get; init; }
 }
 
+// PaymentService → Saga: the payment was given back to the customer. Also sent again when a
+// refund command is repeated, which is how the saga asks for a lost event a second time.
+public record PaymentRefundedEvent
+{
+    public Guid OrderId { get; init; }
+    public Guid PaymentId { get; init; }
+    public decimal Amount { get; init; }
+}
+
 // PaymentService → Saga: payment failed
 public record PaymentFailedEvent
 {
