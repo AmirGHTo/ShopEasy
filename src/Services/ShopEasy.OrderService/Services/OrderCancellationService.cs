@@ -84,7 +84,7 @@ public class OrderCancellationService(
         if (order is null || (!isAdmin && order.UserId != requesterId))
             return (new CancelResult(CancelOutcome.NotFound), false);
 
-        var reason = order.UserId == requesterId ? "Cancelled by customer" : "Cancelled by admin";
+        var reason = order.UserId == requesterId ? FailureReasons.CancelledByCustomer : FailureReasons.CancelledByAdmin;
         var now = DateTime.UtcNow;
 
         if (order.Status == OrderStatus.Cancelled)
