@@ -2,6 +2,10 @@ global:
   scrape_interval:     15s
   evaluation_interval: 15s
 
+# Relative to this file (/etc/prometheus in the container); see "Alert rules" in the README
+rule_files:
+  - prometheus-rules.yml
+
 scrape_configs:
   - job_name: 'shopeasy-gateway'
     static_configs:
