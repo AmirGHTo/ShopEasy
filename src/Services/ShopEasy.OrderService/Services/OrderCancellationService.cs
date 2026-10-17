@@ -121,6 +121,7 @@ public class OrderCancellationService(
             await MarkCancelledAsync(order, reason, now, ct);
             await transaction.CommitAsync(ct);
 
+            OrderMetrics.RecordOrderCancelled(FailureReasons.CancelReasonOf(reason));
             logger.LogInformation(
                 "Order {OrderId} cancelled before its saga started ({Reason})", orderId, reason);
             return (new CancelResult(CancelOutcome.Cancelled), false);
@@ -156,6 +157,7 @@ public class OrderCancellationService(
                 await transaction.CommitAsync(ct);
 
                 OrderMetrics.RecordSagaCancelled(now - saga.CreatedAt);
+                OrderMetrics.RecordOrderCancelled(FailureReasons.CancelReasonOf(reason));
                 logger.LogInformation(
                     "Order {OrderId} cancelled before any stock was reserved ({Reason})", orderId, reason);
                 return (new CancelResult(CancelOutcome.Cancelled), false);

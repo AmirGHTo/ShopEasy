@@ -3,6 +3,7 @@ using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Serilog.Core;
 using ShopEasy.OrderService.Data;
+using ShopEasy.OrderService.Metrics;
 using ShopEasy.OrderService.Sagas;
 using ShopEasy.Shared.Contracts;
 using ShopEasy.Shared.Messaging;
@@ -167,7 +168,7 @@ public class SagaTimeoutService(
             case SagaStatus.Started:
             case SagaStatus.ReservingInventory:
                 await CancelOrder(saga, db,
-                    $"Timed out waiting for inventory ({saga.Status})");
+                    $"Timed out waiting for inventory ({saga.Status})", CancelReason.Timeout);
                 break;
 
             case SagaStatus.ProcessingPayment:
@@ -195,7 +196,7 @@ public class SagaTimeoutService(
                         "{Attempts} attempts. Reserved stock may be leaked — MANUAL INTERVENTION REQUIRED.",
                         saga.Id, saga.OrderId, saga.RetryCount);
                     await CancelOrder(saga, db,
-                        "Timed out during inventory release compensation");
+                        "Timed out during inventory release compensation", CancelReason.ReleaseNotConfirmed);
                 }
                 break;
 
@@ -224,7 +225,8 @@ public class SagaTimeoutService(
     private async Task CancelOrder(
         OrderSagaState saga,
         OrderDbContext db,
-        string reason)
+        string reason,
+        string metricReason)
     {
         // Update order status to Cancelled
         var order = await db.Orders.FindAsync(saga.OrderId);
@@ -251,6 +253,7 @@ public class SagaTimeoutService(
 
         await db.SaveChangesAsync();
 
+        OrderMetrics.RecordOrderCancelled(metricReason);
         _logger.LogWarning(
             "Saga {SagaId}: Order {OrderId} cancelled due to timeout. Reason: {Reason}",
             saga.Id, saga.OrderId, reason);
