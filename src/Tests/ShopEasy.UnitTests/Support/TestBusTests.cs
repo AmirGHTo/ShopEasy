@@ -23,6 +23,25 @@ public class TestBusTests
     }
 
     [Fact]
+    public async Task AnOperationThatBlocksItsThreadBeforeReturningATask_IsStillCutOff()
+    {
+        using var release = new ManualResetEventSlim();
+
+        var call = TestBus.Bounded(() => { release.Wait(TimeSpan.FromSeconds(5)); return Task.CompletedTask; }, "stop", TimeSpan.FromMilliseconds(200));
+
+        try
+        {
+            (await FinishedWithin(call, TimeSpan.FromSeconds(3))).Should().BeSameAs(call, "the limit must end the wait");
+            await call.Invoking(c => c).Should().ThrowAsync<TimeoutException>()
+                .WithMessage("The test bus did not stop within 0.2 s.");
+        }
+        finally
+        {
+            release.Set();
+        }
+    }
+
+    [Fact]
     public async Task AnOperationThatFinishesInTime_PassesThrough()
     {
         await TestBus.Bounded(Task.Delay(20), "stop", TimeSpan.FromSeconds(10));

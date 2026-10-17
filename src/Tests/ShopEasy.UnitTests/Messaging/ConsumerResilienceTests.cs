@@ -82,7 +82,7 @@ public class ConsumerResilienceTests
         var (provider, harness) = await StartAsync(script, Fast());
         await using var _ = provider.StopWithinLimit();
 
-        await harness.Bus.Publish(new Job { Id = Guid.NewGuid() });
+        await harness.PublishWithinLimitAsync(new Job { Id = Guid.NewGuid() });
         await script.Succeeded.Task.WaitAsync(TimeSpan.FromSeconds(20));
 
         script.Attempts.Should().Be(7);
@@ -96,7 +96,7 @@ public class ConsumerResilienceTests
         var (provider, harness) = await StartAsync(script, Fast());
         await using var _ = provider.StopWithinLimit();
 
-        await harness.Bus.Publish(new Job { Id = Guid.NewGuid() });
+        await harness.PublishWithinLimitAsync(new Job { Id = Guid.NewGuid() });
         await script.Succeeded.Task.WaitAsync(TimeSpan.FromSeconds(20));
 
         script.Attempts.Should().Be(6);
@@ -109,7 +109,7 @@ public class ConsumerResilienceTests
         var (provider, harness) = await StartAsync(script, Fast(transientLimit: 5));
         await using var _ = provider.StopWithinLimit();
 
-        await harness.Bus.Publish(new Job { Id = Guid.NewGuid() });
+        await harness.PublishWithinLimitAsync(new Job { Id = Guid.NewGuid() });
 
         (await FaultedAsync(harness)).Should().BeTrue("after the patient retries the message goes to the error queue");
         // 1 first attempt + 5 patient retries; the quick retries must not multiply on top of them
@@ -123,7 +123,7 @@ public class ConsumerResilienceTests
         var (provider, harness) = await StartAsync(script, Fast());
         await using var _ = provider.StopWithinLimit();
 
-        await harness.Bus.Publish(new Job { Id = Guid.NewGuid() });
+        await harness.PublishWithinLimitAsync(new Job { Id = Guid.NewGuid() });
 
         (await FaultedAsync(harness)).Should().BeTrue();
         script.Attempts.Should().Be(4, "the first attempt and three retries, not the twelve of an outage");
@@ -136,7 +136,7 @@ public class ConsumerResilienceTests
         var (provider, harness) = await StartAsync(script, Fast());
         await using var _ = provider.StopWithinLimit();
 
-        await harness.Bus.Publish(new Job { Id = Guid.NewGuid() });
+        await harness.PublishWithinLimitAsync(new Job { Id = Guid.NewGuid() });
 
         (await FaultedAsync(harness)).Should().BeTrue();
         script.Attempts.Should().Be(1);
@@ -149,7 +149,7 @@ public class ConsumerResilienceTests
         var (provider, harness) = await StartAsync(script, Fast());
         await using var _ = provider.StopWithinLimit();
 
-        await harness.Bus.Publish(new Job { Id = Guid.NewGuid() });
+        await harness.PublishWithinLimitAsync(new Job { Id = Guid.NewGuid() });
         await script.Succeeded.Task.WaitAsync(TimeSpan.FromSeconds(20));
 
         script.Attempts.Should().Be(2);
@@ -162,7 +162,7 @@ public class ConsumerResilienceTests
         var (provider, harness) = await StartAsync(script, Fast(transientLimit: 0));
         await using var _ = provider.StopWithinLimit();
 
-        await harness.Bus.Publish(new Job { Id = Guid.NewGuid() });
+        await harness.PublishWithinLimitAsync(new Job { Id = Guid.NewGuid() });
 
         (await FaultedAsync(harness)).Should().BeTrue();
         script.Attempts.Should().Be(4);
