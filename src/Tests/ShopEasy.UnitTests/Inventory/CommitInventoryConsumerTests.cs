@@ -84,6 +84,23 @@ public class CommitInventoryConsumerTests : IDisposable
     }
 
     [Fact]
+    public async Task ACommitAfterTheStockWasPutBack_Fails_InsteadOfTakingTheStockAgain()
+    {
+        var orderId = Guid.NewGuid();
+        var item = _env.AddItem(ProductA, quantity: 10, reserved: 0);
+        SeedReservation(orderId, ProductA, 3);
+        _env.AddLedger(orderId, ProductA, StockReasons.Committed(orderId), -3);
+        _env.AddLedger(orderId, ProductA, StockReasons.Restocked(orderId), 3);
+
+        var context = await Run(CreateConsumer(), orderId);
+
+        item.Quantity.Should().Be(10);
+        await context.Received(1).Publish(
+            Arg.Is<InventoryCommitFailedEvent>(e => e.OrderId == orderId), Arg.Any<CancellationToken>());
+        await context.DidNotReceive().Publish(Arg.Any<InventoryCommittedEvent>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task OtherOrdersReservationsAreLeftAlone()
     {
         var orderId = Guid.NewGuid();
