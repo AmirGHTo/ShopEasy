@@ -16,6 +16,15 @@ public static class OrderMetrics
                 LabelNames = new[] { "status" } // "accepted"
             });
 
+    private static readonly Counter OrdersRejected = Prometheus.Metrics
+        .CreateCounter(
+            "shopeasy_orders_rejected_total",
+            "Order requests refused before anything was saved, by reason",
+            new CounterConfiguration
+            {
+                LabelNames = new[] { "reason" } // see OrderRejection
+            });
+
     private static readonly Counter OrderOutcomes = Prometheus.Metrics
         .CreateCounter(
             "shopeasy_order_outcomes_total",
@@ -106,6 +115,9 @@ public static class OrderMetrics
         OrderAmount.Observe((double)amount);
     }
 
+    public static void RecordOrderRejected(string reason)
+        => OrdersRejected.WithLabels(reason).Inc();
+
     // The order was paid for and its stock taken: the sale happened
     public static void RecordOrderConfirmed(decimal amount)
     {
@@ -167,4 +179,15 @@ public static class CancelReason
 public static class FailReason
 {
     public const string OrchestratorError = "orchestrator_error";
+}
+
+// The values of the "reason" label of shopeasy_orders_rejected_total: why an order request was
+// refused before anything was saved
+public static class OrderRejection
+{
+    public const string InvalidRequest = "invalid_request";
+    public const string UnknownProduct = "unknown_product";
+    public const string CatalogUnavailable = "catalog_unavailable";
+    public const string InsufficientStock = "insufficient_stock";
+    public const string InventoryUnreachable = "inventory_unreachable";
 }

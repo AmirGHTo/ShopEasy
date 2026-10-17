@@ -64,6 +64,7 @@ public class OrderCommandsController(
         if (!IdempotencyKey.TryParse(
                 idempotencyKey, idempotencyOptions.Value.RequireKey, out var key, out var keyError))
         {
+            OrderMetrics.RecordOrderRejected(OrderRejection.InvalidRequest);
             return BadRequest(new
             {
                 message = "Order could not be placed.",
@@ -78,6 +79,7 @@ public class OrderCommandsController(
             _logger.LogWarning(
                 "Order rejected for User {UserId}: invalid request — {Errors}",
                 userId, string.Join("; ", validation.Errors));
+            OrderMetrics.RecordOrderRejected(OrderRejection.InvalidRequest);
             return BadRequest(new
             {
                 message = "Order could not be placed.",
@@ -112,6 +114,7 @@ public class OrderCommandsController(
         {
             _logger.LogError(ex,
                 "Order rejected for User {UserId}: Product service unavailable", userId);
+            OrderMetrics.RecordOrderRejected(OrderRejection.CatalogUnavailable);
             Response.Headers["Retry-After"] = "5";
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new
             {
@@ -126,6 +129,7 @@ public class OrderCommandsController(
             _logger.LogWarning(
                 "Order rejected for User {UserId}: {Errors}",
                 userId, string.Join("; ", resolution.Errors));
+            OrderMetrics.RecordOrderRejected(OrderRejection.UnknownProduct);
             return BadRequest(new
             {
                 message = "Order could not be placed.",
@@ -144,6 +148,7 @@ public class OrderCommandsController(
         // Layer 4: Everything down    → reject order
         // Layer 5: Saga reservation   → authoritative check in InventoryService (row locking planned)
         var stockErrors = new List<string>();
+        var inventoryUnreachable = false;
         var hasStaleData = false;
 
         var productIds = resolution.Lines.Select(l => l.ProductId).ToList();
@@ -159,6 +164,7 @@ public class OrderCommandsController(
                 stockErrors.Add(
                     $"Product '{item.ProductName}' unavailable — " +
                     "inventory service temporarily unreachable.");
+                inventoryUnreachable = true;
                 continue;
             }
 
@@ -177,6 +183,8 @@ public class OrderCommandsController(
             _logger.LogWarning(
                 "Order rejected for User {UserId}: {Errors}",
                 userId, string.Join("; ", stockErrors));
+            OrderMetrics.RecordOrderRejected(inventoryUnreachable
+                ? OrderRejection.InventoryUnreachable : OrderRejection.InsufficientStock);
             return BadRequest(new
             {
                 message = "Order could not be placed.",
