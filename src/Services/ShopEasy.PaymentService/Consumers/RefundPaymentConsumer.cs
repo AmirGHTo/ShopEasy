@@ -39,5 +39,13 @@ public class RefundPaymentConsumer(
         logger.LogWarning(
             "Payment {PaymentId} refunded for Order {OrderId}. Amount: {Amount}",
             payment.Id, cmd.OrderId, payment.Amount);
+
+        // Tell the saga, for a repeated command too: that is how a lost event is asked for again
+        await context.Publish(new PaymentRefundedEvent
+        {
+            OrderId = cmd.OrderId,
+            PaymentId = payment.Id,
+            Amount = payment.Amount
+        });
     }
 }

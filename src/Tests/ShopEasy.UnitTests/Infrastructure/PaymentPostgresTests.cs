@@ -22,6 +22,11 @@ public class PaymentPostgresTests
         public Task Consume(ConsumeContext<PaymentSucceededEvent> context) => Task.CompletedTask;
     }
 
+    private sealed class RefundedProbe : IConsumer<PaymentRefundedEvent>
+    {
+        public Task Consume(ConsumeContext<PaymentRefundedEvent> context) => Task.CompletedTask;
+    }
+
     private static ServiceProvider BuildHost(PostgresTestDatabase database, FaultInjector? injector = null, int transientRetryLimit = 12)
     {
         var services = new ServiceCollection();
@@ -39,6 +44,8 @@ public class PaymentPostgresTests
             x.AllowSlowRunners();
             x.AddConsumer<ProcessPaymentConsumer>();
             x.AddConsumer<SucceededProbe>();
+            x.AddConsumer<RefundPaymentConsumer>();
+            x.AddConsumer<RefundedProbe>();
             x.AddEntityFrameworkOutbox<PaymentDbContext>(o =>
             {
                 o.UsePostgres();
@@ -55,7 +62,13 @@ public class PaymentPostgresTests
                     e.UseEntityFrameworkOutbox<PaymentDbContext>(ctx);
                     e.ConfigureConsumer<ProcessPaymentConsumer>(ctx);
                 });
+                cfg.ReceiveEndpoint("payment-refund", e =>
+                {
+                    e.UseEntityFrameworkOutbox<PaymentDbContext>(ctx);
+                    e.ConfigureConsumer<RefundPaymentConsumer>(ctx);
+                });
                 cfg.ReceiveEndpoint("probe-succeeded", e => e.ConfigureConsumer<SucceededProbe>(ctx));
+                cfg.ReceiveEndpoint("probe-refunded", e => e.ConfigureConsumer<RefundedProbe>(ctx));
             });
         });
         return services.BuildServiceProvider(true);
@@ -90,6 +103,29 @@ public class PaymentPostgresTests
         payment.Status.Should().Be(PaymentStatus.Succeeded);
         payment.Amount.Should().Be(49.90m);
         (await check.ProcessedEvents.CountAsync(e => e.EventId == orderId)).Should().Be(1);
+    }
+
+    [RequiresPostgresFact]
+    public async Task ARefund_MarksThePaymentRefunded_AndDeliversTheRefundedEvent()
+    {
+        await using var database = await PostgresTestDatabase.CreateAsync("payrefund");
+        await using var provider = BuildHost(database);
+        var options = new DbContextOptionsBuilder<PaymentDbContext>().UseNpgsql(database.ConnectionString).Options;
+        await using (var setup = new PaymentDbContext(options)) await setup.Database.MigrateAsync();
+
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+        var orderId = Guid.NewGuid();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await harness.Bus.Publish(Command(orderId));
+        (await harness.Consumed.Any<PaymentSucceededEvent>(x => x.Context.Message.OrderId == orderId, timeout.Token)).Should().BeTrue();
+
+        await harness.Bus.Publish(new RefundPaymentCommand { OrderId = orderId, Reason = "cancelled" });
+
+        (await harness.Consumed.Any<PaymentRefundedEvent>(
+            x => x.Context.Message.OrderId == orderId && x.Context.Message.Amount == 49.90m, timeout.Token)).Should().BeTrue();
+        await using var check = new PaymentDbContext(options);
+        (await check.Payments.SingleAsync(p => p.OrderId == orderId)).Status.Should().Be(PaymentStatus.Refunded);
     }
 
     [RequiresPostgresFact]
