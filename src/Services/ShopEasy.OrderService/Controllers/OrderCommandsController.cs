@@ -274,7 +274,7 @@ public class OrderCommandsController(
             "Outbox entry created — Saga will orchestrate inventory + payment.",
             order.Id);
 
-        OrderMetrics.RecordOrderPlaced("confirmed", order.TotalAmount);
+        OrderMetrics.RecordOrderPlaced(order.TotalAmount);
 
         return CreatedAtAction(
             actionName: "GetById",
