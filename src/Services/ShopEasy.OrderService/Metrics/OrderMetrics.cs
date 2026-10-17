@@ -116,6 +116,10 @@ public static class OrderMetrics
     public static void RecordOrderCancelled(string reason)
         => OrderOutcomes.WithLabels("cancelled", reason).Inc();
 
+    // The system could not finish the order and a person has to look at it
+    public static void RecordOrderFailed(string reason)
+        => OrderOutcomes.WithLabels("failed", reason).Inc();
+
     public static void RecordIdempotentReplay(string result)
         => IdempotentReplays.WithLabels(result).Inc();
 
@@ -157,4 +161,10 @@ public static class CancelReason
     public const string Timeout = "timeout";
     public const string InventoryCommitFailed = "inventory_commit_failed";
     public const string ReleaseNotConfirmed = "release_not_confirmed";
+}
+
+// The values of the "reason" label of shopeasy_order_outcomes_total for an order that failed
+public static class FailReason
+{
+    public const string OrchestratorError = "orchestrator_error";
 }

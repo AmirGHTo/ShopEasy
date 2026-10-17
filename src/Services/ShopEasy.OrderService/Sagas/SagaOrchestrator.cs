@@ -1,6 +1,7 @@
 ﻿using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.OrderService.Data;
+using ShopEasy.OrderService.Metrics;
 using ShopEasy.Shared.Contracts;
 using ShopEasy.Shared.Messaging;
 using System.Text.Json;
@@ -35,7 +36,8 @@ public class SagaOrchestrator : BackgroundService
         }
     }
 
-    private async Task ProcessPendingSagas(CancellationToken ct)
+    // internal: a test runs one polling pass without the 3-second loop
+    internal async Task ProcessPendingSagas(CancellationToken ct)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider
@@ -80,6 +82,9 @@ public class SagaOrchestrator : BackgroundService
                 }
 
                 await db.SaveChangesAsync(ct);
+
+                if (saga.Status == SagaStatus.Failed)
+                    OrderMetrics.RecordOrderFailed(FailReason.OrchestratorError);
             }
         }
     }
