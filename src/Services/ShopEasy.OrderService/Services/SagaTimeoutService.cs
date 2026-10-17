@@ -47,18 +47,31 @@ public class SagaTimeoutService(
     {
         var timeoutThreshold = DateTime.UtcNow - _sagaTimeout;
 
-        var timedOutSagas = await db.SagaStates
-            .Where(s =>
-                s.Status != SagaStatus.Completed &&
-                s.Status != SagaStatus.Cancelled &&
-                s.Status != SagaStatus.Failed &&
-                s.UpdatedAt < timeoutThreshold)
+        await PublishInFlightGauges(db, ct);
+
+        var timedOutSagas = await InFlight(db)
+            .Where(s => s.UpdatedAt < timeoutThreshold)
             .ToListAsync(ct);
 
         if (!timedOutSagas.Any()) return;
 
         foreach (var saga in timedOutSagas)
             await HandleTimedOutSaga(saga, db, publishEndpoint, sagaLocking, ct);
+    }
+
+    // Sagas that have neither finished nor given up
+    private static IQueryable<OrderSagaState> InFlight(OrderDbContext db) => db.SagaStates.Where(s =>
+        s.Status != SagaStatus.Completed &&
+        s.Status != SagaStatus.Cancelled &&
+        s.Status != SagaStatus.Failed);
+
+    // Read from the database on every cycle, so each instance reports the same value and a restart
+    // loses nothing; the age of the oldest one is what rises when an order is stuck
+    private static async Task PublishInFlightGauges(OrderDbContext db, CancellationToken ct)
+    {
+        var count = await InFlight(db).CountAsync(ct);
+        var oldest = count == 0 ? null : (DateTime?)await InFlight(db).MinAsync(s => s.CreatedAt, ct);
+        OrderMetrics.SetSagasInFlight(count, oldest is null ? 0 : (DateTime.UtcNow - oldest.Value).TotalSeconds);
     }
 
     private async Task CheckForTimedOutSagas(CancellationToken ct)

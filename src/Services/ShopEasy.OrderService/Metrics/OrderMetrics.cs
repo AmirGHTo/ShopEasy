@@ -87,6 +87,11 @@ public static class OrderMetrics
             "shopeasy_sagas_active",
             "Current number of active (non-completed) sagas");
 
+    private static readonly Gauge OldestActiveSagaAge = Prometheus.Metrics
+        .CreateGauge(
+            "shopeasy_saga_oldest_active_age_seconds",
+            "Age of the oldest saga that is still active (0 when there is none): rises when an order is stuck");
+
     // ── Histograms (distribution of values) ───────────────────────────────────
     private static readonly Histogram SagaDuration = Prometheus.Metrics
         .CreateHistogram(
@@ -149,6 +154,12 @@ public static class OrderMetrics
 
     public static void SetOutboxPending(int count)
         => OutboxPendingMessages.Set(count);
+
+    public static void SetSagasInFlight(int count, double oldestAgeSeconds)
+    {
+        ActiveSagas.Set(count);
+        OldestActiveSagaAge.Set(oldestAgeSeconds);
+    }
 
     public static void SetActiveSagas(int count)
         => ActiveSagas.Set(count);
