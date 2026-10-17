@@ -48,7 +48,7 @@
       },
       "targets": [
         {
-          "expr": "sum(shopeasy_orders_placed_total{status=\"confirmed\"})",
+          "expr": "sum(shopeasy_orders_placed_total{status=\"accepted\"})",
           "legendFormat": "Confirmed"
         }
       ]

@@ -305,6 +305,7 @@ public class InventoryCommittedConsumer(
         await transaction.CommitAsync();
 
         OrderMetrics.RecordSagaCompleted(DateTime.UtcNow - saga.CreatedAt);
+        OrderMetrics.RecordOrderConfirmed(saga.TotalAmount);
 
         logger.LogInformation(
             "Saga {SagaId}: Order {OrderId} completed successfully ✅",

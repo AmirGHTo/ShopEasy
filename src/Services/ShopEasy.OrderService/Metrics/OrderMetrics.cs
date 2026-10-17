@@ -10,11 +10,25 @@ public static class OrderMetrics
     private static readonly Counter OrdersPlaced = Prometheus.Metrics
         .CreateCounter(
             "shopeasy_orders_placed_total",
-            "Total number of orders placed",
+            "Orders accepted at the door (saved as Pending). What becomes of them is in shopeasy_order_outcomes_total",
             new CounterConfiguration
             {
-                LabelNames = new[] { "status" } // "confirmed", "rejected"
+                LabelNames = new[] { "status" } // "accepted"
             });
+
+    private static readonly Counter OrderOutcomes = Prometheus.Metrics
+        .CreateCounter(
+            "shopeasy_order_outcomes_total",
+            "How accepted orders ended, by outcome and reason",
+            new CounterConfiguration
+            {
+                LabelNames = new[] { "outcome", "reason" } // "confirmed" / "completed"
+            });
+
+    private static readonly Counter ConfirmedAmount = Prometheus.Metrics
+        .CreateCounter(
+            "shopeasy_orders_confirmed_amount_total",
+            "Sum of the total amounts of confirmed orders, in the shop's currency");
 
     private static readonly Counter IdempotentReplays = Prometheus.Metrics
         .CreateCounter(
@@ -86,11 +100,17 @@ public static class OrderMetrics
 
     // ── Public methods ────────────────────────────────────────────────────────
 
-    public static void RecordOrderPlaced(string status, decimal amount)
+    public static void RecordOrderPlaced(decimal amount)
     {
-        OrdersPlaced.WithLabels(status).Inc();
-        if (status == "confirmed")
-            OrderAmount.Observe((double)amount);
+        OrdersPlaced.WithLabels("accepted").Inc();
+        OrderAmount.Observe((double)amount);
+    }
+
+    // The order was paid for and its stock taken: the sale happened
+    public static void RecordOrderConfirmed(decimal amount)
+    {
+        OrderOutcomes.WithLabels("confirmed", "completed").Inc();
+        ConfirmedAmount.Inc((double)amount);
     }
 
     public static void RecordIdempotentReplay(string result)
