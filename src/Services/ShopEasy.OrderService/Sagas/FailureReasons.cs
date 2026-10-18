@@ -10,6 +10,9 @@ public static class FailureReasons
     public const string CancelledByAdmin = "Cancelled by admin";
     public const string TimedOutWaitingForPayment = "Timed out waiting for payment";
 
+    // What the customer sees when the orchestrator gave up (the technical reason stays on the saga)
+    public const string OrderCouldNotBeProcessed = "The order could not be processed";
+
     // Somebody asked for the order to be cancelled (as opposed to the system giving up on it)
     public static bool IsCancelRequest(string? reason) => reason is CancelledByCustomer or CancelledByAdmin;
 
