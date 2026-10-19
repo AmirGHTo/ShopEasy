@@ -58,6 +58,12 @@ data:
   # order requests without the header; RetentionHours is how long a key is remembered.
   Idempotency__RequireKey: "false"
   Idempotency__RetentionHours: "24"
+  # Order saga: when the first command of an order cannot be sent (message broker down), Order retries
+  # after a growing pause (first, doubling, up to the maximum) and cancels the order after MaxAttempts
+  # failures. The longest pause must stay below the saga timeout of 120 s.
+  SagaOrchestrator__MaxAttempts: "8"
+  SagaOrchestrator__FirstRetryPauseSeconds: "3"
+  SagaOrchestrator__MaxRetryPauseSeconds: "60"
   # Calls between services (README, pattern 26). Order uses Resilience__Inventory__* and the retry
   # budget; the gateway uses Resilience__Gateway__* and the retry budget.
   Resilience__Inventory__TimeoutSeconds: "3"
