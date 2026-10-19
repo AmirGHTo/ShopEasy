@@ -34,6 +34,15 @@ groups:
         annotations:
           summary: More than 50 events are waiting in the Order outbox, so the broker is probably unreachable
 
+      - alert: PollingLoopStalled
+        expr: time() - shopeasy_background_loop_last_success_timestamp_seconds > 120
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: A polling loop of the Order service has completed no pass for 2 minutes
+          description: The {{ $labels.loop }} loop last completed a pass {{ $value | humanizeDuration }} ago. It fails (see the Order service log) or hangs.
+
   - name: shopeasy-payments
     rules:
       - alert: PaymentsDeclinedHigh
