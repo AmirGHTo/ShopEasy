@@ -2,6 +2,7 @@
 using global::ShopEasy.Shared.Contracts;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using ShopEasy.OrderService.Metrics;
 using ShopEasy.Shared.Messaging;
 
@@ -18,8 +19,10 @@ namespace ShopEasy.OrderService.Services;
 public class OutboxDeliveryService(
     IServiceScopeFactory scopeFactory,
     IBrokerReadiness brokerReadiness,
-    ILogger<OutboxDeliveryService> logger) : BackgroundService
+    ILogger<OutboxDeliveryService> logger,
+    IOptions<BackgroundLoopOptions>? loops = null) : BackgroundService
 {
+    private readonly GuardedPass _guard = new(logger, "Outbox delivery service", loops);
     private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
     private readonly IBrokerReadiness _brokerReadiness = brokerReadiness;
     private readonly ILogger<OutboxDeliveryService> _logger = logger;
@@ -35,8 +38,7 @@ public class OutboxDeliveryService(
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            await GuardedPass.RunAsync(
-                () => DeliverPendingMessages(stoppingToken), _logger, "Outbox delivery service", stoppingToken);
+            await _guard.RunAsync(DeliverPendingMessages, stoppingToken);
             await Task.Delay(_interval, stoppingToken);
         }
     }

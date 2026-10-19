@@ -353,6 +353,8 @@ services:
       SagaOrchestrator__MaxAttempts: "${ORDER_SAGA_MAX_ATTEMPTS:-8}"
       SagaOrchestrator__FirstRetryPauseSeconds: "${ORDER_SAGA_FIRST_RETRY_PAUSE_SECONDS:-3}"
       SagaOrchestrator__MaxRetryPauseSeconds: "${ORDER_SAGA_MAX_RETRY_PAUSE_SECONDS:-60}"
+      # A polling pass (orchestrator, timeout service, outbox delivery, dead-letter monitor) that hangs is cancelled after this
+      BackgroundLoops__PassTimeoutSeconds: "${ORDER_LOOP_PASS_TIMEOUT_SECONDS:-120}"
       ASPNETCORE_URLS: http://+:8080
       Services__InventoryGrpcService: "http://inventory:8090"
       Services__ProductService:       "http://product:8080"

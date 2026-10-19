@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 using ShopEasy.OrderService.Sagas;
 using ShopEasy.OrderService.Services;
@@ -84,6 +85,55 @@ public class BackgroundLoopGuardTests
         loop.IsFaulted.Should().BeFalse();
     }
 
+    private static GuardedPass Guard(ListLogger<SagaOrchestrator> log, int passTimeoutSeconds = 120) =>
+        new(log, "Saga orchestrator", Options.Create(new BackgroundLoopOptions { PassTimeoutSeconds = passTimeoutSeconds }));
+
+    private static Task Fail(GuardedPass guard) =>
+        guard.RunAsync(_ => throw new InvalidOperationException("database is restarting"), CancellationToken.None);
+
+    [Fact]
+    public async Task An_outage_is_logged_as_a_few_lines_not_one_per_pass()
+    {
+        var log = new ListLogger<SagaOrchestrator>();
+        var guard = Guard(log);
+
+        for (var i = 0; i < 9; i++) await Fail(guard);
+
+        // the first failure, then each time the number of failed passes in a row doubles: 2, 4, 8
+        log.Messages(LogLevel.Error).Should().ContainSingle().Which.Should().Contain("Saga orchestrator pass failed");
+        log.Messages(LogLevel.Warning).Should().HaveCount(3)
+            .And.Contain(m => m.Contains("2 passes in a row") && m.Contains("database is restarting"))
+            .And.Contain(m => m.Contains("8 passes in a row"));
+    }
+
+    [Fact]
+    public async Task A_pass_that_succeeds_ends_the_outage_and_the_next_failure_is_reported_afresh()
+    {
+        var log = new ListLogger<SagaOrchestrator>();
+        var guard = Guard(log);
+
+        await Fail(guard);
+        await Fail(guard);
+        await guard.RunAsync(_ => Task.CompletedTask, CancellationToken.None);
+        await Fail(guard);
+
+        log.Messages(LogLevel.Information).Should().ContainSingle().Which.Should().Contain("recovered after 2 failed pass");
+        log.Messages(LogLevel.Error).Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task A_pass_that_hangs_is_cancelled_and_counts_as_a_failure()
+    {
+        var log = new ListLogger<SagaOrchestrator>();
+        var guard = Guard(log, passTimeoutSeconds: 1);
+
+        // a pass that waits for ever, like a connection that never answers
+        await guard.RunAsync(token => Task.Delay(Timeout.Infinite, token), CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        log.Messages(LogLevel.Error).Should().ContainSingle().Which.Should().Contain("pass failed");
+    }
+
     [Fact]
     public async Task Shutdown_is_not_reported_as_a_failure()
     {
@@ -91,8 +141,7 @@ public class BackgroundLoopGuardTests
         var log = new ListLogger<SagaOrchestrator>();
         stopping.Cancel();
 
-        var act = () => GuardedPass.RunAsync(
-            () => Task.FromCanceled(stopping.Token), log, "Saga orchestrator", stopping.Token);
+        var act = () => Guard(log).RunAsync(Task.FromCanceled, stopping.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
         log.Messages(LogLevel.Error).Should().BeEmpty();
