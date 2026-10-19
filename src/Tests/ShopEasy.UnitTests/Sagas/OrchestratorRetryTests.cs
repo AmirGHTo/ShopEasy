@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.ReadModels;
@@ -13,21 +14,26 @@ using Xunit;
 
 namespace ShopEasy.UnitTests.Sagas;
 
-// When the orchestrator gives up on a saga (its first command could not be sent three times) the
-// order must not stay Pending: the timeout service skips Failed sagas, so nothing else would end it.
-public class OrchestratorGiveUpTests : IDisposable
+// When the orchestrator cannot send a saga's first command it tries again after a growing pause, and
+// only after MaxAttempts failures gives up: the saga is Failed and the order cancelled, because the
+// timeout service skips Failed sagas and nothing else would end it.
+public class OrchestratorRetryTests : IDisposable
 {
     private readonly OrderDbContext _db = new(new DbContextOptionsBuilder<OrderDbContext>()
         .UseInMemoryDatabase(Guid.NewGuid().ToString())
         .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning)).Options);
+    private readonly IPublishEndpoint _bus = Substitute.For<IPublishEndpoint>();
 
     public void Dispose() => _db.Dispose();
 
-    // one polling pass over an order whose saga cannot publish its first command
-    private async Task<Guid> PollWithBrokenBus(int retriesSoFar, OrderStatus orderStatus = OrderStatus.Pending)
+    // one polling pass over an order whose saga cannot publish its first command; its last attempt
+    // was `lastAttemptAgo` ago (long ago unless the test is about the pause)
+    private async Task<Guid> PollWithBrokenBus(
+        int retriesSoFar, OrderStatus orderStatus = OrderStatus.Pending, int maxAttempts = 3, TimeSpan? lastAttemptAgo = null)
     {
         var orderId = Guid.NewGuid();
         var now = DateTime.UtcNow;
+        var lastAttempt = now - (lastAttemptAgo ?? TimeSpan.FromHours(1));
         _db.Orders.Add(new Order
         {
             Id = orderId, UserId = "u", UserEmail = "u@test.com", Status = orderStatus,
@@ -42,17 +48,18 @@ public class OrchestratorGiveUpTests : IDisposable
         _db.SagaStates.Add(new OrderSagaState
         {
             Id = Guid.NewGuid(), OrderId = orderId, Status = SagaStatus.Started, UserId = "u", UserEmail = "u@test.com",
-            TotalAmount = 20m, ItemsJson = "[]", RetryCount = retriesSoFar, CreatedAt = now, UpdatedAt = now
+            TotalAmount = 20m, ItemsJson = "[]", RetryCount = retriesSoFar, CreatedAt = now, UpdatedAt = lastAttempt
         });
         await _db.SaveChangesAsync();
 
-        var bus = Substitute.For<IPublishEndpoint>();
-        bus.Publish(Arg.Any<ReserveInventoryCommand>(), Arg.Any<CancellationToken>())
+        _bus.Publish(Arg.Any<ReserveInventoryCommand>(), Arg.Any<CancellationToken>())
             .Returns<Task>(_ => throw new InvalidOperationException("broker is down"));
         var services = new ServiceCollection()
-            .AddSingleton(_db).AddSingleton(bus).AddSingleton<ISagaLocking>(new InMemorySagaLocking()).BuildServiceProvider();
+            .AddSingleton(_db).AddSingleton(_bus).AddSingleton<ISagaLocking>(new InMemorySagaLocking()).BuildServiceProvider();
 
-        await new SagaOrchestrator(services.GetRequiredService<IServiceScopeFactory>(), NullLogger<SagaOrchestrator>.Instance)
+        await new SagaOrchestrator(
+                services.GetRequiredService<IServiceScopeFactory>(), NullLogger<SagaOrchestrator>.Instance,
+                Options.Create(new SagaOrchestratorOptions { MaxAttempts = maxAttempts }))
             .ProcessPendingSagas(CancellationToken.None);
 
         return orderId;
@@ -87,5 +94,42 @@ public class OrchestratorGiveUpTests : IDisposable
         var orderId = await PollWithBrokenBus(retriesSoFar: 2, OrderStatus.Confirmed);
 
         (await _db.Orders.SingleAsync(o => o.Id == orderId)).Status.Should().Be(OrderStatus.Confirmed);
+    }
+
+    [Fact]
+    public async Task ASagaThatHasFailedThreeTimes_IsNotGivenUpOnWhileMoreAttemptsAreAllowed()
+    {
+        var orderId = await PollWithBrokenBus(retriesSoFar: 2, maxAttempts: 8);
+
+        var saga = await _db.SagaStates.SingleAsync(s => s.OrderId == orderId);
+        saga.Status.Should().Be(SagaStatus.Started);
+        saga.RetryCount.Should().Be(3);
+        (await _db.Orders.SingleAsync(o => o.Id == orderId)).Status.Should().Be(OrderStatus.Pending);
+    }
+
+    [Fact]
+    public async Task ASagaStillInItsPause_IsNotTried()
+    {
+        var orderId = await PollWithBrokenBus(retriesSoFar: 1, lastAttemptAgo: TimeSpan.FromSeconds(1));
+
+        await _bus.DidNotReceive().Publish(Arg.Any<ReserveInventoryCommand>(), Arg.Any<CancellationToken>());
+        (await _db.SagaStates.SingleAsync(s => s.OrderId == orderId)).RetryCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ASagaWhosePauseIsOver_IsTriedAgain()
+    {
+        await PollWithBrokenBus(retriesSoFar: 1, lastAttemptAgo: TimeSpan.FromMinutes(1));
+
+        await _bus.Received(1).Publish(Arg.Any<ReserveInventoryCommand>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void ThePausesGrow_AndStopAtTheMaximum()
+    {
+        var options = new SagaOrchestratorOptions();
+
+        Enumerable.Range(1, 7).Select(n => options.PauseAfter(n).TotalSeconds)
+            .Should().Equal(3, 6, 12, 24, 48, 60, 60);
     }
 }

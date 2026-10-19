@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.Sagas;
@@ -32,7 +33,7 @@ public class FailedOrderMetricsTests : IDisposable
         _db.SagaStates.Add(new OrderSagaState
         {
             Id = Guid.NewGuid(), OrderId = orderId, Status = SagaStatus.Started, UserId = "u", UserEmail = "u@test.com",
-            TotalAmount = 20m, ItemsJson = "[]", RetryCount = retriesSoFar, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+            TotalAmount = 20m, ItemsJson = "[]", RetryCount = retriesSoFar, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow.AddHours(-1)
         });
         await _db.SaveChangesAsync();
         var bus = Substitute.For<IPublishEndpoint>();
@@ -41,7 +42,8 @@ public class FailedOrderMetricsTests : IDisposable
         var services = new ServiceCollection()
             .AddSingleton(_db).AddSingleton(bus).AddSingleton<ISagaLocking>(new InMemorySagaLocking()).BuildServiceProvider();
 
-        await new SagaOrchestrator(services.GetRequiredService<IServiceScopeFactory>(), NullLogger<SagaOrchestrator>.Instance)
+        await new SagaOrchestrator(services.GetRequiredService<IServiceScopeFactory>(), NullLogger<SagaOrchestrator>.Instance,
+                Options.Create(new SagaOrchestratorOptions { MaxAttempts = 3 }))
             .ProcessPendingSagas(CancellationToken.None);
 
         return await _db.SagaStates.SingleAsync(s => s.OrderId == orderId);

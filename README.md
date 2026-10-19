@@ -346,7 +346,7 @@ Each handler only acts when the saga is in the state its event is valid for. A d
 | Failure point | Inventory | Payment | Recovery action |
 |---|---|---|---|
 | Stock check fails | not reserved | not charged | Cancel order |
-| The orchestrator cannot send the first command (three attempts) | not reserved | not charged | Saga `Failed`, order **Cancelled** ("The order could not be processed"); the technical reason stays on the saga |
+| The orchestrator cannot send the first command (the broker is down) | not reserved | not charged | Retried after a growing pause (3 s up to 60 s, 8 attempts, about 3.5 minutes; `SagaOrchestrator` settings); then saga `Failed`, order **Cancelled** ("The order could not be processed"), the technical reason stays on the saga |
 | Payment declined | reserved | not charged | Release inventory → Cancel |
 | Timeout waiting for payment | reserved | not charged | Release inventory → Cancel |
 | Late payment after cancel | released | charged | **Refund** → stay Cancelled |

@@ -20,7 +20,8 @@ public class SagaTimeoutService(
     private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
     private readonly ILogger<SagaTimeoutService> _logger = logger;
     private readonly TimeSpan _checkInterval = TimeSpan.FromSeconds(30);
-    private readonly TimeSpan _sagaTimeout = TimeSpan.FromMinutes(2);
+    // How long a saga may go without progress before the timeout service steps in
+    public static readonly TimeSpan SagaTimeout = TimeSpan.FromMinutes(2);
     private const int MaxReleaseAttempts = 3;
     private const int PaidCancellationAttemptsBeforeAlarm = 5;
 
@@ -30,7 +31,7 @@ public class SagaTimeoutService(
             "Saga timeout service started. " +
             "Checking every {Interval}s, timeout after {Timeout}s",
             _checkInterval.TotalSeconds,
-            _sagaTimeout.TotalSeconds);
+            SagaTimeout.TotalSeconds);
 
         while (!ct.IsCancellationRequested)
         {
@@ -46,7 +47,7 @@ public class SagaTimeoutService(
         ISagaLocking sagaLocking,
         CancellationToken ct)
     {
-        var timeoutThreshold = DateTime.UtcNow - _sagaTimeout;
+        var timeoutThreshold = DateTime.UtcNow - SagaTimeout;
 
         await PublishInFlightGauges(db, ct);
 
@@ -85,7 +86,7 @@ public class SagaTimeoutService(
         var sagaLocking = scope.ServiceProvider
             .GetRequiredService<ISagaLocking>();
 
-        var timeoutThreshold = DateTime.UtcNow - _sagaTimeout;
+        var timeoutThreshold = DateTime.UtcNow - SagaTimeout;
 
         // Find sagas stuck in non-terminal states past the timeout
         var timedOutSagas = await db.SagaStates
@@ -131,7 +132,7 @@ public class SagaTimeoutService(
             }
 
             // The saga made progress between our scan and acquiring the lock — not timed out
-            if (lockedSaga.UpdatedAt >= DateTime.UtcNow - _sagaTimeout)
+            if (lockedSaga.UpdatedAt >= DateTime.UtcNow - SagaTimeout)
             {
                 logger.LogDebug(
                     "Saga {SagaId} progressed while waiting for the lock — no longer timed out",
