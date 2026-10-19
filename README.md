@@ -7,7 +7,7 @@
 Reliable order processing across independently deployable services: a saga with compensation,
 transactional messaging and an idempotent API, designed to stay correct when parts of the system fail.
 
-[![CI/CD](https://github.com/NullButCute/ShopEasy/actions/workflows/ci.yml/badge.svg)](https://github.com/NullButCute/ShopEasy/actions/workflows/ci.yml)
+[![CI/CD](https://github.com/AmirGHTo/ShopEasy/actions/workflows/ci.yml/badge.svg)](https://github.com/AmirGHTo/ShopEasy/actions/workflows/ci.yml)
 ![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)
 ![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
 ![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.13-FF6600?logo=rabbitmq&logoColor=white)
