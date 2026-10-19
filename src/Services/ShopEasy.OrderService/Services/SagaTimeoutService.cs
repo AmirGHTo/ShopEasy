@@ -35,7 +35,7 @@ public class SagaTimeoutService(
 
         while (!ct.IsCancellationRequested)
         {
-            await CheckForTimedOutSagas(ct);
+            await GuardedPass.RunAsync(() => CheckForTimedOutSagas(ct), _logger, "Saga timeout service", ct);
             await Task.Delay(_checkInterval, ct);
         }
     }
