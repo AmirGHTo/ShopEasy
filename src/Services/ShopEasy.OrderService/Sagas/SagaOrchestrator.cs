@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.Metrics;
+using ShopEasy.OrderService.Services;
 using ShopEasy.Shared.Contracts;
 using ShopEasy.Shared.Messaging;
 using System.Text.Json;
@@ -35,7 +36,7 @@ public class SagaOrchestrator : BackgroundService
 
         while (!ct.IsCancellationRequested)
         {
-            await ProcessPendingSagas(ct);
+            await GuardedPass.RunAsync(() => ProcessPendingSagas(ct), _logger, "Saga orchestrator", ct);
             await Task.Delay(_pollInterval, ct);
         }
     }
