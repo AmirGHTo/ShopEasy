@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using ShopEasy.OrderService.Data;
+using ShopEasy.OrderService.Sagas;
 using ShopEasy.OrderService.Services;
 using ShopEasy.UnitTests.Sagas;
 using ShopEasy.UnitTests.Support;
@@ -18,8 +19,11 @@ namespace ShopEasy.UnitTests.Observability;
 [Collection(MetricsCollection.Name)]
 public class StuckOrderGaugeTests : IDisposable
 {
-    private readonly OrderDbContext _db = new(new DbContextOptionsBuilder<OrderDbContext>()
-        .UseInMemoryDatabase(Guid.NewGuid().ToString())
+    private readonly string _databaseName = Guid.NewGuid().ToString();
+    private readonly OrderDbContext _db;
+
+    public StuckOrderGaugeTests() => _db = new(new DbContextOptionsBuilder<OrderDbContext>()
+        .UseInMemoryDatabase(_databaseName)
         .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning)).Options);
 
     public void Dispose() => _db.Dispose();
@@ -52,6 +56,29 @@ public class StuckOrderGaugeTests : IDisposable
 
         active.Should().Be(2);
         oldestAge.Should().BeApproximately(600, 5);
+    }
+
+    [Fact]
+    public async Task TheRunningService_PublishesTheGaugesToo()
+    {
+        Saga(SagaStatus.Started, createdMinutesAgo: 1);
+        Saga(SagaStatus.ProcessingPayment, createdMinutesAgo: 2);
+        Saga(SagaStatus.Completing, createdMinutesAgo: 7);
+        await _db.SaveChangesAsync();
+
+        // the pass the service makes on its timer: it gets its database through a scope, like in production
+        var services = new ServiceCollection();
+        services.AddDbContext<OrderDbContext>(o => o
+            .UseInMemoryDatabase(_databaseName)
+            .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning)));
+        services.AddScoped(_ => Substitute.For<IPublishEndpoint>());
+        services.AddScoped<ISagaLocking, InMemorySagaLocking>();
+        await using var provider = services.BuildServiceProvider();
+        await new SagaTimeoutService(provider.GetRequiredService<IServiceScopeFactory>(), NullLogger<SagaTimeoutService>.Instance)
+            .CheckForTimedOutSagasPublic(CancellationToken.None);
+
+        (await MetricValues.ReadAsync("shopeasy_sagas_active")).Should().Be(3);
+        (await MetricValues.ReadAsync("shopeasy_saga_oldest_active_age_seconds")).Should().BeApproximately(420, 5);
     }
 
     [Fact]

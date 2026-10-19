@@ -43,7 +43,8 @@ public class SagaTimeoutService(
         }
     }
 
-    // Internal for testing — allows direct invocation without DI scope
+    // One pass. The running service (through CheckForTimedOutSagas) and the tests both call this, so a
+    // test exercises the code that runs.
     public async Task CheckForTimedOutSagasPublic(
         OrderDbContext db,
         IPublishEndpoint publishEndpoint,
@@ -59,6 +60,9 @@ public class SagaTimeoutService(
             .ToListAsync(ct);
 
         if (!timedOutSagas.Any()) return;
+
+        _logger.LogWarning(
+            "Found {Count} timed out saga(s)", timedOutSagas.Count);
 
         foreach (var saga in timedOutSagas)
             await HandleTimedOutSaga(saga, db, publishEndpoint, sagaLocking, ct);
@@ -82,33 +86,11 @@ public class SagaTimeoutService(
     private async Task CheckForTimedOutSagas(CancellationToken ct)
     {
         using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider
-            .GetRequiredService<OrderDbContext>();
-        var publishEndpoint = scope.ServiceProvider
-            .GetRequiredService<IPublishEndpoint>();
-        var sagaLocking = scope.ServiceProvider
-            .GetRequiredService<ISagaLocking>();
-
-        var timeoutThreshold = DateTime.UtcNow - SagaTimeout;
-
-        // Find sagas stuck in non-terminal states past the timeout
-        var timedOutSagas = await db.SagaStates
-            .Where(s =>
-                s.Status != SagaStatus.Completed &&
-                s.Status != SagaStatus.Cancelled &&
-                s.Status != SagaStatus.Failed &&
-                s.UpdatedAt < timeoutThreshold)
-            .ToListAsync(ct);
-
-        if (!timedOutSagas.Any()) return;
-
-        _logger.LogWarning(
-            "Found {Count} timed out saga(s)", timedOutSagas.Count);
-
-        foreach (var saga in timedOutSagas)
-        {
-            await HandleTimedOutSaga(saga, db, publishEndpoint, sagaLocking, ct);
-        }
+        await CheckForTimedOutSagasPublic(
+            scope.ServiceProvider.GetRequiredService<OrderDbContext>(),
+            scope.ServiceProvider.GetRequiredService<IPublishEndpoint>(),
+            scope.ServiceProvider.GetRequiredService<ISagaLocking>(),
+            ct);
     }
 
     internal async Task HandleTimedOutSaga(
