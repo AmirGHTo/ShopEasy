@@ -253,6 +253,23 @@ public class SagaStateTransitionTests : IDisposable
     }
 
     [Fact]
+    public async Task Timeout_InTheFirstPassAfterAnOutage_LeavesTheSagaToTheOrchestrator_AndTheNextPassTimesItOut()
+    {
+        // idle only because the database (or the Order service) was away: the orchestrator should get to it first
+        var orderId = await Seed(SagaStatus.Started, updatedAt: LongAgo);
+
+        await TimeoutService().CheckForTimedOutSagasPublic(_db, _publish, _locking, CancellationToken.None, settled: false);
+
+        (await SagaOf(orderId)).Status.Should().Be(SagaStatus.Started);
+        (await OrderOf(orderId)).Status.Should().Be(OrderStatus.Pending);
+
+        await RunTimeoutCheck();   // the next pass: nothing has moved it, it really is stuck
+
+        (await SagaOf(orderId)).Status.Should().Be(SagaStatus.Failed);
+        (await OrderOf(orderId)).Status.Should().Be(OrderStatus.Cancelled);
+    }
+
+    [Fact]
     public async Task Timeout_WaitingForPayment_ReleasesTheStock()
     {
         var orderId = await Seed(SagaStatus.ProcessingPayment, updatedAt: LongAgo);

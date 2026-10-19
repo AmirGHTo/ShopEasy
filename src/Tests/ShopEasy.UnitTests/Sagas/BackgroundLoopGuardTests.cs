@@ -1,10 +1,14 @@
 using FluentAssertions;
+using MassTransit;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NSubstitute;
+using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.Sagas;
 using ShopEasy.OrderService.Services;
 using ShopEasy.UnitTests.Support;
@@ -132,6 +136,61 @@ public class BackgroundLoopGuardTests
             .WaitAsync(TimeSpan.FromSeconds(10));
 
         log.Messages(LogLevel.Error).Should().ContainSingle().Which.Should().Contain("pass failed");
+    }
+
+    [Fact]
+    public async Task The_loop_is_settled_after_its_first_success_and_unsettled_again_by_a_failure()
+    {
+        var guard = Guard(new ListLogger<SagaOrchestrator>());
+        guard.Settled.Should().BeFalse();   // just started
+
+        await guard.RunAsync(_ => Task.CompletedTask, CancellationToken.None);
+        guard.Settled.Should().BeTrue();
+
+        await Fail(guard);
+        guard.Settled.Should().BeFalse();
+
+        await guard.RunAsync(_ => Task.CompletedTask, CancellationToken.None);
+        guard.Settled.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task The_timeout_service_times_nothing_out_in_its_first_pass_after_starting()
+    {
+        var databaseName = Guid.NewGuid().ToString();
+        var services = new ServiceCollection();
+        services.AddDbContext<OrderDbContext>(o => o
+            .UseInMemoryDatabase(databaseName)
+            .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning)));
+        services.AddScoped(_ => Substitute.For<IPublishEndpoint>());
+        services.AddScoped<ISagaLocking, InMemorySagaLocking>();
+        await using var provider = services.BuildServiceProvider();
+
+        // a saga that has been idle for 5 minutes, as after an outage of the Order service
+        var sagaId = Guid.NewGuid();
+        using (var scope = provider.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+            db.SagaStates.Add(new OrderSagaState
+            {
+                Id = sagaId, OrderId = Guid.NewGuid(), Status = SagaStatus.Started, UserId = "u", UserEmail = "u@test.com",
+                TotalAmount = 20m, ItemsJson = "[]", CreatedAt = DateTime.UtcNow.AddMinutes(-10), UpdatedAt = DateTime.UtcNow.AddMinutes(-5)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var log = new ListLogger<SagaTimeoutService>();
+        var service = new SagaTimeoutService(provider.GetRequiredService<IServiceScopeFactory>(), log);
+        await service.StartAsync(CancellationToken.None);
+        var stopAt = DateTime.UtcNow.AddSeconds(5);
+        while (!log.Messages(LogLevel.Information).Any(m => m.Contains("waiting one interval")) && DateTime.UtcNow < stopAt)
+            await Task.Delay(10);
+        await service.StopAsync(CancellationToken.None);
+
+        log.Messages(LogLevel.Information).Should().Contain(m => m.Contains("waiting one interval"));
+        using var check = provider.CreateScope();
+        (await check.ServiceProvider.GetRequiredService<OrderDbContext>().SagaStates.SingleAsync(s => s.Id == sagaId))
+            .Status.Should().Be(SagaStatus.Started);
     }
 
     [Fact]

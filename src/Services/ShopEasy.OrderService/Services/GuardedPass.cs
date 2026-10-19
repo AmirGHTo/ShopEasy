@@ -16,6 +16,10 @@ internal sealed class GuardedPass(ILogger logger, string service, IOptions<Backg
     private int _failedInARow;
     private DateTime _failingSince;
 
+    // False when the loop has just started and after a failed pass, true once a pass has succeeded.
+    // The first pass after either is when things can look stale only because nothing could run.
+    public bool Settled { get; private set; }
+
     public async Task RunAsync(Func<CancellationToken, Task> pass, CancellationToken ct)
     {
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -32,6 +36,7 @@ internal sealed class GuardedPass(ILogger logger, string service, IOptions<Backg
             return;
         }
 
+        Settled = true;
         if (_failedInARow == 0) return;
         logger.LogInformation("{Service} recovered after {Failures} failed pass(es) over {Seconds:0} s",
             service, _failedInARow, (DateTime.UtcNow - _failingSince).TotalSeconds);
@@ -40,6 +45,7 @@ internal sealed class GuardedPass(ILogger logger, string service, IOptions<Backg
 
     private void Failed(Exception error)
     {
+        Settled = false;
         var failures = ++_failedInARow;
         if (failures == 1)
         {
