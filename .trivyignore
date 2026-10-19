@@ -1,0 +1,4 @@
+# Vulnerabilities the image scan (Trivy, in .github/workflows/ci.yml) must not fail the CI for.
+# One CVE id per line, with the reason and a date to look at it again, for example:
+#   CVE-2026-12345   # not reachable from the application, the base image has no fix; review 2027-01-15
+# Only HIGH and CRITICAL findings that have a fix can fail the scan, so this stays short.
