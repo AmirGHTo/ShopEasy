@@ -18,16 +18,19 @@ public class SagaOrchestrator : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<SagaOrchestrator> _logger;
     private readonly SagaOrchestratorOptions _options;
+    private readonly GuardedPass _guard;
     private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(3);
 
     public SagaOrchestrator(
         IServiceScopeFactory scopeFactory,
         ILogger<SagaOrchestrator> logger,
-        IOptions<SagaOrchestratorOptions>? options = null)
+        IOptions<SagaOrchestratorOptions>? options = null,
+        IOptions<BackgroundLoopOptions>? loops = null)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
         _options = options?.Value ?? new SagaOrchestratorOptions();
+        _guard = new GuardedPass(logger, "Saga orchestrator", loops);
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -36,7 +39,7 @@ public class SagaOrchestrator : BackgroundService
 
         while (!ct.IsCancellationRequested)
         {
-            await GuardedPass.RunAsync(() => ProcessPendingSagas(ct), _logger, "Saga orchestrator", ct);
+            await _guard.RunAsync(ProcessPendingSagas, ct);
             await Task.Delay(_pollInterval, ct);
         }
     }

@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Options;
+
 namespace ShopEasy.OrderService.Services;
 
 // Background service that monitors the error queues of all services.
@@ -11,16 +13,19 @@ public class DeadLetterMonitor : BackgroundService
     private readonly IConfiguration _config;
     private readonly ILogger<DeadLetterMonitor> _logger;
     private readonly TimeSpan _interval = TimeSpan.FromSeconds(30);
+    private readonly GuardedPass _guard;
     private bool _brokerWasUnavailable;
 
     public DeadLetterMonitor(
         IErrorQueueClient errorQueues,
         IConfiguration config,
-        ILogger<DeadLetterMonitor> logger)
+        ILogger<DeadLetterMonitor> logger,
+        IOptions<BackgroundLoopOptions>? loops = null)
     {
         _errorQueues = errorQueues;
         _config = config;
         _logger = logger;
+        _guard = new GuardedPass(logger, "Dead letter monitor", loops);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -30,8 +35,7 @@ public class DeadLetterMonitor : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            await GuardedPass.RunAsync(
-                () => CheckErrorQueues(stoppingToken), _logger, "Dead letter monitor", stoppingToken);
+            await _guard.RunAsync(CheckErrorQueues, stoppingToken);
             await Task.Delay(_interval, stoppingToken);
         }
     }

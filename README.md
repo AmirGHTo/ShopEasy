@@ -510,6 +510,8 @@ Database connections are bounded as well (`PostgresConnection`, all five service
 
 The consumer schedule is configurable as `Resilience:Consumers:<Setting>`: `TransientRetryLimit` (12; `0` turns the patient retries off), `TransientMinIntervalSeconds` (1), `TransientMaxIntervalSeconds` (60), `JitterRatio` (0.2), and for everything else `RetryLimit` (3), `MinIntervalSeconds` (1), `MaxIntervalSeconds` (10), `IntervalDeltaSeconds` (2). Nonsensical values stop the service at start-up rather than at the next outage.
 
+**Polling loops.** The Order service's four polling loops (saga orchestrator every 3 s, saga timeout service every 30 s, outbox delivery every 5 s, dead-letter monitor every 30 s) survive a failed pass: it is logged and the next interval tries again, so a database restart does not stop the service. A pass that hangs is cancelled after `BackgroundLoops:PassTimeoutSeconds` (120) and counts as failed. An outage is logged as a few lines, not one per pass: the first failure with its exception, a line each time the number of failed passes in a row doubles, and one line when a pass succeeds again.
+
 #### Where the Resilience Settings Live
 
 Every setting has a default in the code, and the same defaults are written out where an operator looks for them:
@@ -708,6 +710,7 @@ Services read standard ASP.NET Core configuration, so every key can be an enviro
 | `Telemetry__Endpoint` | all | OTLP endpoint (Jaeger), default `http://jaeger:4317`. |
 | `Idempotency__RequireKey`, `Idempotency__RetentionHours` | Order | `Idempotency-Key` on `POST /api/orders`: reject requests without the header (default `false`) and how long a key is remembered (default `24` hours). See [Order API](#retrying-safely-the-idempotency-key-header). |
 | `SagaOrchestrator__MaxAttempts`, `SagaOrchestrator__FirstRetryPauseSeconds`, `SagaOrchestrator__MaxRetryPauseSeconds` | Order | Retries of an order's first command when the message broker is down: attempts before the order is cancelled (default `8`), the first pause (default `3` s, doubling each time) and the longest pause (default `60` s; must stay below the 120 s saga timeout). Invalid values stop the service at start-up. |
+| `BackgroundLoops__PassTimeoutSeconds` | Order | A pass of a polling loop (saga orchestrator, saga timeout service, outbox delivery, dead-letter monitor) that has not finished after this many seconds is cancelled and counts as a failed pass, so a hanging call cannot freeze the loop. Default `120`, at least `10`. |
 | `IdentityServer__RequireHttpsMetadata` | all APIs, Gateway | Fetch Identity's discovery document and signing keys only over HTTPS. Default `false`; switch on together with an `https://` `IdentityServer__Authority` (see [pattern 2](#2-authentication--authorization-oauth2--oidc--jwt)). |
 | `Security__CookieSecurePolicy` | Gateway, Identity | `Always`, `SameAsRequest` (default) or `None`: when the session and login cookies get the Secure flag. Use `Always` behind HTTPS. A misspelt value stops the service. |
 | `ForwardedHeaders__Enabled`, `ForwardedHeaders__KnownNetworks`, `ForwardedHeaders__KnownProxies` | Gateway, Identity | Believe the `X-Forwarded-*` headers of a reverse proxy, but only from the listed CIDR networks / addresses (comma-separated). Default off; enabling without listing the proxy stops the service. |

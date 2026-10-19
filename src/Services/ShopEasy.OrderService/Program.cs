@@ -265,6 +265,11 @@ try
     });
     builder.Services.AddSingleton<DeadLetterMonitor>();
     builder.Services.AddHostedService(sp => sp.GetRequiredService<DeadLetterMonitor>());
+    builder.Services.AddOptions<BackgroundLoopOptions>()
+        .Bind(builder.Configuration.GetSection(BackgroundLoopOptions.SectionName))
+        .Validate(o => o.PassTimeoutSeconds >= 10,
+            $"{BackgroundLoopOptions.SectionName}:{nameof(BackgroundLoopOptions.PassTimeoutSeconds)} must be at least 10.")
+        .ValidateOnStart();
     builder.Services.AddOptions<SagaOrchestratorOptions>()
         .Bind(builder.Configuration.GetSection(SagaOrchestratorOptions.SectionName))
         .Validate(o => o.MaxAttempts >= 1,

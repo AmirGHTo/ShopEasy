@@ -1,6 +1,7 @@
 ﻿using Humanizer;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Serilog.Core;
 using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.Metrics;
@@ -15,8 +16,10 @@ namespace ShopEasy.OrderService.Services;
 // it applies the appropriate compensating action automatically.
 public class SagaTimeoutService(
     IServiceScopeFactory scopeFactory,
-    ILogger<SagaTimeoutService> logger) : BackgroundService
+    ILogger<SagaTimeoutService> logger,
+    IOptions<BackgroundLoopOptions>? loops = null) : BackgroundService
 {
+    private readonly GuardedPass _guard = new(logger, "Saga timeout service", loops);
     private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
     private readonly ILogger<SagaTimeoutService> _logger = logger;
     private readonly TimeSpan _checkInterval = TimeSpan.FromSeconds(30);
@@ -35,7 +38,7 @@ public class SagaTimeoutService(
 
         while (!ct.IsCancellationRequested)
         {
-            await GuardedPass.RunAsync(() => CheckForTimedOutSagas(ct), _logger, "Saga timeout service", ct);
+            await _guard.RunAsync(CheckForTimedOutSagas, ct);
             await Task.Delay(_checkInterval, ct);
         }
     }
