@@ -1096,9 +1096,6 @@ dotnet test src/Tests/ShopEasy.UnitTests
 
 # End-to-end test — needs the Compose stack running (see "End-to-end test" below)
 dotnet test src/Tests/ShopEasy.EndToEndTests
-
-# Older API tests that call single services directly (not run by CI)
-dotnet test src/Tests/ShopEasy.IntegrationTests
 ```
 
 **Unit tests — 665 test cases.** 611 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 54 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 665 (see [CI/CD](#cicd)).
@@ -1402,8 +1399,7 @@ ShopEasy/
 │           └── Data/              # DbContext, UnitOfWork (join the MassTransit outbox transaction)
 └── src/Tests/
     ├── ShopEasy.UnitTests/        # unit tests + Infrastructure/ (needs PostgreSQL / RabbitMQ, see Testing)
-    ├── ShopEasy.EndToEndTests/    # a customer signs up and buys, against the running Compose stack
-    └── ShopEasy.IntegrationTests/ # older tests of single services (not run by CI)
+    └── ShopEasy.EndToEndTests/    # a customer signs up and buys, against the running Compose stack
 ```
 
 ---
@@ -1488,7 +1484,7 @@ This project is being hardened step by step. Status:
 - Inventory endpoints process one message at a time per instance (`ConcurrentMessageLimit = 1`). Correctness no longer depends on it (row locks do), so it can be raised for throughput.
 - `InventoryDbContext` has no unique database constraint on the ledger; idempotency relies on the row locks.
 - The CI only becomes a *gate* once branch protection requires the `CI passed` check (a one-time repository setting, see CI/CD). Until then it reports but does not block.
-- The older tests in `src/Tests/ShopEasy.IntegrationTests` call single services directly and are not run by CI; the end-to-end test and the unit-test project (with real PostgreSQL and RabbitMQ) are. The end-to-end test covers the happy path and the refusals, not a declined payment or a cancel while the saga runs.
+- The end-to-end test covers the happy path, cancelling a confirmed order and the refusals, not a declined payment or a cancel while the saga runs.
 - Images are published to GHCR and the manifests pin them by commit, but nothing deploys them automatically (that needs credentials for a specific cluster), and the pinned tag in `k8s/kustomization.yaml` is bumped by hand (`k8s/set-image-tag.sh`). No container image vulnerability scan (Trivy) or code scanning (CodeQL) runs yet.
 - The Kubernetes manifests were validated (schema and the deployment rules above) and the same hardening runs in CI under Compose, but they have not been applied to a live cluster in CI. NetworkPolicies need a network plugin that enforces them, and egress of the application pods is not restricted.
 - The gateway keeps its login cookie's Data Protection keys in memory/on its own file system, so a restart signs users out and it cannot run several replicas yet (Identity already can).
