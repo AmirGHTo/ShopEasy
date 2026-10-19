@@ -1,8 +1,10 @@
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
 WORKDIR /app
 EXPOSE 8080
-# curl is only here for the container health checks; nothing else is installed
+# apt-get upgrade brings the base image up to date with Debian's security fixes (the image is rebuilt
+# only now and then). curl is only here for the container health checks; nothing else is installed.
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
