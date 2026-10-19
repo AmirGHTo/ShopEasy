@@ -30,7 +30,8 @@ public class DeadLetterMonitor : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            await CheckErrorQueues(stoppingToken);
+            await GuardedPass.RunAsync(
+                () => CheckErrorQueues(stoppingToken), _logger, "Dead letter monitor", stoppingToken);
             await Task.Delay(_interval, stoppingToken);
         }
     }

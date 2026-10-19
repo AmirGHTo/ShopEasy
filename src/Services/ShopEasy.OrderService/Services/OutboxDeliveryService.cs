@@ -35,7 +35,8 @@ public class OutboxDeliveryService(
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            await DeliverPendingMessages(stoppingToken);
+            await GuardedPass.RunAsync(
+                () => DeliverPendingMessages(stoppingToken), _logger, "Outbox delivery service", stoppingToken);
             await Task.Delay(_interval, stoppingToken);
         }
     }
