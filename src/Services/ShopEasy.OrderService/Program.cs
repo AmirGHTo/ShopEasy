@@ -265,6 +265,15 @@ try
     });
     builder.Services.AddSingleton<DeadLetterMonitor>();
     builder.Services.AddHostedService(sp => sp.GetRequiredService<DeadLetterMonitor>());
+    builder.Services.AddOptions<SagaOrchestratorOptions>()
+        .Bind(builder.Configuration.GetSection(SagaOrchestratorOptions.SectionName))
+        .Validate(o => o.MaxAttempts >= 1,
+            $"{SagaOrchestratorOptions.SectionName}:{nameof(SagaOrchestratorOptions.MaxAttempts)} must be at least 1.")
+        .Validate(o => o.FirstRetryPauseSeconds >= 1 && o.MaxRetryPauseSeconds >= o.FirstRetryPauseSeconds,
+            $"{SagaOrchestratorOptions.SectionName}: the retry pauses must be at least 1 s, and the maximum no shorter than the first.")
+        .Validate(o => o.MaxPauseIsShorterThanTheSagaTimeout,
+            $"{SagaOrchestratorOptions.SectionName}:{nameof(SagaOrchestratorOptions.MaxRetryPauseSeconds)} must be shorter than the saga timeout.")
+        .ValidateOnStart();
     builder.Services.AddHostedService<SagaOrchestrator>();
     builder.Services.AddHostedService<SagaTimeoutService>();
     builder.Services.AddOpenTelemetry()

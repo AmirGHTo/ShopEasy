@@ -1,5 +1,6 @@
 ﻿using MassTransit;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.Metrics;
 using ShopEasy.Shared.Contracts;
@@ -15,14 +16,17 @@ public class SagaOrchestrator : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<SagaOrchestrator> _logger;
+    private readonly SagaOrchestratorOptions _options;
     private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(3);
 
     public SagaOrchestrator(
         IServiceScopeFactory scopeFactory,
-        ILogger<SagaOrchestrator> logger)
+        ILogger<SagaOrchestrator> logger,
+        IOptions<SagaOrchestratorOptions>? options = null)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _options = options?.Value ?? new SagaOrchestratorOptions();
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -47,15 +51,15 @@ public class SagaOrchestrator : BackgroundService
         var sagaLocking = scope.ServiceProvider
             .GetRequiredService<ISagaLocking>();
 
-        // Find sagas that need processing — not yet completed or cancelled
-        var pendingSagas = await db.SagaStates
-            .Where(s =>
-                s.Status != SagaStatus.Completed &&
-                s.Status != SagaStatus.Cancelled &&
-                s.Status != SagaStatus.Failed)
-            .OrderBy(s => s.CreatedAt)
-            .Take(10)
-            .ToListAsync(ct);
+        // Only a Started saga is acted on here (the others wait for an answer from another service),
+        // and one that failed is left alone until its pause is over
+        var now = DateTime.UtcNow;
+        var pendingSagas = (await db.SagaStates
+                .Where(s => s.Status == SagaStatus.Started)
+                .OrderBy(s => s.CreatedAt)
+                .ToListAsync(ct))
+            .Where(s => s.RetryCount == 0 || now - s.UpdatedAt >= _options.PauseAfter(s.RetryCount))
+            .Take(10);
 
         foreach (var saga in pendingSagas)
         {
@@ -73,13 +77,19 @@ public class SagaOrchestrator : BackgroundService
                 saga.RetryCount++;
                 saga.UpdatedAt = DateTime.UtcNow;
 
-                if (saga.RetryCount >= 3)
+                if (saga.RetryCount >= _options.MaxAttempts)
                 {
                     saga.Status = SagaStatus.Failed;
                     await CancelOrderAsync(saga, db, ct);
                     _logger.LogError(
-                        "Saga {SagaId} marked as Failed after {Retries} retries",
+                        "Saga {SagaId} marked as Failed after {Retries} attempts",
                         saga.Id, saga.RetryCount);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Saga {SagaId}: attempt {Attempt} of {Max} failed, trying again in {Pause}s",
+                        saga.Id, saga.RetryCount, _options.MaxAttempts, _options.PauseAfter(saga.RetryCount).TotalSeconds);
                 }
 
                 await db.SaveChangesAsync(ct);
