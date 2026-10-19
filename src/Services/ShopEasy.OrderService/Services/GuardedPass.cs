@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using ShopEasy.OrderService.Metrics;
 
 namespace ShopEasy.OrderService.Services;
 
@@ -9,10 +10,12 @@ namespace ShopEasy.OrderService.Services;
 //
 // An outage is logged as a few lines, not one per pass: the first failure with its exception, a line
 // each time the number of failed passes in a row doubles, and a line when a pass succeeds again.
+// Every failed pass is counted, and the time of the last success is exported (PollingLoopStalled).
 internal sealed class GuardedPass(ILogger logger, string service, IOptions<BackgroundLoopOptions>? options = null)
 {
     private readonly TimeSpan _passTimeout =
         TimeSpan.FromSeconds((options?.Value ?? new BackgroundLoopOptions()).PassTimeoutSeconds);
+    private readonly string _loop = RegisterLoop(service);
     private int _failedInARow;
     private DateTime _failingSince;
 
@@ -37,15 +40,25 @@ internal sealed class GuardedPass(ILogger logger, string service, IOptions<Backg
         }
 
         Settled = true;
+        OrderMetrics.RecordLoopPassSucceeded(_loop);
         if (_failedInARow == 0) return;
         logger.LogInformation("{Service} recovered after {Failures} failed pass(es) over {Seconds:0} s",
             service, _failedInARow, (DateTime.UtcNow - _failingSince).TotalSeconds);
         _failedInARow = 0;
     }
 
+    // "Saga orchestrator" becomes the label value saga_orchestrator
+    private static string RegisterLoop(string service)
+    {
+        var loop = service.ToLowerInvariant().Replace(' ', '_');
+        OrderMetrics.RegisterLoop(loop);
+        return loop;
+    }
+
     private void Failed(Exception error)
     {
         Settled = false;
+        OrderMetrics.RecordLoopPassFailed(_loop);
         var failures = ++_failedInARow;
         if (failures == 1)
         {

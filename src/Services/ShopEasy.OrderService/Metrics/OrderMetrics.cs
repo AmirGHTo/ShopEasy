@@ -76,6 +76,15 @@ public static class OrderMetrics
             "shopeasy_outbox_delivery_failures_total",
             "Total outbox delivery failures");
 
+    private static readonly Counter BackgroundLoopFailedPasses = Prometheus.Metrics
+        .CreateCounter(
+            "shopeasy_background_loop_failed_passes_total",
+            "Passes of a polling loop that failed or were cancelled for taking too long",
+            new CounterConfiguration
+            {
+                LabelNames = new[] { "loop" } // saga_orchestrator, saga_timeout_service, outbox_delivery_service, dead_letter_monitor
+            });
+
     // ── Gauges (can go up and down) ───────────────────────────────────────────
     private static readonly Gauge OutboxPendingMessages = Prometheus.Metrics
         .CreateGauge(
@@ -91,6 +100,16 @@ public static class OrderMetrics
         .CreateGauge(
             "shopeasy_saga_oldest_active_age_seconds",
             "Age of the oldest saga that is still active (0 when there is none): rises when an order is stuck");
+
+    private static readonly Gauge BackgroundLoopLastSuccess = Prometheus.Metrics
+        .CreateGauge(
+            "shopeasy_background_loop_last_success_timestamp_seconds",
+            "When a polling loop last completed a pass (Unix time, set when the loop is created too): " +
+            "time() minus this is how long it has made no progress",
+            new GaugeConfiguration
+            {
+                LabelNames = new[] { "loop" }
+            });
 
     // ── Histograms (distribution of values) ───────────────────────────────────
     private static readonly Histogram SagaDuration = Prometheus.Metrics
@@ -145,6 +164,19 @@ public static class OrderMetrics
 
     public static void RecordCircuitTransition(string target, string state)
         => CircuitTransitions.WithLabels(target, state).Inc();
+
+    // Both series exist from the moment a loop is created, so a loop that never completes a pass still ages
+    public static void RegisterLoop(string loop)
+    {
+        BackgroundLoopFailedPasses.WithLabels(loop);
+        BackgroundLoopLastSuccess.WithLabels(loop).SetToCurrentTimeUtc();
+    }
+
+    public static void RecordLoopPassSucceeded(string loop)
+        => BackgroundLoopLastSuccess.WithLabels(loop).SetToCurrentTimeUtc();
+
+    public static void RecordLoopPassFailed(string loop)
+        => BackgroundLoopFailedPasses.WithLabels(loop).Inc();
 
     public static void RecordOutboxDelivered()
         => OutboxMessagesDelivered.Inc();

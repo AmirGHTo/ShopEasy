@@ -34,6 +34,27 @@ tests:
         exp_alerts: []
 
   - interval: 1m
+    name: a loop that completes no pass raises PollingLoopStalled, one that keeps completing passes does not
+    input_series:
+      - series: shopeasy_background_loop_last_success_timestamp_seconds{loop="saga_orchestrator"}
+        values: "0x10"
+      - series: shopeasy_background_loop_last_success_timestamp_seconds{loop="outbox_delivery_service"}
+        values: "0+60x10"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: PollingLoopStalled
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: PollingLoopStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              loop: saga_orchestrator
+            exp_annotations:
+              summary: A polling loop of the Order service has completed no pass for 2 minutes
+              description: The saga_orchestrator loop last completed a pass 5m 0s ago. It fails (see the Order service log) or hangs.
+
+  - interval: 1m
     name: a failed order raises OrderFailed at once
     input_series:
       - series: shopeasy_order_outcomes_total{outcome="failed", reason="orchestrator_error"}
