@@ -388,7 +388,7 @@ A subtle distributed-systems bug: a payment command sent *before* a saga timed o
 
 ### 9. Saga Timeout Handling
 
-A background `SagaTimeoutService` scans every 30 seconds for sagas stuck in a non-terminal state longer than 2 minutes, and applies the correct compensation based on which state they're stuck in. This prevents orders from hanging forever if a downstream service dies permanently.
+A background `SagaTimeoutService` scans every 30 seconds for sagas stuck in a non-terminal state longer than 2 minutes, and applies the correct compensation based on which state they're stuck in. This prevents orders from hanging forever if a downstream service dies permanently. Its first pass after it starts, and its first pass after a failed one, times nothing out: after an outage of the database or of the Order service itself, sagas look stuck only because nothing was running, and the orchestrator (every 3 seconds) and the consumers get one more interval to move them on before the timeout cancels the order.
 
 ### 10. CQRS (Command Query Responsibility Segregation)
 

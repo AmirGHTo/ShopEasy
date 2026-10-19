@@ -45,11 +45,17 @@ public class SagaTimeoutService(
 
     // One pass. The running service (through CheckForTimedOutSagas) and the tests both call this, so a
     // test exercises the code that runs.
+    //
+    // Not settled means the service has just started or its last pass failed. A saga can then look stuck
+    // only because nothing was running (the database or the whole Order service was away), and the
+    // orchestrator, which polls every 3 s, should get to it before the timeout cancels the order.
+    // So nothing is timed out in that pass; the next one does.
     public async Task CheckForTimedOutSagasPublic(
         OrderDbContext db,
         IPublishEndpoint publishEndpoint,
         ISagaLocking sagaLocking,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool settled = true)
     {
         var timeoutThreshold = DateTime.UtcNow - SagaTimeout;
 
@@ -60,6 +66,14 @@ public class SagaTimeoutService(
             .ToListAsync(ct);
 
         if (!timedOutSagas.Any()) return;
+
+        if (!settled)
+        {
+            _logger.LogInformation(
+                "{Count} saga(s) look timed out, but this is the first pass since the service started or failed: " +
+                "waiting one interval so the orchestrator and the consumers can catch up first", timedOutSagas.Count);
+            return;
+        }
 
         _logger.LogWarning(
             "Found {Count} timed out saga(s)", timedOutSagas.Count);
@@ -90,7 +104,8 @@ public class SagaTimeoutService(
             scope.ServiceProvider.GetRequiredService<OrderDbContext>(),
             scope.ServiceProvider.GetRequiredService<IPublishEndpoint>(),
             scope.ServiceProvider.GetRequiredService<ISagaLocking>(),
-            ct);
+            ct,
+            _guard.Settled);
     }
 
     internal async Task HandleTimedOutSaga(
