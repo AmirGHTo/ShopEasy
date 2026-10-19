@@ -19,7 +19,7 @@ transactional messaging and an idempotent API, designed to stay correct when par
 [Order API](#order-api) ·
 [Operations](#developer-portal--monitoring) ·
 [Kubernetes](#kubernetes-deployment) ·
-[Roadmap](#production-hardening-roadmap--known-limitations)
+[Hardening](#production-hardening-and-known-limitations)
 
 </div>
 
@@ -44,7 +44,7 @@ transactional messaging and an idempotent API, designed to stay correct when par
 15. [Kubernetes Deployment](#kubernetes-deployment)
 16. [Project Structure](#project-structure)
 17. [Troubleshooting](#troubleshooting)
-18. [Production Hardening Roadmap & Known Limitations](#production-hardening-roadmap--known-limitations)
+18. [Production Hardening and Known Limitations](#production-hardening-and-known-limitations)
 
 ---
 
@@ -64,7 +64,7 @@ There is no distributed-transaction coordinator and no shared database. An **orc
 | **Observable** | One correlation id across HTTP and messages, structured logs, distributed traces, Prometheus metrics, Grafana dashboards, and built-in saga, outbox and dead-letter monitors. |
 | **Deployable** | Docker Compose for development and Kubernetes manifests with pinned images. GitHub Actions builds, tests against real PostgreSQL and RabbitMQ, validates the deployment files, starts the stack and publishes the images. |
 
-**Scope.** ShopEasy ships the APIs and an operations portal, not a customer-facing storefront, and payments go through a simulated provider. The [known limitations](#production-hardening-roadmap--known-limitations) are listed at the end of this document.
+**Scope.** ShopEasy ships the APIs and an operations portal, not a customer-facing storefront, and payments go through a simulated provider. The [known limitations](#production-hardening-and-known-limitations) are listed at the end of this document.
 
 ---
 
@@ -358,7 +358,7 @@ Each handler only acts when the saga is in the state its event is valid for. A d
 | Customer cancels a completed (paid) order | committed | charged | **Refund** → **restock** → Cancelled (`RefundingPayment`, `RestockingInventory`) |
 | Customer cancels while the stock commit is in flight | committing | charged | The request is kept; when the commit lands the order is refunded, restocked and Cancelled, never shown as Confirmed |
 | A refund or restock command (or its answer) is lost | committed | charged or refunded | Re-sent by the timeout service every two minutes; never given up on or cancelled on a guess, logged as critical after five tries |
-| Customer cancels a shipped order | shipped | charged | Rejected with `409` (there is no shipping or return flow yet) |
+| Customer cancels a shipped order | shipped | charged | Rejected with `409` (there is no shipping or return flow) |
 
 ### 5. Outbox Pattern
 
@@ -781,7 +781,7 @@ How it behaves:
 - A password that breaks the policy, or an email without a password, stops Identity's start-up with a message that says which setting is wrong (the password itself is never logged).
 - It is safe to start several Identity replicas at once; exactly one account results.
 - On Kubernetes the email is `Bootstrap__AdminEmail` in the ConfigMap and the password is the optional `bootstrap-admin-password` key in the `shopeasy-secrets` Secret.
-- You can change a password you know (below), but there is no self-service "forgot password" reset yet (see the known limitations). If you lose the password, ask an administrator for a temporary one (see *Managing accounts* below); if you lost the only administrator's, delete that user from the Identity database (or wipe the local data with `docker-compose down -v`) and start again with new settings.
+- You can change a password you know (below), but there is no self-service "forgot password" reset (see the known limitations). If you lose the password, ask an administrator for a temporary one (see *Managing accounts* below); if you lost the only administrator's, delete that user from the Identity database (or wipe the local data with `docker-compose down -v`) and start again with new settings.
 
 For local demos you can instead let Identity create two throw-away users with `SEED_DEMO_USERS=true`:
 
@@ -942,7 +942,7 @@ Replays are counted in the `shopeasy_orders_idempotent_replays_total{result}` me
 | `Completed` (paid, committed, order `Confirmed`) | Saga moves to `RefundingPayment` and sends `RefundPaymentCommand`. When Payment confirms the refund the saga sends `RestockInventoryCommand`; when Inventory confirms the units are back the order becomes `Cancelled` with its payment `Refunded` | `202 Accepted` `{ "status": "Cancelling", ... }`; poll `GET /api/orders/{id}` until `Cancelled` |
 | `Completing` (paid, the stock commit not confirmed yet) | The request is kept (in the saga's `FailureReason`). When the commit is confirmed the saga refunds instead of completing, then restocks as above. The order is never shown as `Confirmed` | `202 Accepted` |
 | `RefundingPayment` or `RestockingInventory` (already being cancelled) | Nothing new to do | `202 Accepted` |
-| The order has shipped or been delivered | Not cancellable: there is no shipping or return flow yet | `409 Conflict` `{ "message": "..." }` |
+| The order has shipped or been delivered | Not cancellable: there is no shipping or return flow | `409 Conflict` `{ "message": "..." }` |
 
 The reason is stored on the saga and shown as the order's `failureReason` (`Cancelled by customer` / `Cancelled by admin`). If the release command is lost, the saga timeout service re-sends it (idempotent) up to 3 times before flagging the order for manual intervention. A lost refund or restock is re-sent the same way but never given up on, because cancelling the order on a guess would leave the customer's money or the stock in between: after five tries each further attempt is logged as critical, and the oldest-active-order gauge and its alert show the order.
 
@@ -1103,15 +1103,18 @@ dotnet test src/Tests/ShopEasy.UnitTests
 dotnet test src/Tests/ShopEasy.EndToEndTests
 ```
 
-**Unit tests — 665 test cases.** 611 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 54 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 665 (see [CI/CD](#cicd)).
+**Unit tests — 752 test cases.** 696 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 56 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 752 (see [CI/CD](#cicd)).
 
 | Area | Where | What it covers |
 |---|---|---|
 | Saga state machine | `Sagas/SagaStateTransitionTests` | The full happy path (Started → … → Completed → order Confirmed only at the end), the compensation path, insufficient stock, duplicate events, unknown orders, and the timeout service for every stuck state (including a lost commit result being re-sent and a stuck commit being flagged for a human). |
 | Order cancellation | `Sagas/CancellationTests` | Cancelling at every saga stage, who may cancel, a lost release command, and what the saga handlers do after a cancel (release confirmed, late payment refunded, late reservation released, timeout retries). |
+| Cancelling a paid order | `Sagas/PaidCancellationTests` | The steps of cancelling an order that was already paid, as the saga takes them: the refund, then putting the stock back, then `Cancelled`. |
 | Commit flow | `Sagas/CommitFlowTests` | Completion only after `InventoryCommittedEvent`, refund on `InventoryCommitFailedEvent`, duplicate or late events never refund, cancel or release a finished order. |
 | Saga starter and first handlers | `Sagas/SagaOrchestratorTests`, `Consumers/*` | Starting a saga (including idempotency), the reserved / payment consumers, outbox entry state. |
 | Inventory consumers | `Inventory/*` | Reserve, commit and release including duplicates, out-of-order messages, shortages, multi-product orders and a missing inventory record. |
+| Orchestrator and polling loops (no servers needed) | `Sagas/OrchestratorRetryTests`, `Sagas/BackgroundLoopGuardTests` | The orchestrator retries a saga's first command after a growing pause and cancels the order after `MaxAttempts`; a failed pass of any of the four polling loops is logged as a few lines and the loop keeps running; a pass that hangs is cancelled; the timeout service times nothing out in its first pass after starting or failing. |
+| Business metrics (no servers needed) | `Observability/*` | Sales, cancellations by reason, failed orders, refused requests and payments are each counted once per event, however often a command is delivered; the stuck-order gauges are published by the pass the running service makes; failed passes of a polling loop are counted and the time of the last success is exported. |
 | Order placement | `Orders/*` | Request validation and limits, server-side price/name resolution, the Product service client (404, 5xx, network failure, malformed response). |
 | Idempotent order placement (no servers needed) | `Orders/IdempotencyKeyTests`, `OrderPlacementIdempotencyTests`, `IdempotencyConfigurationTests` | The real `POST /api/orders` action on an in-memory database with the Product service and stock cache faked: header rules and the request fingerprint (order of lines, ignored fields and whitespace do not matter); a repeated request returns the original order and response without placing another or calling the catalog and stock again, even after the stock ran out or the price changed; a different request under the same key gets 422; keys are per user; a request that was rejected (400) or unserved (503) does not use up its key; a required key; the order, outbox event, read-model row and key all saved. The appsettings, Compose, `.env.example` and ConfigMap copies of the settings equal the code's defaults. |
 | Messaging (no servers needed) | `Messaging/*` | The broker readiness gate (including against MassTransit's real health check registration), outbox delivery pausing while the bus is not ready, the dead-letter monitor and the requeue endpoint's responses. |
@@ -1150,7 +1153,7 @@ docker run -d --name shopeasy-test-mq -e RABBITMQ_DEFAULT_USER=test -e RABBITMQ_
 
 export SHOPEASY_TEST_POSTGRES="Host=localhost;Port=55432;Username=postgres;Password=test"
 export SHOPEASY_TEST_RABBITMQ="amqp://test:test@localhost:55672"
-dotnet test src/Tests/ShopEasy.UnitTests          # now 665 run, 0 skipped
+dotnet test src/Tests/ShopEasy.UnitTests          # now 752 run, 0 skipped
 
 docker rm -f shopeasy-test-pg shopeasy-test-mq
 ```
@@ -1191,7 +1194,7 @@ Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new p
 | Job | What it checks |
 |---|---|
 | **Detect changes** | Decides whether the pull request touches anything that is built, tested or deployed (plain `git diff`, no third-party action). Skipped jobs count as passed in **CI passed**, so the check can stay required for documentation-only changes. |
-| **Build and test** | `dotnet restore/build` (Release) and all 665 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 54 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
+| **Build and test** | `dotnet restore/build` (Release) and all 752 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 56 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
 | **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, they take the shared ConfigMap (so a setting changed there reaches every service), third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
 | **Compose stack and end-to-end test** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. Last, it runs the [end-to-end test](#end-to-end-test) against those containers: a customer signs up, signs in, buys something and the order is confirmed, which no unit test can show because it needs every service, the broker and the databases working together. |
 | **CI passed** | One aggregate status for the jobs above (a skipped job counts as passed) — the check to require in branch protection. |
@@ -1439,7 +1442,7 @@ ShopEasy/
 
 **`POST /api/orders` returns 400 "Product ... does not exist" / "no longer available"** — the `productId` is not in the Product catalog, or the product was deactivated. List valid ids with `GET /api/v1/products`.
 
-**`DELETE /api/orders/{id}` returns `409`** — the order has shipped or been delivered; there is no shipping or return flow yet. **It returns `202`** — the cancellation was accepted and the saga is releasing stock; the order shows `Cancelled` shortly after (check `/sagas`, or the `inventory-release` queue if it takes longer than a couple of minutes).
+**`DELETE /api/orders/{id}` returns `409`** — the order has shipped or been delivered; there is no shipping or return flow. **It returns `202`** — the cancellation was accepted and the saga is releasing stock; the order shows `Cancelled` shortly after (check `/sagas`, or the `inventory-release` queue if it takes longer than a couple of minutes).
 
 **An order stays `Pending` and the saga sits in `Completing`** — payment succeeded and the saga is waiting for the Inventory service to confirm the stock commit. Check that the `inventory` container is up and that `inventory-commit` / `inventory-commit_error` in the RabbitMQ UI are empty. The timeout service re-sends the commit every ~2 minutes; the commit is idempotent, so this is safe.
 
@@ -1463,44 +1466,46 @@ ShopEasy/
 
 ---
 
-## Production Hardening Roadmap & Known Limitations
+## Production Hardening and Known Limitations
 
-This project is being hardened step by step. Status:
+What has been hardened, and what is known to be missing.
 
-| # | Step | Status |
-|---|---|---|
-| 1 | Repo hygiene: `.gitignore`, `.dockerignore`, no build output / IDE files / keys in git | Done |
-| 2 | Secrets out of the repo (`.env`, k8s Secret template), monitoring endpoints behind auth, no hardcoded credentials | Done |
-| 3 | Server-side pricing and request validation on `POST /api/orders` | Done |
-| 4 | Inventory correctness: row locking on reserve/commit/release/adjust, idempotent commit and release, saga waits for the commit result (refunds if the commit is impossible) | Done |
-| 5 | Order cancellation through the saga (release stock, refund a late payment), plus row locking on every saga transition | Done |
-| 6 | Replace RabbitMQ management-API polling with a bus-ready check and AMQP dead-letter tooling; MassTransit transactional inbox/outbox for Payment/Inventory events | Done |
-| 7 | Observability (per-service log names, configurable Seq, correlation id across HTTP, outbox, saga and RabbitMQ, MassTransit + Npgsql traces), CI/CD on GitHub Actions (build, all tests incl. PostgreSQL/RabbitMQ, deployment-file validation, image builds, publish to GHCR, Dependabot), vulnerable dependencies patched and gated, saga row-locking tests on PostgreSQL, saga tests re-enabled | Done |
-| 8 | Non-root images (no SQLite, no `chmod 777`), read-only containers started by CI, Kubernetes with pinned published image tags and no local-image assumptions, Identity keys / key ring / grants shared in PostgreSQL (several replicas), network policies | Done |
-| 9 | Resilience and API safety: consumers ride out database and network outages and every database wait is bounded (pattern 24); order placement is idempotent (pattern 25); calls between services have deadlines, budgeted retries and circuit breakers, and the gateway times out silent services (pattern 26); every API checks audience, scope and role, and the internal gRPC call needs a service identity (pattern 2). An end-to-end test of the order journey runs in CI. Still to do: business-level observability and contract tests between the services | In progress |
+| # | Hardened |
+|---|---|
+| 1 | Repo hygiene: `.gitignore`, `.dockerignore`, no build output / IDE files / keys in git |
+| 2 | Secrets out of the repo (`.env`, k8s Secret template), monitoring endpoints behind auth, no hardcoded credentials |
+| 3 | Server-side pricing and request validation on `POST /api/orders` |
+| 4 | Inventory correctness: row locking on reserve/commit/release/adjust, idempotent commit and release, saga waits for the commit result (refunds if the commit is impossible) |
+| 5 | Order cancellation through the saga (release stock, refund a late payment), plus row locking on every saga transition |
+| 6 | Replace RabbitMQ management-API polling with a bus-ready check and AMQP dead-letter tooling; MassTransit transactional inbox/outbox for Payment/Inventory events |
+| 7 | Observability (per-service log names, configurable Seq, correlation id across HTTP, outbox, saga and RabbitMQ, MassTransit + Npgsql traces), CI/CD on GitHub Actions (build, all tests incl. PostgreSQL/RabbitMQ, deployment-file validation, image builds, publish to GHCR, Dependabot), vulnerable dependencies patched and gated, saga row-locking tests on PostgreSQL, saga tests re-enabled |
+| 8 | Non-root images (no SQLite, no `chmod 777`), read-only containers started by CI, Kubernetes with pinned published image tags and no local-image assumptions, Identity keys / key ring / grants shared in PostgreSQL (several replicas), network policies |
+| 9 | Resilience and API safety: consumers ride out database and network outages and every database wait is bounded (pattern 24); order placement is idempotent (pattern 25); calls between services have deadlines, budgeted retries and circuit breakers, and the gateway times out silent services (pattern 26); every API checks audience, scope and role, and the internal gRPC call needs a service identity (pattern 2). An end-to-end test of the order journey runs in CI. Business metrics and alert rules cover sales, cancellations, stuck orders, payments and the polling loops; the Grafana dashboard shows the order and payment metrics ([Developer Portal & Monitoring](#developer-portal--monitoring)) |
+| 10 | Saga recovery: a paid order can be cancelled (refund, then restock); the orchestrator retries an order's first command after a growing pause and cancels the order when it gives up; the polling loops survive a failed pass, log an outage as a few lines, cancel a pass that hangs and are watched by an alert; the timeout service times nothing out in its first pass after a start or a failed pass |
 
-**Known limitations today** (documented so nobody is surprised):
+**Known limitations** (documented so nobody is surprised):
 
-- A shipped or delivered order cannot be cancelled, and there is no return or partial-refund flow yet. A paid order that is cancelled before it ships is refunded in full.
-- The Order service's saga handlers still publish their commands *after* committing (they do not use the MassTransit outbox). A crash in that gap is recovered by the saga timeout service, which re-sends the command; every consumer is idempotent.
+- A shipped or delivered order cannot be cancelled, and there is no return or partial-refund flow. A paid order that is cancelled before it ships is refunded in full.
+- The Order service's saga handlers publish their commands *after* committing (they do not use the MassTransit outbox). A crash in that gap is recovered by the saga timeout service, which re-sends the command; every consumer is idempotent.
 - The Inventory consumers invalidate the Redis stock cache while MassTransit's transaction is still open (the commit follows immediately after the consumer returns). In that few-millisecond window a reader can re-cache the old stock level for up to its 30-second TTL. The cache is advisory — the saga's reservation is the authoritative check.
 - A message published to an exchange that has no queue bound yet is dropped by the broker, so a command sent before its consuming service has started for the first time is lost until the saga timeout re-sends it. (Docker Compose and Kubernetes start order makes this rare.)
 - The MassTransit inbox only remembers a message for its 30-minute duplicate-detection window; beyond that, duplicates are caught by the business-level checks (pattern 7).
 - Inventory endpoints process one message at a time per instance (`ConcurrentMessageLimit = 1`). Correctness no longer depends on it (row locks do), so it can be raised for throughput.
 - `InventoryDbContext` has no unique database constraint on the ledger; idempotency relies on the row locks.
-- The CI only becomes a *gate* once branch protection requires the `CI passed` check (a one-time repository setting, see CI/CD). Until then it reports but does not block.
+- The CI is a *gate* only if branch protection requires the `CI passed` check (a one-time repository setting, see CI/CD); otherwise it reports but does not block.
 - The end-to-end test covers the happy path, cancelling a confirmed order and the refusals, not a declined payment or a cancel while the saga runs.
-- Images are published to GHCR and the manifests pin them by commit, but nothing deploys them automatically (that needs credentials for a specific cluster), and the pinned tag in `k8s/kustomization.yaml` is bumped by hand (`k8s/set-image-tag.sh`). No container image vulnerability scan (Trivy) or code scanning (CodeQL) runs yet.
+- Images are published to GHCR and the manifests pin them by commit, but nothing deploys them automatically (that needs credentials for a specific cluster), and the pinned tag in `k8s/kustomization.yaml` is bumped by hand (`k8s/set-image-tag.sh`). No container image vulnerability scan (Trivy) or code scanning (CodeQL) runs in CI.
 - The Kubernetes manifests were validated (schema and the deployment rules above) and the same hardening runs in CI under Compose, but they have not been applied to a live cluster in CI. NetworkPolicies need a network plugin that enforces them, and egress of the application pods is not restricted.
-- The gateway keeps its login cookie's Data Protection keys in memory/on its own file system, so a restart signs users out and it cannot run several replicas yet (Identity already can).
+- The gateway keeps its login cookie's Data Protection keys in memory/on its own file system, so a restart signs users out and it cannot run several replicas (Identity can).
 - Without `DataProtection__CertificatePath`, Identity's key ring — and with it the signing keys — is stored in the database in clear text; the Kubernetes manifests require the certificate, Compose (local development) does not. Production use of Duende IdentityServer needs a license (see Security notes).
 - PostgreSQL, RabbitMQ and Redis in `k8s/` are single-replica Deployments (with a PVC at most), so they are not highly available. Use a managed service or an operator for production data stores.
 - A customer cancel (`DELETE /api/orders/{id}`) is logged and published under the *cancel request's* correlation id, not the id of the request that placed the order; `OrderId` links the two.
 - Migrations run at service start-up; with several replicas the race is only handled for the Order and Identity services.
+- After an outage of the database or of the Order service, a saga that waits for a reply (`ReservingInventory` and later) can still be timed out one interval after the service is back, if the reply is in a consumer's retry pause (up to 60 s by default). The compensation is safe (stock released, order cancelled); only a saga in `Started`, where nothing has been done yet, is fully protected.
 - A database outage longer than the patient-retry window (about 7 minutes by default) sends the messages that were in flight to the `*_error` queues; requeue them once the database is back (pattern 14). While it lasts, every consumer slot retries in parallel (bounded by the pool size and the consumers' concurrency); there is no circuit breaker that pauses consumption.
-- The gateway has no circuit breaker or passive health check: each cluster has a single destination, so there is nothing to fail over to (pattern 26). The retry budget and the timeouts bound the damage, but a dead service is still attempted on every request and answered with `502` after the connection fails. The Order service's `InventoryClient` (REST) still has its older, fixed Polly settings; it is registered but not used for the stock check.
+- The gateway has no circuit breaker or passive health check: each cluster has a single destination, so there is nothing to fail over to (pattern 26). The retry budget and the timeouts bound the damage, but a dead service is still attempted on every request and answered with `502` after the connection fails. The Order service's `InventoryClient` (REST) has older, fixed Polly settings; it is registered but not used for the stock check.
 - Redis calls have no explicit timeouts of their own: a Redis server that accepts connections and never answers stalls each cache lookup until the StackExchange.Redis defaults (5 s) apply.
-- Identity has no self-service "forgot password" reset (it needs an e-mail service, which does not exist yet) and no e-mail verification: customers can sign up and change a password they know, administrators can manage roles, disable accounts and hand out a one-time temporary password, but a user cannot recover a forgotten password on their own, and a temporary password does not expire by itself. The first administrator comes from the configuration.
+- Identity has no self-service "forgot password" reset (it needs an e-mail service, which the project does not have) and no e-mail verification: customers can sign up and change a password they know, administrators can manage roles, disable accounts and hand out a one-time temporary password, but a user cannot recover a forgotten password on their own, and a temporary password does not expire by itself. The first administrator comes from the configuration.
 - Swagger UIs and Prometheus metrics ports are unauthenticated.
 - Traffic between the services is plain HTTP inside the network, so bearer tokens (a user's lasts one hour, a service's 15 minutes) cross it in the clear. Network policies limit who can reach whom; TLS on every service or a mesh with mutual TLS is needed to protect the tokens in transit.
 - The gateway forwards one access token that names every API in its audience, so a service that receives it could replay it against another API. Scopes and roles still limit what it can do there, but only separate tokens per API (token exchange) would close that.
