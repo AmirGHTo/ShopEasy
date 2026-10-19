@@ -178,6 +178,7 @@ stateDiagram-v2
     ProcessingPayment --> ReleasingInventory: PaymentFailed, customer cancel or timeout
     ReleasingInventory --> Cancelled: InventoryReleased
     Started --> Cancelled: customer cancel
+    Started --> Failed: the first command cannot be sent (order cancelled)
     Completing --> Failed: InventoryCommitFailed (payment refunded)
 
     Completed --> RefundingPayment: cancel of a paid order
@@ -345,6 +346,7 @@ Each handler only acts when the saga is in the state its event is valid for. A d
 | Failure point | Inventory | Payment | Recovery action |
 |---|---|---|---|
 | Stock check fails | not reserved | not charged | Cancel order |
+| The orchestrator cannot send the first command (three attempts) | not reserved | not charged | Saga `Failed`, order **Cancelled** ("The order could not be processed"); the technical reason stays on the saga |
 | Payment declined | reserved | not charged | Release inventory → Cancel |
 | Timeout waiting for payment | reserved | not charged | Release inventory → Cancel |
 | Late payment after cancel | released | charged | **Refund** → stay Cancelled |
@@ -1479,7 +1481,6 @@ This project is being hardened step by step. Status:
 **Known limitations today** (documented so nobody is surprised):
 
 - A shipped or delivered order cannot be cancelled, and there is no return or partial-refund flow yet. A paid order that is cancelled before it ships is refunded in full.
-- If the saga orchestrator itself fails three times on a saga it marks the saga `Failed` but does not update the order, which stays `Pending` until the customer cancels it (cancelling a `Failed` saga fixes the order).
 - The Order service's saga handlers still publish their commands *after* committing (they do not use the MassTransit outbox). A crash in that gap is recovered by the saga timeout service, which re-sends the command; every consumer is idempotent.
 - The Inventory consumers invalidate the Redis stock cache while MassTransit's transaction is still open (the commit follows immediately after the consumer returns). In that few-millisecond window a reader can re-cache the old stock level for up to its 30-second TTL. The cache is advisory — the saga's reservation is the authoritative check.
 - A message published to an exchange that has no queue bound yet is dropped by the broker, so a command sent before its consuming service has started for the first time is lost until the saga timeout re-sends it. (Docker Compose and Kubernetes start order makes this rare.)

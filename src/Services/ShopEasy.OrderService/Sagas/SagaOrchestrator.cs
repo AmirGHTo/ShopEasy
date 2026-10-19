@@ -76,6 +76,7 @@ public class SagaOrchestrator : BackgroundService
                 if (saga.RetryCount >= 3)
                 {
                     saga.Status = SagaStatus.Failed;
+                    await CancelOrderAsync(saga, db, ct);
                     _logger.LogError(
                         "Saga {SagaId} marked as Failed after {Retries} retries",
                         saga.Id, saga.RetryCount);
@@ -87,6 +88,26 @@ public class SagaOrchestrator : BackgroundService
                     OrderMetrics.RecordOrderFailed(FailReason.OrchestratorError);
             }
         }
+    }
+
+    // The timeout service skips Failed sagas, so without this the order would stay Pending for ever.
+    // The orchestrator only fails on the step that sends the first command, before anything is
+    // charged. The customer is told a fixed message; the exception text stays on the saga.
+    private static async Task CancelOrderAsync(OrderSagaState saga, OrderDbContext db, CancellationToken ct)
+    {
+        var order = await db.Orders.FindAsync([saga.OrderId], ct);
+        if (order is not { Status: OrderStatus.Pending }) return;
+
+        var now = DateTime.UtcNow;
+        order.Status = OrderStatus.Cancelled;
+        order.UpdatedAt = now;
+
+        var summary = await db.OrderSummaries.FirstOrDefaultAsync(s => s.OrderId == saga.OrderId, ct);
+        if (summary is null) return;
+        summary.StatusName = OrderStatus.Cancelled.ToString();
+        summary.StatusCode = (int)OrderStatus.Cancelled;
+        summary.FailureReason = FailureReasons.OrderCouldNotBeProcessed;
+        summary.UpdatedAt = now;
     }
 
     // internal: a test runs one saga through it without the 3-second polling loop
