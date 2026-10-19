@@ -1210,6 +1210,10 @@ dotnet test src/Tests/ShopEasy.UnitTests    # with the two SHOPEASY_TEST_* varia
 docker compose --env-file .env.example config --quiet
 ```
 
+### Code scanning — `.github/workflows/codeql.yml`
+
+**CodeQL** analyses the C# code for security problems (injection, unsafe deserialization, weak cryptography, secrets in code, …) with the `security-extended` queries. It runs on pull requests that change more than documentation, on every push to `main` and once a week, because new queries appear without any change in the code. It reads the source (no build) and leaves the test projects out: their fixed passwords and URLs are test data. Alerts appear under **Security → Code scanning**; the job does not fail because of an alert (the repository settings below make one block a merge). It is a separate workflow, so it is not part of **CI passed** and never delays publishing images.
+
 ### CD — publishing images
 
 After **CI passed** on `main` or on a version tag, the `publish-images` job builds the six service images (with the layer cache of earlier runs) and pushes them to the GitHub Container Registry as `ghcr.io/<owner>/shopeasy-<service>` (`identity`, `gateway`, `product`, `inventory`, `payment`, `order`), tagged:
@@ -1231,6 +1235,7 @@ These cannot be done from a workflow file; they are GitHub settings:
 1. **Settings → Actions → General**: Actions enabled; *Workflow permissions* may stay on the read-only default (the publish job asks for `packages: write` itself).
 2. **Settings → Branches → add rule for `main`**: *Require a pull request before merging* and *Require status checks to pass* with the check **`CI passed`**. This is what turns the CI above from advice into a gate.
 3. *(Optional)* **Settings → Code security**: enable *Dependabot alerts* and *secret scanning* (free on public repositories).
+4. **Settings → Code security → Code scanning**: leave *Default setup* off (the CodeQL workflow is the setup; GitHub refuses its results while the default setup is on). *(Optional)* To make a new alert block a pull request, add *Require code scanning results* (CodeQL) to the rule for `main`.
 
 ---
 
@@ -1367,6 +1372,7 @@ ShopEasy/
 ├── Directory.Build.props          # NuGet vulnerability audit (errors in CI)
 ├── .github/
 │   ├── workflows/ci.yml           # CI (change detection, build, tests, deployment-file checks, build and start the stack) + CD (publish to GHCR)
+│   ├── workflows/codeql.yml       # CodeQL code scanning (C#)
 │   ├── scripts/                   # Dockerfile / Kubernetes / running-container rules the CI enforces
 │   └── dependabot.yml
 ├── postgres-init.sql              # creates the 5 databases
@@ -1495,7 +1501,7 @@ What has been hardened, and what is known to be missing.
 - `InventoryDbContext` has no unique database constraint on the ledger; idempotency relies on the row locks.
 - The CI is a *gate* only if branch protection requires the `CI passed` check (a one-time repository setting, see CI/CD); otherwise it reports but does not block.
 - The end-to-end test covers the happy path, cancelling a confirmed order and the refusals, not a declined payment or a cancel while the saga runs.
-- Images are published to GHCR and the manifests pin them by commit, but nothing deploys them automatically (that needs credentials for a specific cluster), and the pinned tag in `k8s/kustomization.yaml` is bumped by hand (`k8s/set-image-tag.sh`). No code scanning (CodeQL) runs in CI.
+- Images are published to GHCR and the manifests pin them by commit, but nothing deploys them automatically (that needs credentials for a specific cluster), and the pinned tag in `k8s/kustomization.yaml` is bumped by hand (`k8s/set-image-tag.sh`).
 - The Kubernetes manifests were validated (schema and the deployment rules above) and the same hardening runs in CI under Compose, but they have not been applied to a live cluster in CI. NetworkPolicies need a network plugin that enforces them, and egress of the application pods is not restricted.
 - The gateway keeps its login cookie's Data Protection keys in memory/on its own file system, so a restart signs users out and it cannot run several replicas (Identity can).
 - Without `DataProtection__CertificatePath`, Identity's key ring — and with it the signing keys — is stored in the database in clear text; the Kubernetes manifests require the certificate, Compose (local development) does not. Production use of Duende IdentityServer needs a license (see Security notes).
