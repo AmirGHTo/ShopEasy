@@ -178,6 +178,9 @@ public class PaymentPostgresTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         (await harness.Consumed.Any<PaymentSucceededEvent>(
             x => x.Context.Message.OrderId == orderId, timeout.Token)).Should().BeTrue();
+        // the command's own "consumed" record is written when its consumer has finished: wait for it
+        (await harness.Consumed.Any<ProcessPaymentCommand>(
+            x => x.Context.Message.OrderId == orderId, timeout.Token)).Should().BeTrue();
         await Task.Delay(300); // a duplicate delivery, if there were one, would arrive by now
 
         injector.Injected.Should().Be(6, "the outage really happened");
