@@ -18,6 +18,10 @@ public class CacheService
         _logger = logger;
     }
 
+    // A key can hold user input (the product list key contains the requested category). Line
+    // breaks are replaced before a key is logged, so it cannot start a forged line in a text log.
+    private static string ForLog(string key) => key.ReplaceLineEndings("_");
+
     // Get a cached value. Returns null if not found.
     public async Task<T?> GetAsync<T>(string key) where T : class
     {
@@ -26,13 +30,13 @@ public class CacheService
             var cached = await _cache.GetStringAsync(key);
             if (cached is null) return null;
 
-            _logger.LogDebug("Cache HIT: {Key}", key);
+            _logger.LogDebug("Cache HIT: {Key}", ForLog(key));
             return JsonSerializer.Deserialize<T>(cached);
         }
         catch (Exception ex)
         {
             // Never let cache failure break the request
-            _logger.LogWarning(ex, "Cache GET failed for key {Key}", key);
+            _logger.LogWarning(ex, "Cache GET failed for key {Key}", ForLog(key));
             return null;
         }
     }
@@ -47,11 +51,11 @@ public class CacheService
             {
                 AbsoluteExpirationRelativeToNow = expiration
             });
-            _logger.LogDebug("Cache SET: {Key} (expires in {Expiration})", key, expiration);
+            _logger.LogDebug("Cache SET: {Key} (expires in {Expiration})", ForLog(key), expiration);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Cache SET failed for key {Key}", key);
+            _logger.LogWarning(ex, "Cache SET failed for key {Key}", ForLog(key));
         }
     }
 
@@ -61,11 +65,11 @@ public class CacheService
         try
         {
             await _cache.RemoveAsync(key);
-            _logger.LogDebug("Cache INVALIDATED: {Key}", key);
+            _logger.LogDebug("Cache INVALIDATED: {Key}", ForLog(key));
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Cache INVALIDATE failed for key {Key}", key);
+            _logger.LogWarning(ex, "Cache INVALIDATE failed for key {Key}", ForLog(key));
         }
     }
 
