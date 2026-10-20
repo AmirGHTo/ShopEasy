@@ -23,7 +23,10 @@ public sealed class ErrorQueueClientTests : IDisposable
             if (_channel is not null) return _channel;
             var factory = new ConnectionFactory { Uri = new Uri(TestInfrastructure.RabbitMq!) };
             _connection = factory.CreateConnection();
-            return _channel = _connection.CreateModel();
+            _channel = _connection.CreateModel();
+            // Publisher confirms: Put returns only when the broker has the message in the queue
+            _channel.ConfirmSelect();
+            return _channel;
         }
     }
 
@@ -56,6 +59,9 @@ public sealed class ErrorQueueClientTests : IDisposable
         props.DeliveryMode = 2;
         props.Headers = new Dictionary<string, object> { ["MT-Reason"] = "fault" };
         Channel.BasicPublish("", queue, props, Encoding.UTF8.GetBytes(body));
+        // The client under test reads the queue on its own connection. Without the confirm it can
+        // run before the broker has taken the last message and move one message too few.
+        Channel.WaitForConfirmsOrDie(TimeSpan.FromSeconds(10));
     }
 
     public void Dispose()
