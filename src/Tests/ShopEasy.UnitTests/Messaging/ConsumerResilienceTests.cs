@@ -86,7 +86,7 @@ public class ConsumerResilienceTests
         await script.Succeeded.Task.WaitAsync(TimeSpan.FromSeconds(20));
 
         script.Attempts.Should().Be(7);
-        harness.Published.Select<Fault<Job>>().Should().BeEmpty("the message was never given up on");
+        harness.Published.Snapshot<Fault<Job>>().Should().BeEmpty("the message was never given up on");
     }
 
     [Fact]

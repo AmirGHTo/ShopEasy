@@ -146,10 +146,10 @@ public class PaymentPostgresTests
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         while (!timeout.IsCancellationRequested
-               && harness.Consumed.Select<PaymentSucceededEvent>().Count() < 2)
+               && harness.Consumed.Snapshot<PaymentSucceededEvent>().Count() < 2)
             await Task.Delay(100);
 
-        harness.Consumed.Select<PaymentSucceededEvent>().Count().Should().Be(2);
+        harness.Consumed.Snapshot<PaymentSucceededEvent>().Count().Should().Be(2);
 
         await using var check = new PaymentDbContext(options);
         (await check.Payments.CountAsync(p => p.OrderId == orderId)).Should().Be(1);
@@ -181,9 +181,9 @@ public class PaymentPostgresTests
         await Task.Delay(300); // a duplicate delivery, if there were one, would arrive by now
 
         injector.Injected.Should().Be(6, "the outage really happened");
-        var attempts = harness.Consumed.Select<ProcessPaymentCommand>().ToList();
+        var attempts = harness.Consumed.Snapshot<ProcessPaymentCommand>().ToList();
         attempts.Should().ContainSingle().Which.Exception.Should().BeNull("the message was never given up on");
-        harness.Consumed.Select<PaymentSucceededEvent>().Count().Should().Be(1);
+        harness.Consumed.Snapshot<PaymentSucceededEvent>().Count().Should().Be(1);
 
         await using var check = new PaymentDbContext(options);
         (await check.Payments.CountAsync(p => p.OrderId == orderId)).Should().Be(1);
