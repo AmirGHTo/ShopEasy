@@ -437,7 +437,9 @@ Users are identified by the `sub` claim and admins by the `role` claim of their 
 
 ### 16. Redis Caching
 
-Products (5-min TTL) and inventory (30-sec TTL) are cached, with `X-Cache: HIT/MISS` headers. Caches are invalidated on writes. Connection uses `abortConnect=false` so the app degrades gracefully if Redis is briefly unavailable.
+Products (5-min TTL) and inventory (30-sec TTL) are cached, with `X-Cache: HIT/MISS` headers. Caches are invalidated on writes.
+
+Redis is a cache only, so a slow or missing Redis must cost a request no more than a cache miss. A service starts, and keeps running, without Redis and reconnects on its own. A command that takes longer than `Redis__CommandTimeoutMs` (default 500 ms) fails and the service reads the database; the library looks for expired commands about once a second, so a hung Redis costs a cache call between 0.5 and 1.5 seconds (the library's own default is 5 seconds per call, and a product list request makes two calls). A call to a Redis that cannot be reached fails at once instead of waiting in a queue. Connecting is limited by `Redis__ConnectTimeoutMs` (default 1000 ms): with Redis down at start-up the first request that needs it waits that long, once. Each service has one connection to Redis, used by the cache and by the code that clears keys by prefix. The settings are in [Service configuration keys](#service-configuration-keys).
 
 ### 17. API Versioning
 
@@ -519,11 +521,11 @@ Every setting has a default in the code, and the same defaults are written out w
 
 | Where | What is there | How to change one |
 |---|---|---|
-| Each service's `appsettings.json` | `Resilience:Postgres` (all five services with a database), `Resilience:Consumers` (Order, Inventory, Payment) and, for calls between services, `Resilience:Inventory` and `Resilience:RetryBudget` (Order) and `Resilience:Gateway` and `Resilience:RetryBudget` (gateway), with the default values | Edit the file. It is baked into the image, so this needs a rebuild: use it for a value that should be the same everywhere. |
-| `docker-compose.yml` | `Resilience__Postgres__*`, `Resilience__Consumers__*` and the call settings (`Resilience__Inventory__*`, `Resilience__Gateway__*`, `Resilience__RetryBudget__*`) as environment variables on the services that use them, each as `${RESILIENCE_…:-default}` | Put the variable in `.env` (the commented examples in `.env.example`, e.g. `RESILIENCE_PG_MAX_POOL_SIZE=30`) and run `docker compose up -d`. |
+| Each service's `appsettings.json` | `Resilience:Postgres` (all five services with a database), `Resilience:Consumers` (Order, Inventory, Payment) and, for calls between services, `Resilience:Inventory` and `Resilience:RetryBudget` (Order) and `Resilience:Gateway` and `Resilience:RetryBudget` (gateway), with the default values, and `Redis` (Product, Inventory, Order) | Edit the file. It is baked into the image, so this needs a rebuild: use it for a value that should be the same everywhere. |
+| `docker-compose.yml` | `Resilience__Postgres__*`, `Resilience__Consumers__*` and the call settings (`Resilience__Inventory__*`, `Resilience__Gateway__*`, `Resilience__RetryBudget__*`) as environment variables on the services that use them, each as `${RESILIENCE_…:-default}`, and `Redis__ConnectTimeoutMs` / `Redis__CommandTimeoutMs` as `${REDIS_…:-default}` | Put the variable in `.env` (the commented examples in `.env.example`, e.g. `RESILIENCE_PG_MAX_POOL_SIZE=30`) and run `docker compose up -d`. |
 | Kubernetes `k8s/configmaps/configmap.yaml` | The same keys in the `shopeasy-config` ConfigMap, which every Deployment loads | Edit the ConfigMap, apply it, then `kubectl -n shopeasy rollout restart deployment` (environment variables are read at pod start). |
 
-Standard ASP.NET Core precedence applies: an environment variable (`:` written as `__`) beats `appsettings.json`, which beats the default in the code. `ResilienceConfigurationTests` and `CallResilienceConfigurationTests` fail if any of these copies differs from the code's defaults, so a documented value is always the value in effect.
+Standard ASP.NET Core precedence applies: an environment variable (`:` written as `__`) beats `appsettings.json`, which beats the default in the code. `ResilienceConfigurationTests`, `CallResilienceConfigurationTests` and `RedisConfigurationTests` fail if any of these copies differs from the code's defaults, so a documented value is always the value in effect.
 
 Deliberate choices:
 
@@ -708,6 +710,7 @@ Services read standard ASP.NET Core configuration, so every key can be an enviro
 | `Services__ProductService` | Order | Product service base URL used for price lookup. Default `http://product:8080`. |
 | `Services__InventoryGrpcService` | Order | Inventory's gRPC address for the stock check. Default `http://inventory:8090`. |
 | `Redis__Connection` | Product, Inventory, Order | Redis endpoint, e.g. `redis:6379`. |
+| `Redis__ConnectTimeoutMs`, `Redis__CommandTimeoutMs` | Product, Inventory, Order | How long connecting to Redis, and one Redis command, may take before the request reads the database instead. Milliseconds, at least 100. Defaults `1000` and `500`. See [pattern 16](#16-redis-caching). |
 | `Telemetry__Endpoint` | all | OTLP endpoint (Jaeger), default `http://jaeger:4317`. |
 | `Idempotency__RequireKey`, `Idempotency__RetentionHours` | Order | `Idempotency-Key` on `POST /api/orders`: reject requests without the header (default `false`) and how long a key is remembered (default `24` hours). See [Order API](#retrying-safely-the-idempotency-key-header). |
 | `SagaOrchestrator__MaxAttempts`, `SagaOrchestrator__FirstRetryPauseSeconds`, `SagaOrchestrator__MaxRetryPauseSeconds` | Order | Retries of an order's first command when the message broker is down: attempts before the order is cancelled (default `8`), the first pause (default `3` s, doubling each time) and the longest pause (default `60` s; must stay below the 120 s saga timeout). Invalid values stop the service at start-up. |
@@ -1103,7 +1106,7 @@ dotnet test src/Tests/ShopEasy.UnitTests
 dotnet test src/Tests/ShopEasy.EndToEndTests
 ```
 
-**Unit tests — 755 test cases.** 699 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 56 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 752 (see [CI/CD](#cicd)).
+**Unit tests — 766 test cases.** 710 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 56 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 752 (see [CI/CD](#cicd)).
 
 | Area | Where | What it covers |
 |---|---|---|
@@ -1153,7 +1156,7 @@ docker run -d --name shopeasy-test-mq -e RABBITMQ_DEFAULT_USER=test -e RABBITMQ_
 
 export SHOPEASY_TEST_POSTGRES="Host=localhost;Port=55432;Username=postgres;Password=test"
 export SHOPEASY_TEST_RABBITMQ="amqp://test:test@localhost:55672"
-dotnet test src/Tests/ShopEasy.UnitTests          # now 755 run, 0 skipped
+dotnet test src/Tests/ShopEasy.UnitTests          # now 766 run, 0 skipped
 
 docker rm -f shopeasy-test-pg shopeasy-test-mq
 ```
@@ -1194,7 +1197,7 @@ Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new p
 | Job | What it checks |
 |---|---|
 | **Detect changes** | Decides whether the pull request touches anything that is built, tested or deployed (plain `git diff`, no third-party action). Skipped jobs count as passed in **CI passed**, so the check can stay required for documentation-only changes. |
-| **Build and test** | `dotnet restore/build` (Release) and all 755 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 56 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
+| **Build and test** | `dotnet restore/build` (Release) and all 766 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 56 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
 | **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, they take the shared ConfigMap (so a setting changed there reaches every service), third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
 | **Compose stack and end-to-end test** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. Last, it runs the [end-to-end test](#end-to-end-test) against those containers: a customer signs up, signs in, buys something and the order is confirmed, which no unit test can show because it needs every service, the broker and the databases working together. |
 | **Image scan** (one job per service) | Builds the service image and scans it with **Trivy**, run from its official image, pinned to a version (bump it by hand): the operating-system packages and the .NET runtime of the base image as well as the application. A vulnerability that is **HIGH or CRITICAL and has a fix fails the job**; one without a fix yet does not. The Dockerfiles run `apt-get upgrade`, so an image has Debian's security fixes even when Microsoft has not rebuilt the base image yet. A finding that has to be accepted goes into `.trivyignore` with the reason and a date to look at it again. A new CVE with a fix can turn this red without any change in the code: re-run the job (the base image tag is rebuilt when Microsoft releases a fix) or accept the finding. |
@@ -1469,7 +1472,7 @@ ShopEasy/
 
 **No logs in Seq on Kubernetes** — expected: the manifests set `Seq__ServerUrl` empty because Seq is part of the Compose stack only. Use `kubectl logs`, or set `Seq__ServerUrl` in the ConfigMap to your own Seq.
 
-**Redis down crashes EF migrations** — the Redis connection string uses `abortConnect=false` and the multiplexer is registered so startup doesn't depend on Redis being up.
+**Redis down crashes EF migrations** — it does not: the connection is configured not to abort when Redis is unreachable, so start-up does not depend on Redis being up (the first request that needs it waits `Redis__ConnectTimeoutMs`, once).
 
 ---
 

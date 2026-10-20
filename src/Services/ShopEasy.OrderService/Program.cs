@@ -17,7 +17,6 @@ using ShopEasy.Shared.Middleware;
 using ShopEasy.Shared.Resilience;
 using ShopEasy.Shared.Security;
 using ShopEasy.Shared.Services;
-using StackExchange.Redis;
 using System.Threading.RateLimiting;
 
 Log.Logger = new LoggerConfiguration()
@@ -429,18 +428,9 @@ try
     // Caches product data to reduce database load.
     // TTL: 5 minutes for product lists, 5 minutes for individual products.
     // Cache is invalidated when products are created, updated, or deleted.
-    var redisConnection = builder.Configuration["Redis:Connection"] ?? "redis:6379";
-
-    builder.Services.AddStackExchangeRedisCache(options =>
-    {
-        options.Configuration = redisConnection;
-        options.InstanceName = "shopeasy:";
-    });
-
-    // With this — abortConnect=false means it won't crash if Redis is unavailable:
-    builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
-        ConnectionMultiplexer.Connect(
-            $"{redisConnection},abortConnect=false"));
+    // Redis:Connection and the timeouts are settings (README, pattern 16): a slow Redis costs a
+    // request a fraction of a second, then it reads the database.
+    builder.Services.AddRedisCache(builder.Configuration);
 
     builder.Services.AddScoped<CacheService>();
     builder.Services.AddScoped<InventoryCacheService>();

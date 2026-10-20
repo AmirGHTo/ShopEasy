@@ -40,7 +40,7 @@ public class CallResilienceConfigurationTests
         Regex.Matches(text, $@"^\s*Resilience__{group}__(\w+):\s*""{valuePattern}""\s*$", RegexOptions.Multiline)
             .ToDictionary(m => m.Groups[1].Value, m => Number(m.Groups[2].Value));
 
-    private static string ServiceBlock(string compose, string service)
+    internal static string ServiceBlock(string compose, string service)
     {
         var match = Regex.Match(compose, $@"^  {service}:\n(.*?)(?=^  [a-z][a-z-]*:\n|\z)", RegexOptions.Multiline | RegexOptions.Singleline);
         match.Success.Should().BeTrue($"the Compose file should define {service}");
