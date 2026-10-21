@@ -961,7 +961,7 @@ Each product has two numbers in the Inventory database:
 | `ReservedQty` | Units held for orders that are still in flight. |
 | `AvailableQuantity` | `Quantity − ReservedQty` — what a new order can still reserve. |
 
-Every change is also written to the `StockTransactions` ledger. For an order the ledger holds up to three kinds of rows, recognised by their exact `Reason` text (`Data/StockReasons.cs`): *Reserved for Order …*, *Committed for Order …*, *Released reservation for Order …*.
+Every change is also written to the `StockTransactions` ledger. For an order the ledger holds up to four kinds of rows, recognised by their exact `Reason` text (`Data/StockReasons.cs`): *Reserved for Order …*, *Committed for Order …*, *Released reservation for Order …*, *Restocked after cancelled Order …*. There is at most one row of each kind per order and product, and the database enforces it with a unique index (`IX_StockTransactions_OrderId_ProductId_Reason`, only for rows that belong to an order; manual adjustments have none): the consumers already keep it so with the row locks, and the index makes a second row fail instead of counting stock twice. A database that already holds such a duplicate cannot take the migration: the service stops at start with PostgreSQL's message naming the key; remove the duplicate row and correct the stock it counted twice.
 
 **Lifecycle of one order's stock**
 
@@ -1106,7 +1106,7 @@ dotnet test src/Tests/ShopEasy.UnitTests
 dotnet test src/Tests/ShopEasy.EndToEndTests
 ```
 
-**Unit tests — 772 test cases.** 716 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 56 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 752 (see [CI/CD](#cicd)).
+**Unit tests — 776 test cases.** 716 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 60 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 752 (see [CI/CD](#cicd)).
 
 | Area | Where | What it covers |
 |---|---|---|
@@ -1156,7 +1156,7 @@ docker run -d --name shopeasy-test-mq -e RABBITMQ_DEFAULT_USER=test -e RABBITMQ_
 
 export SHOPEASY_TEST_POSTGRES="Host=localhost;Port=55432;Username=postgres;Password=test"
 export SHOPEASY_TEST_RABBITMQ="amqp://test:test@localhost:55672"
-dotnet test src/Tests/ShopEasy.UnitTests          # now 772 run, 0 skipped
+dotnet test src/Tests/ShopEasy.UnitTests          # now 776 run, 0 skipped
 
 docker rm -f shopeasy-test-pg shopeasy-test-mq
 ```
@@ -1197,7 +1197,7 @@ Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new p
 | Job | What it checks |
 |---|---|
 | **Detect changes** | Decides whether the pull request touches anything that is built, tested or deployed (plain `git diff`, no third-party action). Skipped jobs count as passed in **CI passed**, so the check can stay required for documentation-only changes. |
-| **Build and test** | `dotnet restore/build` (Release) and all 772 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 56 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
+| **Build and test** | `dotnet restore/build` (Release) and all 776 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 56 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
 | **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, they take the shared ConfigMap (so a setting changed there reaches every service), third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
 | **Compose stack and end-to-end test** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. Last, it runs the [end-to-end test](#end-to-end-test) against those containers: a customer signs up, signs in, buys something and the order is confirmed, which no unit test can show because it needs every service, the broker and the databases working together. |
 | **Image scan** (one job per service) | Builds the service image and scans it with **Trivy**, run from its official image, pinned to a version (bump it by hand): the operating-system packages and the .NET runtime of the base image as well as the application. A vulnerability that is **HIGH or CRITICAL and has a fix fails the job**; one without a fix yet does not. The Dockerfiles run `apt-get upgrade`, so an image has Debian's security fixes even when Microsoft has not rebuilt the base image yet. A finding that has to be accepted goes into `.trivyignore` with the reason and a date to look at it again. A new CVE with a fix can turn this red without any change in the code: re-run the job (the base image tag is rebuilt when Microsoft releases a fix) or accept the finding. |
@@ -1501,7 +1501,6 @@ What has been hardened, and what is known to be missing.
 - A message published to an exchange that has no queue bound yet is dropped by the broker, so a command sent before its consuming service has started for the first time is lost until the saga timeout re-sends it. (Docker Compose and Kubernetes start order makes this rare.)
 - The MassTransit inbox only remembers a message for its 30-minute duplicate-detection window; beyond that, duplicates are caught by the business-level checks (pattern 7).
 - Inventory endpoints process one message at a time per instance (`ConcurrentMessageLimit = 1`). Correctness no longer depends on it (row locks do), so it can be raised for throughput.
-- `InventoryDbContext` has no unique database constraint on the ledger; idempotency relies on the row locks.
 - The CI is a *gate* only if branch protection requires the `CI passed` check (a one-time repository setting, see CI/CD); otherwise it reports but does not block.
 - The end-to-end test covers the happy path, cancelling a confirmed order and the refusals, not a declined payment or a cancel while the saga runs.
 - Images are published to GHCR and the manifests pin them by commit, but nothing deploys them automatically (that needs credentials for a specific cluster), and the pinned tag in `k8s/kustomization.yaml` is bumped by hand (`k8s/set-image-tag.sh`).
