@@ -169,7 +169,6 @@ try
     {
         options.AddCustomLabel("service", _ => "IdentityService");
     });
-    app.MapMetrics();
 
     app.UseSerilogRequestLogging(options =>
     {

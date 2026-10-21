@@ -6,33 +6,36 @@ global:
 rule_files:
   - prometheus-rules.yml
 
+# Every process serves its metrics on a port of its own (Metrics__Port, default 9091), not on the port
+# of its API: the API ports are the ones that are published to the host or reachable from outside, and
+# Compose does not publish 9091. The metrics are not authenticated, so that port must stay internal.
 scrape_configs:
   - job_name: 'shopeasy-gateway'
     static_configs:
-      - targets: ['gateway:8080']
+      - targets: ['gateway:9091']
     metrics_path: '/metrics'
 
   - job_name: 'shopeasy-product'
     static_configs:
-      - targets: ['product:8080']
+      - targets: ['product:9091']
     metrics_path: '/metrics'
 
   - job_name: 'shopeasy-order'
     static_configs:
-      - targets: ['order:8080']
+      - targets: ['order:9091']
     metrics_path: '/metrics'
 
   - job_name: 'shopeasy-inventory'
     static_configs:
-      - targets: ['inventory:8080']
+      - targets: ['inventory:9091']
     metrics_path: '/metrics'
 
   - job_name: 'shopeasy-payment'
     static_configs:
-      - targets: ['payment:8080']
+      - targets: ['payment:9091']
     metrics_path: '/metrics'
 
   - job_name: 'shopeasy-identity'
     static_configs:
-      - targets: ['identity:8080']
+      - targets: ['identity:9091']
     metrics_path: '/metrics'

@@ -302,7 +302,7 @@ What each endpoint needs (the policies are in `ShopEasy.Shared/Security/AccessPo
 | Payment | `GET /api/payments/order/{id}` | `payment.read`; a user sees only their own payment, an admin any |
 | | `GET /api/payments` | `payment.read` and admin |
 
-**Closed unless opened.** An endpoint with no attribute requires a signed-in caller (the fallback policy), so a new endpoint is never public by accident; health checks and the metrics endpoint are marked anonymous on purpose. `Security/EndpointAccessTests` calls every endpoint of the four APIs with seven kinds of caller (nobody, customer, admin, a client without API scopes, an admin without API scopes, a token for another API, the Order service's token) against the real controllers, and fails when an endpoint is missing from its table.
+**Closed unless opened.** An endpoint with no attribute requires a signed-in caller (the fallback policy), so a new endpoint is never public by accident; health checks are marked anonymous on purpose, and the metrics are not served on the API port at all (see *Known limitations*). `Security/EndpointAccessTests` calls every endpoint of the four APIs with seven kinds of caller (nobody, customer, admin, a client without API scopes, an admin without API scopes, a token for another API, the Order service's token) against the real controllers, and fails when an endpoint is missing from its table.
 
 **Service identity.** The Order service asks Identity for its own token (`order-service` client, client credentials). It names Inventory as its audience and carries `inventory.read`, the only scope the client may request: Identity answers `invalid_scope` to anything else, and the other APIs refuse the token for its audience. Inventory's gRPC endpoint accepts only such a token, one that names a client and no user: a customer's or an administrator's token is refused with `403` even when it carries the scope. The Order service caches the token for its 15-minute life and renews it a minute early. While Identity is unreachable it keeps using the old token until it is about to expire (and then falls back to the cached stock levels, [pattern 26](#26-resilient-calls-between-services)); if Inventory refuses the token it is dropped, a new one is fetched on the next call and an error is logged.
 
@@ -707,7 +707,7 @@ Services read standard ASP.NET Core configuration, so every key can be an enviro
 | `RabbitMQ__Host`, `RabbitMQ__Username`, `RabbitMQ__Password` | Order, Inventory, Payment | Username and password are **required** (no `guest` fallback). |
 | `RabbitMQ__Port` | Order | AMQP port used by the dead-letter tooling. Default `5672`. |
 | `RabbitMQ__ManagementUiUrl` | Order | Optional, e.g. `http://localhost:15672`. Only adds a "View" link to the dead-letter page; the service never calls it. |
-| `Metrics__Port` | all services | Port of the Prometheus metrics listener. Default `9091`; change it when running several services on one machine. |
+| `Metrics__Port` | all services | Port of the Prometheus metrics listener, separate from the API port. Default `9091`; change it when running several services on one machine. Compose does not publish it: Prometheus reaches it inside the Compose network (`prometheus.yml`), and `/metrics` is not served on the API port. |
 | `ServiceAuth__ClientId`, `ServiceAuth__ClientSecret` | Order | **Required** when the service token is used. |
 | `Services__ProductService` | Order | Product service base URL used for price lookup. Default `http://product:8080`. |
 | `Services__InventoryGrpcService` | Order | Inventory's gRPC address for the stock check. Default `http://inventory:8090`. |
@@ -755,7 +755,7 @@ dotnet user-secrets set "RabbitMQ:Password" "<RABBITMQ_PASSWORD>"
 
 ### Security notes
 
-- **Monitoring pages and APIs need a login.** `/outbox`, `/sagas` and `/deadletters` on the gateway redirect to the login page, and `/api/outbox/*` on the Order service requires the `admin` role. Swagger UIs and metrics ports are still open in this project; put them behind your network controls in production.
+- **Monitoring pages and APIs need a login.** `/outbox`, `/sagas` and `/deadletters` on the gateway redirect to the login page, and `/api/outbox/*` on the Order service requires the `admin` role. The metrics are served only on the metrics port (`Metrics__Port`, default `9091`), which Compose does not publish; Swagger UIs are still open in this project, so put them behind your network controls in production.
 - **Identity key protection.** IdentityServer's signing keys are generated at runtime (automatic key management) and stored **in PostgreSQL**, together with the ASP.NET Data Protection key ring and the issued grants (authorization codes, refresh tokens, consent), so tokens survive restarts and rolling updates and several Identity replicas share one state. The signing keys are encrypted with the Data Protection key ring, which sits in the same database: **without a key-encryption certificate, anyone who can read the database can read the keys** (ASP.NET Core logs `No XML encryptor configured`). Set `DataProtection__CertificatePath` (a PKCS#12 file) and `DataProtection__CertificatePassword` to encrypt the ring with a certificate you guard separately — the Kubernetes manifests require it, see [Identity key protection](#identity-key-protection-kubernetes). `DataProtection__PreviousCertificatePath` keeps the ring readable while you rotate the certificate. Nothing is committed to git.
 - **Duende IdentityServer license.** The project runs unlicensed, which Duende allows for development and testing; in production you need a license (and automatic key management requires the Business or Enterprise tier — IdentityServer logs this at start-up). Without it, supply your own signing certificate instead of automatic key management.
 - **Containers run unprivileged.** Every service image runs as the base image's non-root `app` user (UID 1654); Compose and Kubernetes also set a read-only root file system (only `/tmp` is writable), drop all Linux capabilities and forbid privilege escalation. CI starts the real containers like this, so it cannot silently stop working.
@@ -1043,7 +1043,7 @@ All reachable from the landing page at `http://localhost:5000`:
 | Dead Letter Monitor | http://localhost:5000/deadletters | log in as an admin |
 | RabbitMQ Management | http://localhost:15672 | `RABBITMQ_USER` / `RABBITMQ_PASSWORD` from `.env` |
 | Jaeger (tracing) | http://localhost:16686 | — |
-| Prometheus | http://localhost:9090 | — |
+| Prometheus | http://localhost:9090 (Status → Targets shows the six services it scrapes on port `9091`) | — |
 | Grafana (dashboards) | http://localhost:3000 | `admin` / `GRAFANA_ADMIN_PASSWORD` from `.env` |
 | Seq (logs) | http://localhost:5341 | — |
 | Redis Insight | http://localhost:5540 | — |
@@ -1519,7 +1519,7 @@ What has been hardened, and what is known to be missing.
 - The gateway has no circuit breaker or passive health check: each cluster has a single destination, so there is nothing to fail over to (pattern 26). The retry budget and the timeouts bound the damage, but a dead service is still attempted on every request and answered with `502` after the connection fails. The Order service's `InventoryClient` (REST) has older, fixed Polly settings; it is registered but not used for the stock check.
 - Redis calls have no explicit timeouts of their own: a Redis server that accepts connections and never answers stalls each cache lookup until the StackExchange.Redis defaults (5 s) apply.
 - Identity has no self-service "forgot password" reset (it needs an e-mail service, which the project does not have) and no e-mail verification: customers can sign up and change a password they know, administrators can manage roles, disable accounts and hand out a one-time temporary password, but a user cannot recover a forgotten password on their own, and a temporary password does not expire by itself. The first administrator comes from the configuration.
-- Swagger UIs and Prometheus metrics ports are unauthenticated.
+- Swagger UIs are unauthenticated. So is the metrics port (`9091`), which is why it is separate from the API port: Compose does not publish it, and in Kubernetes the default-deny network policy closes it until you allow your Prometheus to reach it. The metrics include sales figures.
 - Traffic between the services is plain HTTP inside the network, so bearer tokens (a user's lasts one hour, a service's 15 minutes) cross it in the clear. Network policies limit who can reach whom; TLS on every service or a mesh with mutual TLS is needed to protect the tokens in transit.
 - The gateway forwards one access token that names every API in its audience, so a service that receives it could replay it against another API. Scopes and roles still limit what it can do there, but only separate tokens per API (token exchange) would close that.
 

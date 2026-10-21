@@ -261,15 +261,18 @@ jobs:
       - name: Configuration
         run: cp .env.example .env
 
-      # Only the services of the application; the monitoring tools (Grafana, Seq, Jaeger, ...) do
-      # not affect whether the application starts.
+      # The services of the application, and Prometheus to prove it can scrape them; the other
+      # monitoring tools (Grafana, Seq, Jaeger, ...) do not affect whether the application starts.
       - name: Build the images and start the services
         run: >-
           docker compose up -d --build --wait --wait-timeout 900
-          postgres rabbitmq redis identity product inventory payment order gateway
+          postgres rabbitmq redis identity product inventory payment order gateway prometheus
 
       - name: Containers run unprivileged
         run: bash .github/scripts/check-running-containers.sh
+
+      - name: Metrics are scraped from the internal port only
+        run: bash .github/scripts/check-metrics.sh
 
       - name: Identity serves its signing key (generated into and read from PostgreSQL)
         run: |

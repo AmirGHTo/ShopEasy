@@ -300,8 +300,6 @@ try
     {
         options.AddCustomLabel("service", _ => "InventoryService");
     });
-    // scraped by Prometheus without credentials (see "Known limitations" in the README)
-    app.MapMetrics().AllowAnonymous();
     app.MapControllers();
 
     app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
