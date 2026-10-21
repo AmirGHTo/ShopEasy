@@ -642,7 +642,7 @@ docker-compose down -v
 
 ### Database migrations
 
-Each service applies its EF Core migrations automatically at start-up. When several replicas start at once, Product, Inventory and Payment take a PostgreSQL advisory lock around the migrations and the seeding (`MigrationLock`): the first replica applies them, the others wait (up to two minutes) and then find nothing left to do. The lock belongs to a database session of its own, so a replica that dies in the middle of a migration does not block the others. To change a schema, add a **new** migration from that service's folder (never delete and re-create `InitialCreate` on a database that holds data):
+Each service applies its EF Core migrations automatically at start-up. When several replicas start at once, every service takes a PostgreSQL advisory lock around the migrations and the seeding (`MigrationLock`): the first replica applies them, the others wait (up to two minutes) and then find nothing left to do. The lock belongs to a database session of its own, so a replica that dies in the middle of a migration does not block the others. To change a schema, add a **new** migration from that service's folder (never delete and re-create `InitialCreate` on a database that holds data):
 
 ```bash
 cd src/Services/ShopEasy.OrderService      # or ShopEasy.ProductService / InventoryService / PaymentService
@@ -1362,7 +1362,7 @@ Without that Secret the Identity pod stays in `ContainerCreating` (*secret "iden
 kubectl delete namespace shopeasy
 ```
 
-> **Note on migrations under multiple replicas:** Product, Inventory and Payment take an advisory lock around their migrations (see [Database migrations](#database-migrations)), so replicas can start together. The Order and Identity services swallow the `42P07` ("relation already exists") error instead, so that when two replicas start simultaneously, the one that loses the migration race continues cleanly instead of crash-looping.
+> **Note on migrations under multiple replicas:** every service takes an advisory lock around its migrations (see [Database migrations](#database-migrations)), so replicas can start together: the first migrates and the others wait for it.
 
 ---
 
@@ -1430,7 +1430,7 @@ ShopEasy/
 
 **gRPC fails with `HTTP_1_1_REQUIRED`** — Inventory must expose gRPC on a dedicated HTTP/2-only port (8090). REST stays on 8080. The env var `DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2UNENCRYPTEDSUPPORT=1` enables cleartext HTTP/2.
 
-**Order migration crash on multi-instance start** — handled in code (swallows `42P07`); if you see it, ensure you rebuilt the Order image.
+**Migration crash on multi-instance start** — handled in code: the migrations run under a lock (`MigrationLock`), so replicas take turns; if you see `42P07` ("relation already exists"), rebuild the image.
 
 **`docker-compose --scale` fails with "container name" warning** — the Order service must not have a fixed `container_name` and must expose a dynamic port (`- "8080"`, not `- "5102:8080"`).
 
@@ -1509,7 +1509,6 @@ What has been hardened, and what is known to be missing.
 - Without `DataProtection__CertificatePath`, Identity's key ring — and with it the signing keys — is stored in the database in clear text; the Kubernetes manifests require the certificate, Compose (local development) does not. Production use of Duende IdentityServer needs a license (see Security notes).
 - PostgreSQL, RabbitMQ and Redis in `k8s/` are single-replica Deployments (with a PVC at most), so they are not highly available. Use a managed service or an operator for production data stores.
 - A customer cancel (`DELETE /api/orders/{id}`) is logged and published under the *cancel request's* correlation id, not the id of the request that placed the order; `OrderId` links the two.
-- Migrations run at service start-up. With several replicas starting together, Product, Inventory and Payment take turns with a lock; Order and Identity only ignore the error of the replica that loses the race, which can then start serving while the winner is still finishing.
 - After an outage of the database or of the Order service, a saga that waits for a reply (`ReservingInventory` and later) can still be timed out one interval after the service is back, if the reply is in a consumer's retry pause (up to 60 s by default). The compensation is safe (stock released, order cancelled); only a saga in `Started`, where nothing has been done yet, is fully protected.
 - A database outage longer than the patient-retry window (about 7 minutes by default) sends the messages that were in flight to the `*_error` queues; requeue them once the database is back (pattern 14). While it lasts, every consumer slot retries in parallel (bounded by the pool size and the consumers' concurrency); there is no circuit breaker that pauses consumption.
 - The gateway has no circuit breaker or passive health check: each cluster has a single destination, so there is nothing to fail over to (pattern 26). The retry budget and the timeouts bound the damage, but a dead service is still attempted on every request and answered with `502` after the connection fails. The Order service's `InventoryClient` (REST) has older, fixed Polly settings; it is registered but not used for the stock check.

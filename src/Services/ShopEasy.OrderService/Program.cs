@@ -463,15 +463,10 @@ try
         try
         {
             logger.LogInformation("Applying database migrations...");
-            db.Database.Migrate();
+            // Replicas starting together take turns: the first migrates, the others wait for it
+            await MigrationLock.RunAsync(
+                db.Database.GetConnectionString()!, nameof(OrderDbContext), () => db.Database.MigrateAsync(), logger);
             logger.LogInformation("Database migrations applied.");
-        }
-        catch (Npgsql.PostgresException ex) when (ex.SqlState == "42P07")
-        {
-            // Table already exists — another instance ran migrations first
-            // This is safe to ignore in a multi-instance deployment
-            logger.LogWarning(
-                "Migration table already exists — another instance applied migrations first. Continuing.");
         }
         catch (Exception ex)
         {
