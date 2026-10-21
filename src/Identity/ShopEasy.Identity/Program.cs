@@ -145,20 +145,14 @@ try
         try
         {
             logger.LogInformation("Applying database migrations...");
-            try
+            // Replicas starting together take turns: the first migrates, the others wait for it
+            await MigrationLock.RunAsync(db.Database.GetConnectionString()!, nameof(ApplicationDbContext), async () =>
             {
-                db.Database.Migrate();
-            }
-            catch (Npgsql.PostgresException ex) when (ex.SqlState == "42P07")
-            {
-                // Another replica created the tables first (same handling as the Order service):
-                // starting several Identity pods at once must not crash-loop the ones that lose.
-                logger.LogWarning(
-                    "Migration table already exists — another instance applied migrations first. Continuing.");
-            }
-            // Demo users are opt-in (Seed:Enabled=true) — never seed known credentials in production
-            if (app.Configuration.GetValue<bool>("Seed:Enabled"))
-                await DatabaseSeeder.SeedUsersAsync(scope.ServiceProvider);
+                await db.Database.MigrateAsync();
+                // Demo users are opt-in (Seed:Enabled=true) — never seed known credentials in production
+                if (app.Configuration.GetValue<bool>("Seed:Enabled"))
+                    await DatabaseSeeder.SeedUsersAsync(scope.ServiceProvider);
+            }, logger);
 
             // The roles, and the first administrator when one is configured and none exists yet
             await AdminBootstrap.RunAsync(scope.ServiceProvider);
