@@ -1,0 +1,74 @@
+message CommitInventoryCommand
+  OrderId: Guid
+message InventoryCommitFailedEvent
+  OrderId: Guid
+  Reason: string
+message InventoryCommittedEvent
+  OrderId: Guid
+message InventoryReleasedEvent
+  OrderId: Guid
+message InventoryReservationFailedEvent
+  OrderId: Guid
+  Reason: string
+message InventoryReservedEvent
+  OrderId: Guid
+message InventoryRestockedEvent
+  OrderId: Guid
+message LowStockAlertEvent
+  CurrentStock: int
+  DetectedAt: DateTime
+  ProductId: Guid
+  ProductName: string
+  Threshold: int
+message OrderConfirmedEvent
+  ConfirmedAt: DateTime
+  Items: List<OrderLineItem>
+  OrderId: Guid
+  TotalAmount: decimal
+  UserEmail: string
+  UserId: string
+message OrderLineItem
+  ProductId: Guid
+  ProductName: string
+  Quantity: int
+  UnitPrice: decimal
+message PaymentFailedEvent
+  OrderId: Guid
+  Reason: string
+message PaymentProcessedEvent
+  Amount: decimal
+  FailureReason: string?
+  OrderId: Guid
+  PaymentId: Guid
+  ProcessedAt: DateTime
+  Status: PaymentStatus
+  UserId: string
+message PaymentRefundedEvent
+  Amount: decimal
+  OrderId: Guid
+  PaymentId: Guid
+enum PaymentStatus
+  Pending = 0
+  Succeeded = 1
+  Failed = 2
+  Refunded = 3
+message PaymentSucceededEvent
+  Amount: decimal
+  OrderId: Guid
+  PaymentId: Guid
+message ProcessPaymentCommand
+  Amount: decimal
+  Currency: string
+  OrderId: Guid
+  UserEmail: string
+  UserId: string
+message RefundPaymentCommand
+  OrderId: Guid
+  Reason: string
+message ReleaseInventoryCommand
+  OrderId: Guid
+message ReserveInventoryCommand
+  Items: List<OrderLineItem>
+  OrderId: Guid
+message RestockInventoryCommand
+  OrderId: Guid
