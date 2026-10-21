@@ -48,7 +48,10 @@ public class OutboxDeliveryService(
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
-        var publishEndpoint = scope.ServiceProvider.GetRequiredService<IPublishEndpoint>();
+        // The bus itself, not IPublishEndpoint: the MassTransit outbox (Program.cs) replaces the
+        // scoped IPublishEndpoint with one that stores the message in the database, and this
+        // service is already reading its own outbox table
+        var publishEndpoint = scope.ServiceProvider.GetRequiredService<IBus>();
 
         var pendingCount = await db.OutboxEntries
             .CountAsync(e => e.DeliveredAt == null && e.RetryCount < MaxRetries, ct);

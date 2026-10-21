@@ -77,28 +77,34 @@ public class SagaOrchestrator : BackgroundService
                     "Saga {SagaId} for Order {OrderId} failed unexpectedly",
                     saga.Id, saga.OrderId);
 
-                saga.FailureReason = ex.Message;
-                saga.RetryCount++;
-                saga.UpdatedAt = DateTime.UtcNow;
+                // What the failed attempt changed but never saved (the new state, the command in
+                // the outbox) is forgotten: the retry count goes onto the saga as it is in the database
+                db.ChangeTracker.Clear();
+                var failed = await db.SagaStates.FindAsync([saga.Id], ct);
+                if (failed is null) continue;
 
-                if (saga.RetryCount >= _options.MaxAttempts)
+                failed.FailureReason = ex.Message;
+                failed.RetryCount++;
+                failed.UpdatedAt = DateTime.UtcNow;
+
+                if (failed.RetryCount >= _options.MaxAttempts)
                 {
-                    saga.Status = SagaStatus.Failed;
-                    await CancelOrderAsync(saga, db, ct);
+                    failed.Status = SagaStatus.Failed;
+                    await CancelOrderAsync(failed, db, ct);
                     _logger.LogError(
                         "Saga {SagaId} marked as Failed after {Retries} attempts",
-                        saga.Id, saga.RetryCount);
+                        failed.Id, failed.RetryCount);
                 }
                 else
                 {
                     _logger.LogWarning(
                         "Saga {SagaId}: attempt {Attempt} of {Max} failed, trying again in {Pause}s",
-                        saga.Id, saga.RetryCount, _options.MaxAttempts, _options.PauseAfter(saga.RetryCount).TotalSeconds);
+                        failed.Id, failed.RetryCount, _options.MaxAttempts, _options.PauseAfter(failed.RetryCount).TotalSeconds);
                 }
 
                 await db.SaveChangesAsync(ct);
 
-                if (saga.Status == SagaStatus.Failed)
+                if (failed.Status == SagaStatus.Failed)
                     OrderMetrics.RecordOrderFailed(FailReason.OrchestratorError);
             }
         }
@@ -184,57 +190,35 @@ public class SagaOrchestrator : BackgroundService
         ISagaLocking sagaLocking,
         CancellationToken ct)
     {
-        ReserveInventoryCommand command;
-
         // Claim the saga: lock its row and re-check the state. Without this, two Order
         // instances polling the same table would both start it, and a cancel arriving at the
         // same moment would be overwritten by the orchestrator's stale copy.
-        await using (var transaction = await db.Database.BeginTransactionAsync(ct))
-        {
-            var locked = await sagaLocking.LockByOrderIdAsync(db, saga.OrderId, ct);
-            if (locked is null || locked.Status != SagaStatus.Started)
-            {
-                _logger.LogInformation(
-                    "Saga {SagaId}: no longer in Started state — skipping", saga.Id);
-                return;
-            }
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
+        var locked = await sagaLocking.LockByOrderIdAsync(db, saga.OrderId, ct);
+        if (locked is null || locked.Status != SagaStatus.Started)
+        {
             _logger.LogInformation(
-                "Saga {SagaId}: Sending ReserveInventoryCommand for Order {OrderId}",
-                locked.Id, locked.OrderId);
-
-            command = new ReserveInventoryCommand
-            {
-                OrderId = locked.OrderId,
-                Items = JsonSerializer.Deserialize<List<OrderLineItem>>(locked.ItemsJson)!
-            };
-
-            // Save the new state BEFORE publishing: the reply can arrive within milliseconds
-            // and InventoryReservedConsumer only accepts it while the saga is ReservingInventory.
-            locked.Status = SagaStatus.ReservingInventory;
-            locked.UpdatedAt = DateTime.UtcNow;
-            await db.SaveChangesAsync(ct);
-            await transaction.CommitAsync(ct);
+                "Saga {SagaId}: no longer in Started state — skipping", saga.Id);
+            return;
         }
 
-        try
+        _logger.LogInformation(
+            "Saga {SagaId}: Sending ReserveInventoryCommand for Order {OrderId}",
+            locked.Id, locked.OrderId);
+
+        // The command goes into the MassTransit outbox table and is saved with the new state in
+        // one SaveChanges; a delivery service sends it after the commit. So the reply cannot
+        // arrive before the state is saved (InventoryReservedConsumer only accepts it while the
+        // saga is ReservingInventory), and a crash or a broker outage cannot lose the command.
+        await publishEndpoint.Publish(new ReserveInventoryCommand
         {
-            await publishEndpoint.Publish(command, ct);
-        }
-        catch
-        {
-            // Command never left — go back to Started so the next poll retries it
-            // (unless something else, e.g. a cancel, has moved the saga on in the meantime)
-            await using var transaction = await db.Database.BeginTransactionAsync(CancellationToken.None);
-            var locked = await sagaLocking.LockByOrderIdAsync(db, saga.OrderId, CancellationToken.None);
-            if (locked is not null && locked.Status == SagaStatus.ReservingInventory)
-            {
-                locked.Status = SagaStatus.Started;
-                locked.UpdatedAt = DateTime.UtcNow;
-                await db.SaveChangesAsync(CancellationToken.None);
-                await transaction.CommitAsync(CancellationToken.None);
-            }
-            throw;
-        }
+            OrderId = locked.OrderId,
+            Items = JsonSerializer.Deserialize<List<OrderLineItem>>(locked.ItemsJson)!
+        }, ct);
+        locked.Status = SagaStatus.ReservingInventory;
+        locked.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
     }
 }

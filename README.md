@@ -178,7 +178,7 @@ stateDiagram-v2
     ProcessingPayment --> ReleasingInventory: PaymentFailed, customer cancel or timeout
     ReleasingInventory --> Cancelled: InventoryReleased
     Started --> Cancelled: customer cancel
-    Started --> Failed: the first command cannot be sent (order cancelled)
+    Started --> Failed: the orchestrator keeps failing to start it (order cancelled)
     Completing --> Failed: InventoryCommitFailed (payment refunded)
 
     Completed --> RefundingPayment: cancel of a paid order
@@ -339,14 +339,15 @@ or, for a paid order that is cancelled: `→ RefundingPayment → RestockingInve
 
 The saga only becomes `Completed` (and the order `Confirmed`) when the Inventory service has **confirmed the stock commit** with an `InventoryCommittedEvent`. While it waits it is in `Completing`; if no answer arrives the timeout service re-sends the commit (safe, because commit is idempotent).
 
-Each handler only acts when the saga is in the state its event is valid for. A duplicate or late event is ignored (or compensated), never allowed to move an order backwards. The saga state is always saved **before** the next command is published, so a fast reply can never arrive while the saga still shows the old state.
+Each handler only acts when the saga is in the state its event is valid for. A duplicate or late event is ignored (or compensated), never allowed to move an order backwards. The saga state and the next command are saved **together** (the command in the outbox table, pattern 22) and the command is sent after the commit, so a fast reply can never arrive while the saga still shows the old state, and a crash or a broker outage cannot lose the command.
 
 **Compensation matrix — every failure has a defined recovery:**
 
 | Failure point | Inventory | Payment | Recovery action |
 |---|---|---|---|
 | Stock check fails | not reserved | not charged | Cancel order |
-| The orchestrator cannot send the first command (the broker is down) | not reserved | not charged | Retried after a growing pause (3 s up to 60 s, 8 attempts, about 3.5 minutes; `SagaOrchestrator` settings); then saga `Failed`, order **Cancelled** ("The order could not be processed"), the technical reason stays on the saga |
+| The broker is down when the orchestrator starts the saga | not reserved yet | not charged | Nothing to retry: the command is stored with the saga state and sent when RabbitMQ is back |
+| The orchestrator fails to start the saga (a database error, an unreadable item list) | not reserved | not charged | Retried after a growing pause (3 s up to 60 s, 8 attempts, about 3.5 minutes; `SagaOrchestrator` settings); then saga `Failed`, order **Cancelled** ("The order could not be processed"), the technical reason stays on the saga |
 | Payment declined | reserved | not charged | Release inventory → Cancel |
 | Timeout waiting for payment | reserved | not charged | Release inventory → Cancel |
 | Late payment after cancel | released | charged | **Refund** → stay Cancelled |
@@ -471,7 +472,7 @@ A client must never decide what it pays. `POST /api/orders` only accepts **what 
 
 Several actors change a saga: the event consumers, the orchestrator that starts it, the timeout service and customer cancellation. Every transition therefore runs in a database transaction and loads the saga with `SELECT … FOR UPDATE` (`ISagaLocking`, `Sagas/SagaLocking.cs`), so a payment result racing the timeout, a cancel racing the orchestrator, or two Order instances starting the same saga are serialized: the second actor waits and then sees the first one's outcome. Commands are published only after the transaction commits.
 
-### 22. Transactional Inbox/Outbox (Payment & Inventory)
+### 22. Transactional Inbox/Outbox (Payment, Inventory & Order)
 
 A consumer that changes its database *and* publishes a result event has a classic gap: a crash between the commit and the publish loses the event, a failure after the publish leaves an event for a change that was rolled back. Payment and Inventory close it with MassTransit's **Entity Framework inbox/outbox** (`AddEntityFrameworkOutbox` + `UseEntityFrameworkOutbox` on every consumer endpoint):
 
@@ -481,7 +482,7 @@ A consumer that changes its database *and* publishes a result event has a classi
 
 Result: a payment or stock change is never recorded without its event, and no event is sent for work that was rolled back. This holds when the service is killed between the commit and the delivery, and when RabbitMQ is stopped at that moment: after the restart exactly one event arrives and the payment or stock change is not repeated. The all-or-nothing behaviour is covered by tests against a real PostgreSQL (see *Testing*).
 
-The consumers call `db.Database.BeginOrJoinAsync()` (`Data/UnitOfWork.cs`): inside the outbox they **join** MassTransit's transaction; without it (unit tests) they open and own one. Tables: `InboxState`, `OutboxMessage` and `OutboxState` in the Payment and Inventory databases; old rows are cleaned up by MassTransit (duplicate-detection window: 30 minutes). The Order service keeps its own hand-written outbox (pattern 5) for the event that starts the saga. Its saga event handlers use the MassTransit outbox too: the next command is stored with the new saga state and sent after the commit.
+The consumers call `db.Database.BeginOrJoinAsync()` (`Data/UnitOfWork.cs`): inside the outbox they **join** MassTransit's transaction; without it (unit tests) they open and own one. Tables: `InboxState`, `OutboxMessage` and `OutboxState` in the Payment and Inventory databases; old rows are cleaned up by MassTransit (duplicate-detection window: 30 minutes). The Order service keeps its own hand-written outbox (pattern 5) for the event that starts the saga. Its saga event handlers use the MassTransit outbox too: the next command is stored with the new saga state and sent after the commit. What publishes outside a consumer (the orchestrator, the saga timeout service and the cancel endpoint) uses the *bus outbox*: the command is added to the same `SaveChanges` as the saga state, and a delivery service in the Order process sends it, checking the table every `Outbox__QueryDelayMs`. The hand-written outbox above publishes straight to the bus.
 
 ### 23. Broker Readiness (no management API)
 
@@ -713,7 +714,8 @@ Services read standard ASP.NET Core configuration, so every key can be an enviro
 | `Redis__ConnectTimeoutMs`, `Redis__CommandTimeoutMs` | Product, Inventory, Order | How long connecting to Redis, and one Redis command, may take before the request reads the database instead. Milliseconds, at least 100. Defaults `1000` and `500`. See [pattern 16](#16-redis-caching). |
 | `Telemetry__Endpoint` | all | OTLP endpoint (Jaeger), default `http://jaeger:4317`. |
 | `Idempotency__RequireKey`, `Idempotency__RetentionHours` | Order | `Idempotency-Key` on `POST /api/orders`: reject requests without the header (default `false`) and how long a key is remembered (default `24` hours). See [Order API](#retrying-safely-the-idempotency-key-header). |
-| `SagaOrchestrator__MaxAttempts`, `SagaOrchestrator__FirstRetryPauseSeconds`, `SagaOrchestrator__MaxRetryPauseSeconds` | Order | Retries of an order's first command when the message broker is down: attempts before the order is cancelled (default `8`), the first pause (default `3` s, doubling each time) and the longest pause (default `60` s; must stay below the 120 s saga timeout). Invalid values stop the service at start-up. |
+| `Outbox__QueryDelayMs` | Order | How often Order looks in its outbox table for saga commands to send to RabbitMQ (default `500`, at least `50`). A command waits at most this long after the commit; a smaller value sends sooner and queries the database more often. |
+| `SagaOrchestrator__MaxAttempts`, `SagaOrchestrator__FirstRetryPauseSeconds`, `SagaOrchestrator__MaxRetryPauseSeconds` | Order | Retries of an order's first step when the orchestrator fails (for example a database error): attempts before the order is cancelled (default `8`), the first pause (default `3` s, doubling each time) and the longest pause (default `60` s; must stay below the 120 s saga timeout). Invalid values stop the service at start-up. |
 | `BackgroundLoops__PassTimeoutSeconds` | Order | A pass of a polling loop (saga orchestrator, saga timeout service, outbox delivery, dead-letter monitor) that has not finished after this many seconds is cancelled and counts as a failed pass, so a hanging call cannot freeze the loop. Default `120`, at least `10`. |
 | `IdentityServer__RequireHttpsMetadata` | all APIs, Gateway | Fetch Identity's discovery document and signing keys only over HTTPS. Default `false`; switch on together with an `https://` `IdentityServer__Authority` (see [pattern 2](#2-authentication--authorization-oauth2--oidc--jwt)). |
 | `Security__CookieSecurePolicy` | Gateway, Identity | `Always`, `SameAsRequest` (default) or `None`: when the session and login cookies get the Secure flag. Use `Always` behind HTTPS. A misspelt value stops the service. |
@@ -1116,7 +1118,7 @@ dotnet test src/Tests/ShopEasy.EndToEndTests
 | Commit flow | `Sagas/CommitFlowTests` | Completion only after `InventoryCommittedEvent`, refund on `InventoryCommitFailedEvent`, duplicate or late events never refund, cancel or release a finished order. |
 | Saga starter and first handlers | `Sagas/SagaOrchestratorTests`, `Consumers/*` | Starting a saga (including idempotency), the reserved / payment consumers, outbox entry state. |
 | Inventory consumers | `Inventory/*` | Reserve, commit and release including duplicates, out-of-order messages, shortages, multi-product orders and a missing inventory record. |
-| Orchestrator and polling loops (no servers needed) | `Sagas/OrchestratorRetryTests`, `Sagas/BackgroundLoopGuardTests` | The orchestrator retries a saga's first command after a growing pause and cancels the order after `MaxAttempts`; a failed pass of any of the four polling loops is logged as a few lines and the loop keeps running; a pass that hangs is cancelled; the timeout service times nothing out in its first pass after starting or failing. |
+| Orchestrator and polling loops (no servers needed) | `Sagas/OrchestratorRetryTests`, `Sagas/BackgroundLoopGuardTests` | The orchestrator retries a saga's first step after a growing pause and cancels the order after `MaxAttempts`; a failed pass of any of the four polling loops is logged as a few lines and the loop keeps running; a pass that hangs is cancelled; the timeout service times nothing out in its first pass after starting or failing. |
 | Business metrics (no servers needed) | `Observability/*` | Sales, cancellations by reason, failed orders, refused requests and payments are each counted once per event, however often a command is delivered; the stuck-order gauges are published by the pass the running service makes; failed passes of a polling loop are counted and the time of the last success is exported. |
 | Order placement | `Orders/*` | Request validation and limits, server-side price/name resolution, the Product service client (404, 5xx, network failure, malformed response). |
 | Order ↔ Product contract (no servers needed) | `Orders/ProductCatalogContractTests` | The Order service's `ProductCatalogClient` against the real Product controllers over HTTP (in-memory database): the Order service has its own copy of the product shape, and the client tests answer with hand-written JSON, so only this notices a renamed property, a moved route or a different price type. A product is read with its id, name, exact price and active flag; an inactive one arrives inactive; an unknown id is a 404 read as missing. |
@@ -1493,12 +1495,12 @@ What has been hardened, and what is known to be missing.
 | 7 | Observability (per-service log names, configurable Seq, correlation id across HTTP, outbox, saga and RabbitMQ, MassTransit + Npgsql traces), CI/CD on GitHub Actions (build, all tests incl. PostgreSQL/RabbitMQ, deployment-file validation, image builds, publish to GHCR, Dependabot), vulnerable dependencies patched and gated, saga row-locking tests on PostgreSQL, saga tests re-enabled |
 | 8 | Non-root images (no SQLite, no `chmod 777`), read-only containers started by CI, Kubernetes with pinned published image tags and no local-image assumptions, Identity keys / key ring / grants shared in PostgreSQL (several replicas), network policies |
 | 9 | Resilience and API safety: consumers ride out database and network outages and every database wait is bounded (pattern 24); order placement is idempotent (pattern 25); calls between services have deadlines, budgeted retries and circuit breakers, and the gateway times out silent services (pattern 26); every API checks audience, scope and role, and the internal gRPC call needs a service identity (pattern 2). An end-to-end test of the order journey runs in CI. Business metrics and alert rules cover sales, cancellations, stuck orders, payments and the polling loops; the Grafana dashboard shows the order and payment metrics ([Developer Portal & Monitoring](#developer-portal--monitoring)) |
-| 10 | Saga recovery: a paid order can be cancelled (refund, then restock); the orchestrator retries an order's first command after a growing pause and cancels the order when it gives up; the polling loops survive a failed pass, log an outage as a few lines, cancel a pass that hangs and are watched by an alert; the timeout service times nothing out in its first pass after a start or a failed pass |
+| 10 | Saga recovery: a paid order can be cancelled (refund, then restock); the orchestrator retries an order's first step after a growing pause and cancels the order when it gives up; the polling loops survive a failed pass, log an outage as a few lines, cancel a pass that hangs and are watched by an alert; the timeout service times nothing out in its first pass after a start or a failed pass |
 
 **Known limitations** (documented so nobody is surprised):
 
 - A shipped or delivered order cannot be cancelled, and there is no return or partial-refund flow. A paid order that is cancelled before it ships is refunded in full.
-- The Order service's saga event handlers send their commands through the MassTransit outbox. The orchestrator, the timeout service and the cancel endpoint publish *after* committing, without it; a command lost in that gap is recovered by the saga timeout service, which re-sends it, and every consumer is idempotent.
+- The Order service's saga commands wait for the outbox delivery service: after the commit, a command to the other services is sent within `Outbox__QueryDelayMs` (500 ms by default) when it comes from the orchestrator, the timeout service or the cancel endpoint. The saga timeout service still re-sends commands whose answer never arrives, and every consumer is idempotent.
 - The Inventory consumers invalidate the Redis stock cache while MassTransit's transaction is still open (the commit follows immediately after the consumer returns). In that few-millisecond window a reader can re-cache the old stock level for up to its 30-second TTL. The cache is advisory — the saga's reservation is the authoritative check.
 - A message published to an exchange that has no queue bound yet is dropped by the broker, so a command sent before its consuming service has started for the first time is lost until the saga timeout re-sends it. (Docker Compose and Kubernetes start order makes this rare.)
 - The MassTransit inbox only remembers a message for its 30-minute duplicate-detection window; beyond that, duplicates are caught by the business-level checks (pattern 7).

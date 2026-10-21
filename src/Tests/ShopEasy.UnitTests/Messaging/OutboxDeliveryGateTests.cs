@@ -20,7 +20,7 @@ public class OutboxDeliveryGateTests
     private static (OutboxDeliveryService Service, IPublishEndpoint Publish, ServiceProvider Provider,
         ListLogger<OutboxDeliveryService> Log) Create(IBrokerReadiness readiness)
     {
-        var publish = Substitute.For<IPublishEndpoint>();
+        var publish = Substitute.For<IBus>();
         var databaseName = Guid.NewGuid().ToString();
 
         var services = new ServiceCollection();
