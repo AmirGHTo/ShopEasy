@@ -682,6 +682,7 @@ cp .env.example .env     # Windows cmd: copy .env.example .env
 | `SEED_ADMIN_PASSWORD` / `SEED_CUSTOMER_PASSWORD` | only if seeding | Passwords for the demo users. Must satisfy the Identity policy: at least 8 characters with an uppercase letter, a lowercase letter and a digit. |
 | `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | no (empty) | The **first administrator**: Identity creates this account at start-up, but only while no administrator exists yet (details under [How to Use It](#1-log-in)). The password must satisfy the Identity policy; it is a secret, so it lives here (or in a Kubernetes Secret) and nowhere in the repository. |
 | `EXPOSE_ACCESS_TOKEN` | no (`false`) | `true` enables `GET /account/token` on the gateway, which returns the raw JWT so you can paste it into Swagger's *Authorize* button (it is not needed for the browser console examples in this README). Off by default because the BFF pattern exists to keep tokens out of the browser. While it is off, `/account/token` answers `404` with a JSON message explaining how to turn it on. After changing it, recreate the gateway: `docker-compose up -d gateway`. |
+| `SWAGGER_ENABLED` | no (`true` in Compose) | The Swagger UI of Product, Inventory, Payment and Order (ports 5101, 5103, 5104 and Order's). On in the Compose stack so the examples in this README work; the code and the Kubernetes ConfigMap default to off. Set `false` before you expose the stack. |
 
 Generate strong random values, e.g. `openssl rand -base64 24`, or in PowerShell: `-join ((48..57)+(65..90)+(97..122) | Get-Random -Count 32 | % {[char]$_})`.
 
@@ -707,6 +708,7 @@ Services read standard ASP.NET Core configuration, so every key can be an enviro
 | `RabbitMQ__Host`, `RabbitMQ__Username`, `RabbitMQ__Password` | Order, Inventory, Payment | Username and password are **required** (no `guest` fallback). |
 | `RabbitMQ__Port` | Order | AMQP port used by the dead-letter tooling. Default `5672`. |
 | `RabbitMQ__ManagementUiUrl` | Order | Optional, e.g. `http://localhost:15672`. Only adds a "View" link to the dead-letter page; the service never calls it. |
+| `Swagger__Enabled` | Product, Inventory, Payment, Order | Serve the Swagger UI and `swagger.json` of the API. Default `false` in the code and in Kubernetes; Compose sets it from `SWAGGER_ENABLED` (default `true`). Swagger is not authenticated, so it is a switch, not a login. |
 | `Metrics__Port` | all services | Port of the Prometheus metrics listener, separate from the API port. Default `9091`; change it when running several services on one machine. Compose does not publish it: Prometheus reaches it inside the Compose network (`prometheus.yml`), and `/metrics` is not served on the API port. |
 | `ServiceAuth__ClientId`, `ServiceAuth__ClientSecret` | Order | **Required** when the service token is used. |
 | `Services__ProductService` | Order | Product service base URL used for price lookup. Default `http://product:8080`. |
@@ -755,12 +757,12 @@ dotnet user-secrets set "RabbitMQ:Password" "<RABBITMQ_PASSWORD>"
 
 ### Security notes
 
-- **Monitoring pages and APIs need a login.** `/outbox`, `/sagas` and `/deadletters` on the gateway redirect to the login page, and `/api/outbox/*` on the Order service requires the `admin` role. The metrics are served only on the metrics port (`Metrics__Port`, default `9091`), which Compose does not publish; Swagger UIs are still open in this project, so put them behind your network controls in production.
+- **Monitoring pages and APIs need a login.** `/outbox`, `/sagas` and `/deadletters` on the gateway redirect to the login page, and `/api/outbox/*` on the Order service requires the `admin` role. The metrics are served only on the metrics port (`Metrics__Port`, default `9091`), which Compose does not publish, and the Swagger UIs are off unless `Swagger__Enabled` is set (Compose sets it for local use).
 - **Identity key protection.** IdentityServer's signing keys are generated at runtime (automatic key management) and stored **in PostgreSQL**, together with the ASP.NET Data Protection key ring and the issued grants (authorization codes, refresh tokens, consent), so tokens survive restarts and rolling updates and several Identity replicas share one state. The signing keys are encrypted with the Data Protection key ring, which sits in the same database: **without a key-encryption certificate, anyone who can read the database can read the keys** (ASP.NET Core logs `No XML encryptor configured`). Set `DataProtection__CertificatePath` (a PKCS#12 file) and `DataProtection__CertificatePassword` to encrypt the ring with a certificate you guard separately — the Kubernetes manifests require it, see [Identity key protection](#identity-key-protection-kubernetes). `DataProtection__PreviousCertificatePath` keeps the ring readable while you rotate the certificate. Nothing is committed to git.
 - **Duende IdentityServer license.** The project runs unlicensed, which Duende allows for development and testing; in production you need a license (and automatic key management requires the Business or Enterprise tier — IdentityServer logs this at start-up). Without it, supply your own signing certificate instead of automatic key management.
 - **Containers run unprivileged.** Every service image runs as the base image's non-root `app` user (UID 1654); Compose and Kubernetes also set a read-only root file system (only `/tmp` is writable), drop all Linux capabilities and forbid privilege escalation. CI starts the real containers like this, so it cannot silently stop working.
 - **Secrets that were committed in the early history** of this repository (database password, client secrets, a signing key) must be treated as compromised: rotate them anywhere they were used.
-- **Never enable** `SEED_DEMO_USERS`, `EXPOSE_ACCESS_TOKEN` or `GRAFANA_ANONYMOUS_ENABLED` on anything reachable from the internet.
+- **Never enable** `SEED_DEMO_USERS`, `EXPOSE_ACCESS_TOKEN` or `GRAFANA_ANONYMOUS_ENABLED` on anything reachable from the internet, and set `SWAGGER_ENABLED=false` before you expose the Compose stack.
 
 ---
 
@@ -1048,7 +1050,7 @@ All reachable from the landing page at `http://localhost:5000`:
 | Seq (logs) | http://localhost:5341 | — |
 | Redis Insight | http://localhost:5540 | — |
 | pgAdmin | http://localhost:5050 | `admin@shopeasy.com` / `PGADMIN_PASSWORD` from `.env` |
-| Service Swagger | Product http://localhost:5101 · Inventory http://localhost:5103 · Payment http://localhost:5104 · Order on its assigned port (`docker compose port order 8080`) | — |
+| Service Swagger | Product http://localhost:5101 · Inventory http://localhost:5103 · Payment http://localhost:5104 · Order on its assigned port (`docker compose port order 8080`); on while `SWAGGER_ENABLED=true` (the default) | — |
 
 **pgAdmin connection** (to inspect databases): host `postgres`, port `5432`, user `shopeasy`, password = `POSTGRES_PASSWORD` from your `.env`.
 
@@ -1519,7 +1521,7 @@ What has been hardened, and what is known to be missing.
 - The gateway has no circuit breaker or passive health check: each cluster has a single destination, so there is nothing to fail over to (pattern 26). The retry budget and the timeouts bound the damage, but a dead service is still attempted on every request and answered with `502` after the connection fails. The Order service's `InventoryClient` (REST) has older, fixed Polly settings; it is registered but not used for the stock check.
 - Redis calls have no explicit timeouts of their own: a Redis server that accepts connections and never answers stalls each cache lookup until the StackExchange.Redis defaults (5 s) apply.
 - Identity has no self-service "forgot password" reset (it needs an e-mail service, which the project does not have) and no e-mail verification: customers can sign up and change a password they know, administrators can manage roles, disable accounts and hand out a one-time temporary password, but a user cannot recover a forgotten password on their own, and a temporary password does not expire by itself. The first administrator comes from the configuration.
-- Swagger UIs are unauthenticated. So is the metrics port (`9091`), which is why it is separate from the API port: Compose does not publish it, and in Kubernetes the default-deny network policy closes it until you allow your Prometheus to reach it. The metrics include sales figures.
+- The Swagger UIs and the metrics are unauthenticated, so they are kept out of reach instead. `Swagger__Enabled` is `false` in the code and in Kubernetes, and only the local Compose stack turns it on. The metrics are served on their own port (`9091`), which Compose does not publish; in Kubernetes the default-deny network policy closes it until you allow your Prometheus to reach it. The metrics include sales figures.
 - Traffic between the services is plain HTTP inside the network, so bearer tokens (a user's lasts one hour, a service's 15 minutes) cross it in the clear. Network policies limit who can reach whom; TLS on every service or a mesh with mutual TLS is needed to protect the tokens in transit.
 - The gateway forwards one access token that names every API in its audience, so a service that receives it could replay it against another API. Scopes and roles still limit what it can do there, but only separate tokens per API (token exchange) would close that.
 
