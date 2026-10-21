@@ -43,6 +43,11 @@ x-redis: &redis
   Redis__ConnectTimeoutMs: "${REDIS_CONNECT_TIMEOUT_MS:-1000}"
   Redis__CommandTimeoutMs: "${REDIS_COMMAND_TIMEOUT_MS:-500}"
 
+# The Swagger UI of the four APIs (ports 5101, 5103, 5104 and Order's) is on in this local stack and off
+# in the code and in Kubernetes: set SWAGGER_ENABLED=false in .env before you expose the stack.
+x-swagger: &swagger
+  Swagger__Enabled: "${SWAGGER_ENABLED:-true}"
+
 # Token validation and browser-facing security (see the README, "Authorization"). The values are the
 # defaults of the code and of appsettings.json; override one with the variable in .env (examples in
 # .env.example). identity-validation is merged into every service that validates tokens,
@@ -244,7 +249,7 @@ services:
     ports:
       - "5101:8080"
     environment:
-      <<: [*resilience-postgres, *redis, *identity-validation]
+      <<: [*resilience-postgres, *redis, *identity-validation, *swagger]
       ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_products;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
       IdentityServer__Authority: "http://identity:8080"
@@ -274,7 +279,7 @@ services:
     ports:
       - "5103:8080"
     environment:
-      <<: [*resilience-postgres, *resilience-consumers, *redis, *identity-validation]
+      <<: [*resilience-postgres, *resilience-consumers, *redis, *identity-validation, *swagger]
       # Enable HTTP/2 for gRPC (required)
       ASPNETCORE_HTTP_PORTS: ""   # disable default
         # Force HTTP/2 support
@@ -312,7 +317,7 @@ services:
     ports:
       - "5104:8080"
     environment:
-      <<: [*resilience-postgres, *resilience-consumers, *identity-validation]
+      <<: [*resilience-postgres, *resilience-consumers, *identity-validation, *swagger]
       ASPNETCORE_URLS: http://+:8080
       Testing__ForcePaymentSuccess: "true"
       ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_payments;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
@@ -346,7 +351,7 @@ services:
     ports:
       - "8080"        # ← change from "5102:8080" to just "8080" (dynamic host port)
     environment:
-      <<: [*resilience-postgres, *resilience-consumers, *resilience-retry-budget, *redis, *identity-validation]
+      <<: [*resilience-postgres, *resilience-consumers, *resilience-retry-budget, *redis, *identity-validation, *swagger]
       # Calls to the Inventory service (the stock check): deadline, retries, circuit breaker
       Resilience__Inventory__TimeoutSeconds: "${RESILIENCE_INVENTORY_TIMEOUT_SECONDS:-3}"
       Resilience__Inventory__MaxRetries: "${RESILIENCE_INVENTORY_MAX_RETRIES:-2}"

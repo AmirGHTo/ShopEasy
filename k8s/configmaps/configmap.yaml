@@ -6,6 +6,8 @@ metadata:
 data:
   ASPNETCORE_URLS: "http://+:8080"
   ASPNETCORE_ENVIRONMENT: "Production"
+  # The Swagger UI of the four APIs stays off in a cluster; it is unauthenticated.
+  Swagger__Enabled: "false"
   IdentityServer__Authority: "http://identity:8080"
   # Fetch Identity's discovery document and signing keys only over HTTPS. Switch on as soon as the
   # authority above is an https:// address; the in-cluster default is plain HTTP (README, "Authorization").

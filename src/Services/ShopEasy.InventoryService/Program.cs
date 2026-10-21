@@ -253,12 +253,16 @@ try
 
     app.UseMiddleware<CorrelationIdMiddleware>();
 
-    app.UseSwagger();
-    app.UseSwaggerUI(options =>
+    // The API description and its test page: off unless Swagger:Enabled is set (README, "Known limitations")
+    if (app.Configuration.GetValue<bool>("Swagger:Enabled"))
     {
-        options.SwaggerEndpoint("/swagger/v1/swagger.json", "v1");
-        options.RoutePrefix = string.Empty; // Swagger UI at root "/"
-    });
+        app.UseSwagger();
+        app.UseSwaggerUI(options =>
+        {
+            options.SwaggerEndpoint("/swagger/v1/swagger.json", "v1");
+            options.RoutePrefix = string.Empty; // Swagger UI at root "/"
+        });
+    }
 
     using (var scope = app.Services.CreateScope())
     {
