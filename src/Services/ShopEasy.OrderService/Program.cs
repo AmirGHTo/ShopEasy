@@ -498,13 +498,11 @@ try
     // cannot see the user and would count every customer against the gateway's one address
     app.UseRateLimiter();
 
-    // Expose /metrics endpoint for Prometheus scraping
+    // Count every HTTP request; the numbers are served on the metrics port (Metrics:Port), not here
     app.UseHttpMetrics(options =>
     {
         options.AddCustomLabel("service", _ => "OrderService"); 
     });
-    // scraped by Prometheus without credentials (see "Known limitations" in the README)
-    app.MapMetrics().AllowAnonymous();
 
     app.MapControllers();
 

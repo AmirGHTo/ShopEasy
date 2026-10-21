@@ -218,8 +218,6 @@ try
     {
         options.AddCustomLabel("service", _ => "ProductService");
     });
-    // scraped by Prometheus without credentials (see "Known limitations" in the README)
-    app.MapMetrics().AllowAnonymous();
     app.MapControllers();
 
     // Liveness — is the process alive?

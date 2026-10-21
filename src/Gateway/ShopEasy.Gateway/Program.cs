@@ -300,7 +300,6 @@ try
         // Track HTTP request metrics automatically
         options.AddCustomLabel("service", _ => "Gateway");
     });
-    app.MapMetrics();
     app.UseSerilogRequestLogging(options =>
     {
         options.GetLevel = (ctx, elapsed, ex) =>
