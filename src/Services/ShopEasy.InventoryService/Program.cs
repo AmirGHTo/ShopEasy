@@ -268,10 +268,13 @@ try
         try
         {
             logger.LogInformation("Applying database migrations...");
-            db.Database.Migrate();
-            // Seed only if no data exists
-            if (!db.InventoryItems.Any())
-                InventoryDbSeeder.Seed(db);
+            await MigrationLock.RunAsync(db.Database.GetConnectionString()!, nameof(InventoryDbContext), async () =>
+            {
+                await db.Database.MigrateAsync();
+                // Seed only if no data exists
+                if (!await db.InventoryItems.AnyAsync())
+                    InventoryDbSeeder.Seed(db);
+            }, logger);
             logger.LogInformation("Database migrations applied.");
         }
         catch (Exception ex)

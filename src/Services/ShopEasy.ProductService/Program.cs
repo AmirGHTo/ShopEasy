@@ -189,9 +189,12 @@ try
         try
         {
             logger.LogInformation("Applying database migrations...");
-            db.Database.Migrate();
-            if (!db.Products.Any())
-                ProductDbSeeder.Seed(db);
+            await MigrationLock.RunAsync(db.Database.GetConnectionString()!, nameof(ProductDbContext), async () =>
+            {
+                await db.Database.MigrateAsync();
+                if (!await db.Products.AnyAsync())
+                    ProductDbSeeder.Seed(db);
+            }, logger);
             logger.LogInformation("Database migrations applied.");
         }
         catch (Exception ex)
