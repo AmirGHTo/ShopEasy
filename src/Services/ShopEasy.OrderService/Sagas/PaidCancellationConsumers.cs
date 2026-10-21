@@ -24,7 +24,7 @@ public class PaymentRefundedConsumer(
     {
         var evt = context.Message;
 
-        await using (var transaction = await db.Database.BeginTransactionAsync())
+        await using (var transaction = await db.Database.BeginOrJoinAsync(context.CancellationToken))
         {
             var saga = await sagaLocking.LockByOrderIdAsync(db, evt.OrderId);
             if (saga is null) return;
@@ -48,12 +48,11 @@ public class PaymentRefundedConsumer(
             var order = await db.Orders.FindAsync(saga.OrderId);
             await readModelUpdater.UpdateStatusAsync(
                 saga.OrderId, order?.Status ?? OrderStatus.Confirmed, paymentStatus: "Refunded");
+
+            await publishEndpoint.Publish(
+                new RestockInventoryCommand { OrderId = evt.OrderId }, context.CancellationToken);
             await transaction.CommitAsync();
         }
-
-        // If this publish is lost, SagaTimeoutService re-sends it (restock is idempotent)
-        await publishEndpoint.Publish(
-            new RestockInventoryCommand { OrderId = evt.OrderId }, context.CancellationToken);
     }
 }
 

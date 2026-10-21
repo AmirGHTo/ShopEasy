@@ -239,6 +239,7 @@ try
                     b.ExchangeType = "fanout";
                     b.Durable = true;
                 });
+                e.UseEntityFrameworkOutbox<OrderDbContext>(ctx);
                 e.ConfigureConsumer<InventoryCommittedConsumer>(ctx);
             });
 
@@ -250,6 +251,7 @@ try
                     b.ExchangeType = "fanout";
                     b.Durable = true;
                 });
+                e.UseEntityFrameworkOutbox<OrderDbContext>(ctx);
                 e.ConfigureConsumer<InventoryCommitFailedConsumer>(ctx);
             });
 
@@ -262,6 +264,7 @@ try
                     b.ExchangeType = "fanout";
                     b.Durable = true;
                 });
+                e.UseEntityFrameworkOutbox<OrderDbContext>(ctx);
                 e.ConfigureConsumer<PaymentRefundedConsumer>(ctx);
             });
 

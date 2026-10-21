@@ -12,13 +12,11 @@ namespace ShopEasy.OrderService.Sagas;
 //    actors changing the same saga are serialized and the second sees the first one's result.
 //  * A handler only acts when the saga is in the state its event is valid for. Anything else
 //    is a duplicate (at-least-once delivery) or a late message and is ignored or compensated.
-//  * The consumers whose endpoint uses the MassTransit outbox (Program.cs) publish the next
-//    command INSIDE the transaction: the command is stored in the OutboxMessage table together
-//    with the new state and sent to RabbitMQ after the commit, so a crash or a broker outage
-//    after the commit cannot lose it. They join that transaction (BeginOrJoinAsync).
-//  * The others commit the state BEFORE publishing the next command. If the publish then
-//    fails, the saga's timeout service compensates (cancel / re-send command) instead of the
-//    order silently stalling.
+//  * A handler that sends the next command publishes it INSIDE the transaction. Its endpoint
+//    uses the MassTransit outbox (Program.cs), so the command is stored in the OutboxMessage
+//    table together with the new state and sent to RabbitMQ after the commit: a crash or a
+//    broker outage after the commit cannot lose it. The handler joins MassTransit's transaction
+//    (BeginOrJoinAsync); without the outbox (unit tests) it opens its own.
 
 // ── Inventory reserved → move to payment ─────────────────────────────────────
 public class InventoryReservedConsumer(
@@ -245,7 +243,7 @@ public class InventoryCommittedConsumer(
     {
         var evt = context.Message;
 
-        await using var transaction = await db.Database.BeginTransactionAsync();
+        await using var transaction = await db.Database.BeginOrJoinAsync(context.CancellationToken);
 
         var saga = await sagaLocking.LockByOrderIdAsync(db, evt.OrderId);
         if (saga is null) return;
@@ -280,7 +278,6 @@ public class InventoryCommittedConsumer(
             await db.SaveChangesAsync();
             await readModelUpdater.UpdateStatusAsync(
                 saga.OrderId, OrderStatus.Pending, paymentStatus: "Refunding");
-            await transaction.CommitAsync();
 
             logger.LogInformation(
                 "Saga {SagaId}: commit done for Order {OrderId}, which was cancelled meanwhile — refunding",
@@ -288,6 +285,7 @@ public class InventoryCommittedConsumer(
             await context.Publish(
                 new RefundPaymentCommand { OrderId = saga.OrderId, Reason = saga.FailureReason! },
                 context.CancellationToken);
+            await transaction.CommitAsync();
             return;
         }
 
@@ -332,10 +330,9 @@ public class InventoryCommitFailedConsumer(
     public async Task Consume(ConsumeContext<InventoryCommitFailedEvent> context)
     {
         var evt = context.Message;
-        RefundPaymentCommand? refund = null;
         var failedSaga = false;
 
-        await using (var transaction = await db.Database.BeginTransactionAsync())
+        await using (var transaction = await db.Database.BeginOrJoinAsync(context.CancellationToken))
         {
             var saga = await sagaLocking.LockByOrderIdAsync(db, evt.OrderId);
             if (saga is null) return;
@@ -347,12 +344,6 @@ public class InventoryCommitFailedConsumer(
                     saga.Id);
                 return;
             }
-
-            refund = new RefundPaymentCommand
-            {
-                OrderId = saga.OrderId,
-                Reason = $"Inventory could not be committed: {evt.Reason}"
-            };
 
             if (saga.Status != SagaStatus.Completing)
             {
@@ -385,12 +376,16 @@ public class InventoryCommitFailedConsumer(
                     OrderStatus.Cancelled,
                     paymentStatus: "Refunding",
                     failureReason: saga.FailureReason);
-                await transaction.CommitAsync();
                 failedSaga = true;
             }
-        }
 
-        await publishEndpoint.Publish(refund, context.CancellationToken);
+            await publishEndpoint.Publish(new RefundPaymentCommand
+            {
+                OrderId = saga.OrderId,
+                Reason = $"Inventory could not be committed: {evt.Reason}"
+            }, context.CancellationToken);
+            await transaction.CommitAsync();
+        }
 
         if (failedSaga)
         {
