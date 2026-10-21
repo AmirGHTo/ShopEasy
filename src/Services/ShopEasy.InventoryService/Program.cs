@@ -15,7 +15,6 @@ using ShopEasy.Shared.Middleware;
 using ShopEasy.Shared.Resilience;
 using ShopEasy.Shared.Security;
 using ShopEasy.Shared.Services;
-using StackExchange.Redis;
 
 Log.Logger = new LoggerConfiguration()
     .ConfigureShopEasy("ShopEasy.InventoryService")
@@ -242,14 +241,9 @@ try
     .AddCheck("grpc", () =>Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Healthy());
 
     #region caching
-    var redisConnection = builder.Configuration["Redis:Connection"] ?? "redis:6379";
-    builder.Services.AddStackExchangeRedisCache(options =>
-    {
-        options.Configuration = redisConnection;
-        options.InstanceName = "shopeasy:";
-    });
-    // With this — abortConnect=false means it won't crash if Redis is unavailable:
-    builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>ConnectionMultiplexer.Connect($"{redisConnection},abortConnect=false"));
+    // Redis:Connection and the timeouts are settings (README, pattern 16): a slow Redis costs a
+    // request a fraction of a second, then it reads the database.
+    builder.Services.AddRedisCache(builder.Configuration);
     builder.Services.AddScoped<CacheService>();
     #endregion
 

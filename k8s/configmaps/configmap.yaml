@@ -30,6 +30,10 @@ data:
   ForwardedHeaders__KnownProxies: ""
   RabbitMQ__Host: "rabbitmq"
   Redis__Connection: "redis:6379"
+  # Redis is a cache only: how long connecting and one command may take (milliseconds, at least 100)
+  # before a request reads the database instead (README, pattern 16). Restart the pods to apply.
+  Redis__ConnectTimeoutMs: "1000"
+  Redis__CommandTimeoutMs: "500"
   # Seq (log explorer) is part of the Docker Compose stack only. Empty = do not ship logs to Seq;
   # logs still go to the container console. Set it to the URL of your own Seq to use one.
   Seq__ServerUrl: ""
