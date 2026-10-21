@@ -101,6 +101,16 @@ public static class OrderMetrics
             "shopeasy_saga_oldest_active_age_seconds",
             "Age of the oldest saga that is still active (0 when there is none): rises when an order is stuck");
 
+    private static readonly Gauge SagaCommandsWaiting = Prometheus.Metrics
+        .CreateGauge(
+            "shopeasy_saga_commands_pending",
+            "Saga commands saved in the Order database that RabbitMQ has not taken yet");
+
+    private static readonly Gauge OldestSagaCommandWaiting = Prometheus.Metrics
+        .CreateGauge(
+            "shopeasy_saga_command_oldest_pending_age_seconds",
+            "Age of the oldest saga command that RabbitMQ has not taken yet (0 when there is none): rises when the broker is unreachable");
+
     private static readonly Gauge BackgroundLoopLastSuccess = Prometheus.Metrics
         .CreateGauge(
             "shopeasy_background_loop_last_success_timestamp_seconds",
@@ -186,6 +196,12 @@ public static class OrderMetrics
 
     public static void SetOutboxPending(int count)
         => OutboxPendingMessages.Set(count);
+
+    public static void SetSagaCommandsWaiting(int count, double oldestAgeSeconds)
+    {
+        SagaCommandsWaiting.Set(count);
+        OldestSagaCommandWaiting.Set(oldestAgeSeconds);
+    }
 
     public static void SetSagasInFlight(int count, double oldestAgeSeconds)
     {

@@ -95,6 +95,14 @@ public class SagaTimeoutService(
         var count = await InFlight(db).CountAsync(ct);
         var oldest = count == 0 ? null : (DateTime?)await InFlight(db).MinAsync(s => s.CreatedAt, ct);
         OrderMetrics.SetSagasInFlight(count, oldest is null ? 0 : (DateTime.UtcNow - oldest.Value).TotalSeconds);
+
+        // Commands saved with a saga state (MassTransit outbox) that RabbitMQ has not taken yet: the
+        // delivery service removes each one once it is sent, so rows that stay are the ones to watch
+        var waiting = db.Set<MassTransit.EntityFrameworkCoreIntegration.OutboxMessage>();
+        var waitingCount = await waiting.CountAsync(ct);
+        var oldestWaiting = waitingCount == 0 ? null : (DateTime?)await waiting.MinAsync(m => m.SentTime, ct);
+        OrderMetrics.SetSagaCommandsWaiting(
+            waitingCount, oldestWaiting is null ? 0 : Math.Max(0, (DateTime.UtcNow - oldestWaiting.Value).TotalSeconds));
     }
 
     private async Task CheckForTimedOutSagas(CancellationToken ct)

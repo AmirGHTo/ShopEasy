@@ -24,6 +24,33 @@ tests:
               description: The oldest active order is 11m 40s old. The saga timeout service should have settled it long before.
 
   - interval: 1m
+    name: a saga command that stays in the Order outbox raises SagaCommandsNotSent after the grace period
+    input_series:
+      - series: shopeasy_saga_command_oldest_pending_age_seconds
+        values: "300x20"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: SagaCommandsNotSent
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: SagaCommandsNotSent
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: A saga command has been waiting in the Order outbox for more than 2 minutes, so the broker is probably unreachable
+
+  - interval: 1m
+    name: saga commands that are sent within seconds raise nothing
+    input_series:
+      - series: shopeasy_saga_command_oldest_pending_age_seconds
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SagaCommandsNotSent
+        exp_alerts: []
+
+  - interval: 1m
     name: a young order raises nothing
     input_series:
       - series: shopeasy_saga_oldest_active_age_seconds
