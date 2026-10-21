@@ -69,6 +69,9 @@ public class OrderConsumerOutboxPostgresTests
             {
                 o.UsePostgres();
                 o.IsolationLevel = System.Data.IsolationLevel.ReadCommitted;
+                // as in Program.cs, where the services outside a consumer use the bus outbox
+                o.UseBusOutbox();
+                o.QueryDelay = TimeSpan.FromMilliseconds(100);
             });
             x.UsingInMemory((ctx, cfg) =>
             {
