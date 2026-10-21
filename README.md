@@ -961,7 +961,7 @@ Each product has two numbers in the Inventory database:
 | `ReservedQty` | Units held for orders that are still in flight. |
 | `AvailableQuantity` | `Quantity − ReservedQty` — what a new order can still reserve. |
 
-Every change is also written to the `StockTransactions` ledger. For an order the ledger holds up to three kinds of rows, recognised by their exact `Reason` text (`Data/StockReasons.cs`): *Reserved for Order …*, *Committed for Order …*, *Released reservation for Order …*.
+Every change is also written to the `StockTransactions` ledger. For an order the ledger holds up to four kinds of rows, recognised by their exact `Reason` text (`Data/StockReasons.cs`): *Reserved for Order …*, *Committed for Order …*, *Released reservation for Order …*, *Restocked after cancelled Order …*. There is at most one row of each kind per order and product, and the database enforces it with a unique index (`IX_StockTransactions_OrderId_ProductId_Reason`, only for rows that belong to an order; manual adjustments have none): the consumers already keep it so with the row locks, and the index makes a second row fail instead of counting stock twice. A database that already holds such a duplicate cannot take the migration: the service stops at start with PostgreSQL's message naming the key; remove the duplicate row and correct the stock it counted twice.
 
 **Lifecycle of one order's stock**
 
@@ -1501,7 +1501,6 @@ What has been hardened, and what is known to be missing.
 - A message published to an exchange that has no queue bound yet is dropped by the broker, so a command sent before its consuming service has started for the first time is lost until the saga timeout re-sends it. (Docker Compose and Kubernetes start order makes this rare.)
 - The MassTransit inbox only remembers a message for its 30-minute duplicate-detection window; beyond that, duplicates are caught by the business-level checks (pattern 7).
 - Inventory endpoints process one message at a time per instance (`ConcurrentMessageLimit = 1`). Correctness no longer depends on it (row locks do), so it can be raised for throughput.
-- `InventoryDbContext` has no unique database constraint on the ledger; idempotency relies on the row locks.
 - The CI is a *gate* only if branch protection requires the `CI passed` check (a one-time repository setting, see CI/CD); otherwise it reports but does not block.
 - The end-to-end test covers the happy path, cancelling a confirmed order and the refusals, not a declined payment or a cancel while the saga runs.
 - Images are published to GHCR and the manifests pin them by commit, but nothing deploys them automatically (that needs credentials for a specific cluster), and the pinned tag in `k8s/kustomization.yaml` is bumped by hand (`k8s/set-image-tag.sh`).

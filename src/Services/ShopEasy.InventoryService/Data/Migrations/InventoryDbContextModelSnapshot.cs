@@ -17,7 +17,7 @@ namespace ShopEasy.InventoryService.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "8.0.11")
+                .HasAnnotation("ProductVersion", "8.0.32")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -260,6 +260,10 @@ namespace ShopEasy.InventoryService.Data.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("OrderId", "ProductId", "Reason")
+                        .IsUnique()
+                        .HasFilter("\"OrderId\" IS NOT NULL");
 
                     b.ToTable("StockTransactions");
                 });

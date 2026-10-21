@@ -53,6 +53,18 @@ public class InventoryDbContext(DbContextOptions<InventoryDbContext> options) : 
             e.HasKey(i => i.ProductId);
         });
 
+        // One ledger row per order, product and kind of entry (the Reason text is the kind, see
+        // StockReasons). The consumers already keep it so with the row locks and the ledger check;
+        // the index makes the database refuse a second row instead of counting stock twice if a
+        // bug or a race ever tries. Manual adjustments have no order and are left out (their Reason
+        // is free text from the request).
+        modelBuilder.Entity<StockTransaction>(e =>
+        {
+            e.HasIndex(t => new { t.OrderId, t.ProductId, t.Reason })
+                .IsUnique()
+                .HasFilter("\"OrderId\" IS NOT NULL");
+        });
+
         modelBuilder.Entity<ProcessedEvent>(e =>
         {
             e.HasKey(p => p.EventId);
