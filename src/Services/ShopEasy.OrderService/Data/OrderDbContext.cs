@@ -1,3 +1,4 @@
+using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.OrderService.Idempotency;
 using ShopEasy.OrderService.ReadModels;
@@ -129,6 +130,14 @@ public class OrderDbContext : DbContext
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // ── MassTransit transactional inbox/outbox tables ────────────────────
+        // A message published inside a consumer or a database transaction is stored here, in the
+        // same transaction as the saga state, and sent to RabbitMQ after the commit; every consumed
+        // message is recorded so a redelivered one is not processed twice.
+        modelBuilder.AddInboxStateEntity();
+        modelBuilder.AddOutboxMessageEntity();
+        modelBuilder.AddOutboxStateEntity();
+
         modelBuilder.Entity<OrderSummary>(e =>
         {
             e.HasKey(o => o.OrderId);
