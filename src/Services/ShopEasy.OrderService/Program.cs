@@ -126,6 +126,19 @@ try
         x.AddConsumer<PaymentRefundedConsumer>();
         x.AddConsumer<InventoryRestockedConsumer>();
 
+        // ── Transactional inbox/outbox on the Order database ──────────────────
+        // Tables InboxState, OutboxMessage and OutboxState (OrderDbContext). A consumer endpoint
+        // that calls UseEntityFrameworkOutbox<OrderDbContext> runs inside one database transaction
+        // that holds the saga state, an inbox row and the commands it publishes; MassTransit sends
+        // those to RabbitMQ after the commit. READ COMMITTED, because the consumers lock the saga
+        // row with SELECT ... FOR UPDATE and a waiting transaction must re-read the committed
+        // values instead of failing with a serialization error.
+        x.AddEntityFrameworkOutbox<OrderDbContext>(o =>
+        {
+            o.UsePostgres();
+            o.IsolationLevel = System.Data.IsolationLevel.ReadCommitted;
+        });
+
         x.UsingRabbitMq((ctx, cfg) =>
         {
             cfg.Host(builder.Configuration["RabbitMQ:Host"] ?? "rabbitmq", "/", h =>
