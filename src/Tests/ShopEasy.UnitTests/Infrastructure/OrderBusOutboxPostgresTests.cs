@@ -20,6 +20,7 @@ namespace ShopEasy.UnitTests.Infrastructure;
 // the cancel endpoint) goes through the MassTransit bus outbox, wired the way Program.cs wires it,
 // against a real PostgreSQL: the command is saved by the same SaveChanges as the saga state and a
 // delivery service sends it afterwards. See InfrastructureFacts.cs.
+[Collection(MetricsCollection.Name)] // one test reads gauges that every service pass sets
 public class OrderBusOutboxPostgresTests
 {
     private sealed class ReserveProbe : IConsumer<ReserveInventoryCommand>
@@ -194,6 +195,27 @@ public class OrderBusOutboxPostgresTests
 
         (await host.Harness.Consumed.Any<ReleaseInventoryCommand>(x => x.Context.Message.OrderId == orderId, Within(15))).Should().BeTrue();
         (await SagaAsync(host.Options, orderId)).RetryCount.Should().Be(1);
+    }
+
+    [RequiresPostgresFact]
+    public async Task ACommandThatIsNotSentYet_ShowsInTheGauges()
+    {
+        await using var database = await PostgresTestDatabase.CreateAsync("busoutgauge");
+        await using var host = await StartAsync(database, outboxDelivery: false);
+        await SeedAsync(host.Options, SagaStatus.Started);
+        await new SagaOrchestrator(host.Provider.GetRequiredService<IServiceScopeFactory>(), NullLogger<SagaOrchestrator>.Instance)
+            .ProcessPendingSagas(CancellationToken.None);
+
+        using (var scope = host.Provider.CreateScope())
+            await new SagaTimeoutService(Substitute.For<IServiceScopeFactory>(), NullLogger<SagaTimeoutService>.Instance)
+                .CheckForTimedOutSagasPublic(
+                    scope.ServiceProvider.GetRequiredService<OrderDbContext>(),
+                    scope.ServiceProvider.GetRequiredService<IPublishEndpoint>(),
+                    scope.ServiceProvider.GetRequiredService<ISagaLocking>(),
+                    CancellationToken.None);
+
+        (await MetricValues.ReadAsync("shopeasy_saga_commands_pending")).Should().Be(1);
+        (await MetricValues.ReadAsync("shopeasy_saga_command_oldest_pending_age_seconds")).Should().BeInRange(0, 30);
     }
 
     // The service has its own outbox table (OutboxEntries) with its own retries, and publishes to the
