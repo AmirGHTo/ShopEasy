@@ -39,6 +39,11 @@ public class OrderConsumerOutboxPostgresTests
         public Task Consume(ConsumeContext<RefundPaymentCommand> context) => Task.CompletedTask;
     }
 
+    private sealed class RestockProbe : IConsumer<RestockInventoryCommand>
+    {
+        public Task Consume(ConsumeContext<RestockInventoryCommand> context) => Task.CompletedTask;
+    }
+
     // Stands in for RabbitMQ refusing a message: the first sends of the given command fail
     private sealed class BrokerOutage(string command)
     {
@@ -75,10 +80,14 @@ public class OrderConsumerOutboxPostgresTests
             x.AddConsumer<InventoryReservedConsumer>();
             x.AddConsumer<PaymentSucceededConsumer>();
             x.AddConsumer<PaymentFailedConsumer>();
+            x.AddConsumer<InventoryCommittedConsumer>();
+            x.AddConsumer<InventoryCommitFailedConsumer>();
+            x.AddConsumer<PaymentRefundedConsumer>();
             x.AddConsumer<PaymentProbe>();
             x.AddConsumer<CommitProbe>();
             x.AddConsumer<ReleaseProbe>();
             x.AddConsumer<RefundProbe>();
+            x.AddConsumer<RestockProbe>();
             x.AddEntityFrameworkOutbox<OrderDbContext>(o =>
             {
                 o.UsePostgres();
@@ -107,17 +116,33 @@ public class OrderConsumerOutboxPostgresTests
                     e.UseEntityFrameworkOutbox<OrderDbContext>(ctx);
                     e.ConfigureConsumer<PaymentFailedConsumer>(ctx);
                 });
+                cfg.ReceiveEndpoint("order-saga-inventory-committed", e =>
+                {
+                    e.UseEntityFrameworkOutbox<OrderDbContext>(ctx);
+                    e.ConfigureConsumer<InventoryCommittedConsumer>(ctx);
+                });
+                cfg.ReceiveEndpoint("order-saga-inventory-commit-failed", e =>
+                {
+                    e.UseEntityFrameworkOutbox<OrderDbContext>(ctx);
+                    e.ConfigureConsumer<InventoryCommitFailedConsumer>(ctx);
+                });
+                cfg.ReceiveEndpoint("order-saga-payment-refunded", e =>
+                {
+                    e.UseEntityFrameworkOutbox<OrderDbContext>(ctx);
+                    e.ConfigureConsumer<PaymentRefundedConsumer>(ctx);
+                });
                 cfg.ReceiveEndpoint("probe-payment", e => e.ConfigureConsumer<PaymentProbe>(ctx));
                 cfg.ReceiveEndpoint("probe-commit", e => e.ConfigureConsumer<CommitProbe>(ctx));
                 cfg.ReceiveEndpoint("probe-release", e => e.ConfigureConsumer<ReleaseProbe>(ctx));
                 cfg.ReceiveEndpoint("probe-refund", e => e.ConfigureConsumer<RefundProbe>(ctx));
+                cfg.ReceiveEndpoint("probe-restock", e => e.ConfigureConsumer<RestockProbe>(ctx));
             });
         });
         return services.BuildServiceProvider(true);
     }
 
     private static async Task<(DbContextOptions<OrderDbContext> Options, Guid OrderId)> SeedAsync(
-        PostgresTestDatabase database, SagaStatus status)
+        PostgresTestDatabase database, SagaStatus status, string? failureReason = null)
     {
         var options = new DbContextOptionsBuilder<OrderDbContext>().UseNpgsql(database.ConnectionString).Options;
         var orderId = Guid.NewGuid();
@@ -132,7 +157,7 @@ public class OrderConsumerOutboxPostgresTests
         db.SagaStates.Add(new OrderSagaState
         {
             Id = Guid.NewGuid(), OrderId = orderId, Status = status, UserId = "u1", UserEmail = "u1@example.com",
-            TotalAmount = 25m, ItemsJson = "[]", CreatedAt = now, UpdatedAt = now
+            TotalAmount = 25m, ItemsJson = "[]", FailureReason = failureReason, CreatedAt = now, UpdatedAt = now
         });
         await db.SaveChangesAsync();
         return (options, orderId);
@@ -204,6 +229,51 @@ public class OrderConsumerOutboxPostgresTests
 
         (await harness.Consumed.Any<RefundPaymentCommand>(x => x.Context.Message.OrderId == orderId, Within(15))).Should().BeTrue();
         (await StatusOfAsync(options, orderId)).Should().Be(SagaStatus.Cancelled);
+    }
+
+    [RequiresPostgresFact]
+    public async Task WhenTheStockCommitFails_TheSagaFails_AndTheRefundCommandIsDelivered()
+    {
+        await using var database = await PostgresTestDatabase.CreateAsync("ordercommitfailed");
+        await using var provider = BuildHost(database);
+        var (options, orderId) = await SeedAsync(database, SagaStatus.Completing);
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        await harness.Bus.Publish(new InventoryCommitFailedEvent { OrderId = orderId, Reason = "reservation missing" });
+
+        (await harness.Consumed.Any<RefundPaymentCommand>(x => x.Context.Message.OrderId == orderId, Within(15))).Should().BeTrue();
+        (await StatusOfAsync(options, orderId)).Should().Be(SagaStatus.Failed);
+    }
+
+    [RequiresPostgresFact]
+    public async Task WhenTheStockIsCommittedForAnOrderCancelledMeanwhile_TheRefundCommandIsDelivered()
+    {
+        await using var database = await PostgresTestDatabase.CreateAsync("ordercancelledmeanwhile");
+        await using var provider = BuildHost(database);
+        var (options, orderId) = await SeedAsync(database, SagaStatus.Completing, FailureReasons.CancelledByCustomer);
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        await harness.Bus.Publish(new InventoryCommittedEvent { OrderId = orderId });
+
+        (await harness.Consumed.Any<RefundPaymentCommand>(x => x.Context.Message.OrderId == orderId, Within(15))).Should().BeTrue();
+        (await StatusOfAsync(options, orderId)).Should().Be(SagaStatus.RefundingPayment);
+    }
+
+    [RequiresPostgresFact]
+    public async Task WhenThePaymentIsRefunded_TheSagaMovesOn_AndTheRestockCommandIsDelivered()
+    {
+        await using var database = await PostgresTestDatabase.CreateAsync("orderrefunded");
+        await using var provider = BuildHost(database);
+        var (options, orderId) = await SeedAsync(database, SagaStatus.RefundingPayment);
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+
+        await harness.Bus.Publish(new PaymentRefundedEvent { OrderId = orderId, PaymentId = Guid.NewGuid(), Amount = 25m });
+
+        (await harness.Consumed.Any<RestockInventoryCommand>(x => x.Context.Message.OrderId == orderId, Within(15))).Should().BeTrue();
+        (await StatusOfAsync(options, orderId)).Should().Be(SagaStatus.RestockingInventory);
     }
 
     // The gap this closes: the state was committed, then the process or the broker failed before
