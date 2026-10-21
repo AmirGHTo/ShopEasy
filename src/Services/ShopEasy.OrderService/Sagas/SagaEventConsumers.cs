@@ -12,9 +12,13 @@ namespace ShopEasy.OrderService.Sagas;
 //    actors changing the same saga are serialized and the second sees the first one's result.
 //  * A handler only acts when the saga is in the state its event is valid for. Anything else
 //    is a duplicate (at-least-once delivery) or a late message and is ignored or compensated.
-//  * State (and the read model) is committed BEFORE the next command is published. If the
-//    publish then fails, the saga's timeout service compensates (cancel / re-send command)
-//    instead of the order silently stalling.
+//  * The consumers whose endpoint uses the MassTransit outbox (Program.cs) publish the next
+//    command INSIDE the transaction: the command is stored in the OutboxMessage table together
+//    with the new state and sent to RabbitMQ after the commit, so a crash or a broker outage
+//    after the commit cannot lose it. They join that transaction (BeginOrJoinAsync).
+//  * The others commit the state BEFORE publishing the next command. If the publish then
+//    fails, the saga's timeout service compensates (cancel / re-send command) instead of the
+//    order silently stalling.
 
 // ── Inventory reserved → move to payment ─────────────────────────────────────
 public class InventoryReservedConsumer(
@@ -26,10 +30,8 @@ public class InventoryReservedConsumer(
     public async Task Consume(ConsumeContext<InventoryReservedEvent> context)
     {
         var evt = context.Message;
-        ProcessPaymentCommand? paymentCommand = null;
-        var releaseLateReservation = false;
 
-        await using (var transaction = await db.Database.BeginTransactionAsync())
+        await using (var transaction = await db.Database.BeginOrJoinAsync(context.CancellationToken))
         {
             try
             {
@@ -46,7 +48,10 @@ public class InventoryReservedConsumer(
                         "Saga {SagaId}: received InventoryReservedEvent for Order {OrderId} " +
                         "but saga is in state {Status} — releasing late reservation.",
                         saga.Id, evt.OrderId, saga.Status);
-                    releaseLateReservation = true;
+                    await publishEndpoint.Publish(new ReleaseInventoryCommand
+                    {
+                        OrderId = evt.OrderId
+                    }, context.CancellationToken);
                 }
                 // ── Idempotency guard ─────────────────────────────────────────
                 // If saga already moved past ReservingInventory (including Completed — its
@@ -61,18 +66,21 @@ public class InventoryReservedConsumer(
                 }
                 else
                 {
-                    paymentCommand = new ProcessPaymentCommand
+                    saga.Status = SagaStatus.ProcessingPayment;
+                    saga.UpdatedAt = DateTime.UtcNow;
+                    await db.SaveChangesAsync();
+
+                    logger.LogInformation(
+                        "Saga for Order {OrderId}: inventory reserved → sending ProcessPaymentCommand",
+                        evt.OrderId);
+                    await publishEndpoint.Publish(new ProcessPaymentCommand
                     {
                         OrderId = saga.OrderId,
                         UserId = saga.UserId,
                         UserEmail = saga.UserEmail,
                         Amount = saga.TotalAmount,
                         Currency = "USD"
-                    };
-
-                    saga.Status = SagaStatus.ProcessingPayment;
-                    saga.UpdatedAt = DateTime.UtcNow;
-                    await db.SaveChangesAsync();
+                    }, context.CancellationToken);
                     await transaction.CommitAsync();
                 }
             }
@@ -86,22 +94,6 @@ public class InventoryReservedConsumer(
             }
         }
 
-        if (releaseLateReservation)
-        {
-            await publishEndpoint.Publish(new ReleaseInventoryCommand
-            {
-                OrderId = evt.OrderId
-            }, context.CancellationToken);
-            return;
-        }
-
-        if (paymentCommand is null) return;
-
-        logger.LogInformation(
-            "Saga for Order {OrderId}: inventory reserved → sending ProcessPaymentCommand",
-            evt.OrderId);
-
-        await publishEndpoint.Publish(paymentCommand, context.CancellationToken);
     }
 }
 
@@ -170,10 +162,8 @@ public class PaymentSucceededConsumer(
     public async Task Consume(ConsumeContext<PaymentSucceededEvent> context)
     {
         var evt = context.Message;
-        CommitInventoryCommand? commitCommand = null;
-        RefundPaymentCommand? refundCommand = null;
 
-        await using (var transaction = await db.Database.BeginTransactionAsync())
+        await using (var transaction = await db.Database.BeginOrJoinAsync(context.CancellationToken))
         {
             try
             {
@@ -201,17 +191,15 @@ public class PaymentSucceededConsumer(
                         "but saga is in state {Status} — issuing refund for late payment.",
                         saga.Id, evt.OrderId, saga.Status);
 
-                    refundCommand = new RefundPaymentCommand
+                    await publishEndpoint.Publish(new RefundPaymentCommand
                     {
                         OrderId = saga.OrderId,
                         Reason = $"Order was already in state {saga.Status} " +
                                   $"when payment arrived"
-                    };
+                    }, context.CancellationToken);
                 }
                 else
                 {
-                    commitCommand = new CommitInventoryCommand { OrderId = saga.OrderId };
-
                     saga.Status = SagaStatus.Completing;
                     saga.UpdatedAt = DateTime.UtcNow;
                     await db.SaveChangesAsync();
@@ -220,6 +208,15 @@ public class PaymentSucceededConsumer(
                         evt.OrderId,
                         OrderStatus.Pending,
                         paymentStatus: "Succeeded");
+
+                    // The order is only Completed once InventoryCommittedEvent arrives
+                    // (InventoryCommittedConsumer). SagaTimeoutService re-sends the (idempotent)
+                    // commit command if that never happens.
+                    logger.LogInformation(
+                        "Saga for Order {OrderId}: payment succeeded → committing inventory",
+                        evt.OrderId);
+                    await publishEndpoint.Publish(
+                        new CommitInventoryCommand { OrderId = saga.OrderId }, context.CancellationToken);
                     await transaction.CommitAsync();
                 }
             }
@@ -233,22 +230,6 @@ public class PaymentSucceededConsumer(
             }
         }
 
-        if (refundCommand is not null)
-        {
-            await publishEndpoint.Publish(refundCommand, context.CancellationToken);
-            return;
-        }
-
-        if (commitCommand is null) return;
-
-        logger.LogInformation(
-            "Saga for Order {OrderId}: payment succeeded → committing inventory",
-            evt.OrderId);
-
-        // The order is only Completed once InventoryCommittedEvent arrives
-        // (InventoryCommittedConsumer). If this publish is lost, SagaTimeoutService
-        // re-sends the (idempotent) commit command.
-        await publishEndpoint.Publish(commitCommand, context.CancellationToken);
     }
 }
 
@@ -432,7 +413,7 @@ public class PaymentFailedConsumer(
     {
         var evt = context.Message;
 
-        await using (var transaction = await db.Database.BeginTransactionAsync())
+        await using (var transaction = await db.Database.BeginOrJoinAsync(context.CancellationToken))
         {
             var saga = await sagaLocking.LockByOrderIdAsync(db, evt.OrderId);
             if (saga is null) return;
@@ -459,14 +440,14 @@ public class PaymentFailedConsumer(
 
             await readModelUpdater.UpdateStatusAsync(
                 saga.OrderId, OrderStatus.Pending, failureReason: evt.Reason);
+
+            // Send the compensating command to release the inventory reservation
+            await publishEndpoint.Publish(new ReleaseInventoryCommand
+            {
+                OrderId = evt.OrderId
+            }, context.CancellationToken);
             await transaction.CommitAsync();
         }
-
-        // Send the compensating command to release the inventory reservation
-        await publishEndpoint.Publish(new ReleaseInventoryCommand
-        {
-            OrderId = evt.OrderId
-        }, context.CancellationToken);
     }
 }
 

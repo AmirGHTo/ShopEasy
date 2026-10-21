@@ -481,7 +481,7 @@ A consumer that changes its database *and* publishes a result event has a classi
 
 Result: a payment or stock change is never recorded without its event, and no event is sent for work that was rolled back. This holds when the service is killed between the commit and the delivery, and when RabbitMQ is stopped at that moment: after the restart exactly one event arrives and the payment or stock change is not repeated. The all-or-nothing behaviour is covered by tests against a real PostgreSQL (see *Testing*).
 
-The consumers call `db.Database.BeginOrJoinAsync()` (`Data/UnitOfWork.cs`): inside the outbox they **join** MassTransit's transaction; without it (unit tests) they open and own one. Tables: `InboxState`, `OutboxMessage` and `OutboxState` in the Payment and Inventory databases; old rows are cleaned up by MassTransit (duplicate-detection window: 30 minutes). The Order service keeps its own hand-written outbox (pattern 5) for the event that starts the saga.
+The consumers call `db.Database.BeginOrJoinAsync()` (`Data/UnitOfWork.cs`): inside the outbox they **join** MassTransit's transaction; without it (unit tests) they open and own one. Tables: `InboxState`, `OutboxMessage` and `OutboxState` in the Payment and Inventory databases; old rows are cleaned up by MassTransit (duplicate-detection window: 30 minutes). The Order service keeps its own hand-written outbox (pattern 5) for the event that starts the saga. Its saga handlers for "inventory reserved", "payment succeeded" and "payment failed" use the MassTransit outbox too: the next command is stored with the new saga state and sent after the commit.
 
 ### 23. Broker Readiness (no management API)
 
@@ -1496,7 +1496,7 @@ What has been hardened, and what is known to be missing.
 **Known limitations** (documented so nobody is surprised):
 
 - A shipped or delivered order cannot be cancelled, and there is no return or partial-refund flow. A paid order that is cancelled before it ships is refunded in full.
-- The Order service's saga handlers publish their commands *after* committing (they do not use the MassTransit outbox). A crash in that gap is recovered by the saga timeout service, which re-sends the command; every consumer is idempotent.
+- Only some of the Order service's saga handlers send their commands through the MassTransit outbox ("inventory reserved", "payment succeeded", "payment failed"). The others, the orchestrator and the timeout service publish *after* committing; a crash in that gap is recovered by the saga timeout service, which re-sends the command, and every consumer is idempotent.
 - The Inventory consumers invalidate the Redis stock cache while MassTransit's transaction is still open (the commit follows immediately after the consumer returns). In that few-millisecond window a reader can re-cache the old stock level for up to its 30-second TTL. The cache is advisory — the saga's reservation is the authoritative check.
 - A message published to an exchange that has no queue bound yet is dropped by the broker, so a command sent before its consuming service has started for the first time is lost until the saga timeout re-sends it. (Docker Compose and Kubernetes start order makes this rare.)
 - The MassTransit inbox only remembers a message for its 30-minute duplicate-detection window; beyond that, duplicates are caught by the business-level checks (pattern 7).
