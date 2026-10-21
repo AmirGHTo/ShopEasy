@@ -37,6 +37,9 @@ public class ProductsController(
     {
         pageSize = Math.Clamp(pageSize, 1, 50);
 
+        // A blank category is no filter: it must not get a cache key of its own
+        if (string.IsNullOrWhiteSpace(category)) category = null;
+
         // Build a cache key that includes filter parameters
         var cacheKey = $"{CacheKeys.ProductsAll}:{category ?? "all"}:{page}:{pageSize}";
 
@@ -53,7 +56,7 @@ public class ProductsController(
             .Where(p => p.IsActive)
             .AsQueryable();
 
-        if (!string.IsNullOrWhiteSpace(category))
+        if (category is not null)
             query = query.Where(p => p.Category == category);
 
         var total = await query.CountAsync();
@@ -68,8 +71,11 @@ public class ProductsController(
 
         var result = new PagedResult<ProductResponseV1>(items, total, page, pageSize);
 
-        // Store in cache
-        await _cache.SetAsync(cacheKey, result, CacheTtl);
+        // Store in cache, but only a page that has products. The key holds the category and the page
+        // of an anonymous request: caching the empty answer for a category or page that does not exist
+        // would let anyone fill Redis with keys that are worth nothing.
+        if (items.Count > 0)
+            await _cache.SetAsync(cacheKey, result, CacheTtl);
         Response.Headers["X-Cache"] = "MISS";
 
         return Ok(result);
