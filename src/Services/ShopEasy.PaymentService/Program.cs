@@ -203,7 +203,8 @@ try
         try
         {
             logger.LogInformation("Applying database migrations...");
-            db.Database.Migrate();
+            await MigrationLock.RunAsync(
+                db.Database.GetConnectionString()!, nameof(PaymentDbContext), () => db.Database.MigrateAsync(), logger);
             logger.LogInformation("Database migrations applied.");
         }
         catch (Exception ex)
