@@ -44,29 +44,6 @@ public class OrderConsumerOutboxPostgresTests
         public Task Consume(ConsumeContext<RestockInventoryCommand> context) => Task.CompletedTask;
     }
 
-    // Stands in for RabbitMQ refusing a message: the first sends of the given command fail
-    private sealed class BrokerOutage(string command)
-    {
-        private int _remaining;
-        private int _injected;
-        public int Injected => Volatile.Read(ref _injected);
-
-        // What the database held at the moment the send failed (read through another connection)
-        public Func<SagaStatus>? ReadSaga { get; set; }
-        public SagaStatus? SagaWhenItFailed { get; private set; }
-
-        public void FailNext(int sends) => Volatile.Write(ref _remaining, sends);
-
-        public void BeforeSend(SendContext context)
-        {
-            if (context.DestinationAddress?.ToString().Contains(command) != true) return;
-            if (Interlocked.Decrement(ref _remaining) < 0) return;
-            Interlocked.Increment(ref _injected);
-            SagaWhenItFailed = ReadSaga?.Invoke();
-            throw new IOException("injected: the broker connection was lost");
-        }
-    }
-
     private static ServiceProvider BuildHost(PostgresTestDatabase database, BrokerOutage? outage = null)
     {
         var services = new ServiceCollection();

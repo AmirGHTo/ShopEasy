@@ -19,7 +19,7 @@ public class OutboxDeliveryPostgresTests
     private static async Task<(OutboxDeliveryService Service, IPublishEndpoint Publish, ServiceProvider Provider)>
         CreateAsync(PostgresTestDatabase database, bool busReady, int pendingEntries)
     {
-        var publish = Substitute.For<IPublishEndpoint>();
+        var publish = Substitute.For<IBus>();
         var readiness = Substitute.For<IBrokerReadiness>();
         readiness.IsReadyAsync(Arg.Any<CancellationToken>()).Returns(busReady);
 

@@ -354,7 +354,9 @@ services:
       # Idempotency-Key on POST /api/orders (README, "Order API"). Both are optional.
       Idempotency__RequireKey: "${ORDER_IDEMPOTENCY_REQUIRE_KEY:-false}"
       Idempotency__RetentionHours: "${ORDER_IDEMPOTENCY_RETENTION_HOURS:-24}"
-      # How long the orchestrator keeps retrying an order's first command (README, compensation matrix)
+      # How often Order looks in its outbox table for saga commands to send to RabbitMQ (at least 50)
+      Outbox__QueryDelayMs: "${ORDER_OUTBOX_QUERY_DELAY_MS:-500}"
+      # How long the orchestrator keeps retrying an order's first step when it fails (README, compensation matrix)
       SagaOrchestrator__MaxAttempts: "${ORDER_SAGA_MAX_ATTEMPTS:-8}"
       SagaOrchestrator__FirstRetryPauseSeconds: "${ORDER_SAGA_FIRST_RETRY_PAUSE_SECONDS:-3}"
       SagaOrchestrator__MaxRetryPauseSeconds: "${ORDER_SAGA_MAX_RETRY_PAUSE_SECONDS:-60}"

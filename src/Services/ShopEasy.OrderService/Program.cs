@@ -113,6 +113,11 @@ try
     builder.Services.AddScoped(typeof(CorrelationPublishFilter<>));
     builder.Services.AddScoped(typeof(CorrelationSendFilter<>));
 
+    // How often the outbox delivery service looks for commands to send (README, "Service configuration keys")
+    var outboxQueryDelayMs = builder.Configuration.GetValue("Outbox:QueryDelayMs", 500);
+    if (outboxQueryDelayMs < 50)
+        throw new InvalidOperationException("Outbox:QueryDelayMs must be at least 50.");
+
     builder.Services.AddMassTransit(x =>
     {
         x.AddConsumer<OrderConfirmedSagaStarter>();
@@ -133,10 +138,17 @@ try
         // those to RabbitMQ after the commit. READ COMMITTED, because the consumers lock the saga
         // row with SELECT ... FOR UPDATE and a waiting transaction must re-read the committed
         // values instead of failing with a serialization error.
+        //
+        // Commands published outside a consumer (the orchestrator, the saga timeout service and the
+        // cancel endpoint) are written to OutboxMessage by the same SaveChanges as the saga state
+        // (UseBusOutbox); a delivery service in this process sends them to RabbitMQ, checking the
+        // table every QueryDelay. The consumers above send theirs from inside the consumer outbox.
         x.AddEntityFrameworkOutbox<OrderDbContext>(o =>
         {
             o.UsePostgres();
             o.IsolationLevel = System.Data.IsolationLevel.ReadCommitted;
+            o.UseBusOutbox();
+            o.QueryDelay = TimeSpan.FromMilliseconds(outboxQueryDelayMs);
         });
 
         x.UsingRabbitMq((ctx, cfg) =>

@@ -162,6 +162,9 @@ public class SagaTimeoutService(
         catch (Exception ex)
         {
             await transaction.RollbackAsync(ct);
+            // The next saga of this pass shares the context: what this one changed but never saved
+            // (its new state, the command in the outbox) must not be saved with it
+            db.ChangeTracker.Clear();
             logger.LogError(ex,
                 "Failed to handle timed out saga {SagaId}", saga.Id);
         }

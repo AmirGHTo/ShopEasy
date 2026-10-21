@@ -62,7 +62,9 @@ data:
   # order requests without the header; RetentionHours is how long a key is remembered.
   Idempotency__RequireKey: "false"
   Idempotency__RetentionHours: "24"
-  # Order saga: when the first command of an order cannot be sent (message broker down), Order retries
+  # How often Order looks in its outbox table for saga commands to send to RabbitMQ (at least 50).
+  Outbox__QueryDelayMs: "500"
+  # Order saga: when the orchestrator fails to start an order (for example a database error), it retries
   # after a growing pause (first, doubling, up to the maximum) and cancels the order after MaxAttempts
   # failures. The longest pause must stay below the saga timeout of 120 s.
   SagaOrchestrator__MaxAttempts: "8"

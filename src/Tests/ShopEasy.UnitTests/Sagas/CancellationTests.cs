@@ -309,18 +309,21 @@ public class CancellationTests : IDisposable
 
     // ── resilience ───────────────────────────────────────────────────────────
 
+    // The release command is stored with the new state: if it cannot be stored, the cancellation
+    // is not saved either (the customer's request fails and can be repeated), instead of leaving a
+    // saga that says "releasing" with no command behind it
     [Fact]
-    public async Task IfTheReleaseCommandCannotBePublished_TheCancellationIsStillSaved()
+    public async Task IfTheReleaseCommandCannotBeStored_TheCancellationIsNotSaved()
     {
         var orderId = await Seed(SagaStatus.ProcessingPayment);
         _publish.Publish(Arg.Any<ReleaseInventoryCommand>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException(new InvalidOperationException("broker down")));
+            .Returns(Task.FromException(new InvalidOperationException("outbox table unreachable")));
 
-        var result = await _service.CancelAsync(orderId, Owner, isAdmin: false);
+        var cancel = () => _service.CancelAsync(orderId, Owner, isAdmin: false);
 
-        // the saga timeout service re-sends the (idempotent) release command
-        result.Outcome.Should().Be(CancelOutcome.Cancelling);
-        (await SagaOf(orderId)).Status.Should().Be(SagaStatus.ReleasingInventory);
+        await cancel.Should().ThrowAsync<InvalidOperationException>();
+        _db.ChangeTracker.Clear();
+        (await SagaOf(orderId)).Status.Should().Be(SagaStatus.ProcessingPayment);
     }
 
     // ── what happens after the cancel (saga handlers) ────────────────────────
