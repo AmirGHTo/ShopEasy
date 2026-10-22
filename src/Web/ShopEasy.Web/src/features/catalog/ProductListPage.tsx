@@ -21,6 +21,7 @@ export default function ProductListPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <title>Products · ShopEasy</title>
       <h1 className="text-3xl font-semibold tracking-tight">Products</h1>
 
       <CatalogFilterBar query={query} categories={categories.data ?? []} onChange={change} />

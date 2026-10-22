@@ -34,6 +34,10 @@ export function catalogHas(products: readonly Product[]) {
     http.get('/api/v1/products/categories', () =>
       HttpResponse.json([...new Set(products.map((p) => p.category))].sort()),
     ),
+    http.get('/api/v1/products/:id', ({ params }) => {
+      const product = products.find((p) => p.id === params.id)
+      return product ? HttpResponse.json(product) : new HttpResponse(null, { status: 404 })
+    }),
     http.get('/api/v1/products', ({ request }) => {
       const url = new URL(request.url)
       requests.push(url)
