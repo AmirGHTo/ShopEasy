@@ -1454,6 +1454,10 @@ npm run build         # production build into dist/
 
 `npm run dev` expects the Compose stack to be running; the gateway it forwards to is `http://localhost:5000`, or `VITE_GATEWAY_URL` if you set it.
 
+**Code layout.** `src/api` holds the single `fetch` wrapper (`request`): JSON in and out, an `ApiError` for any non-success answer, and the `X-Requested-With` header the gateway requires on every request that changes something. `src/session` asks the gateway who is signed in (`/account/me`) and exposes it as `useSession()` (TanStack Query); `src/components` holds the shared pieces such as the header. Tests stub `fetch`, so none of them needs a running gateway.
+
+**Signing in during development.** Signing in and out are page loads (`/account/login`, `/account/logout`), so after Identity the browser comes back to the gateway at `http://localhost:5000`, not to the dev server. The session cookie is shared between the two ports: open `http://localhost:5173` again and the header shows who is signed in.
+
 In the Compose stack and in Kubernetes the gateway serves the built app itself, at `http://localhost:5000`: the gateway image builds it in a Node stage and copies only the built files into `wwwroot`. Every address that no endpoint claims (`/products/…`, `/cart`) answers with the app, so refreshing a page or opening a bookmark works; a path under `/api` or `/account` that nothing handles is a plain `404`, never HTML. Files under `/assets` have names that change with their content and are cached for a year; `index.html` is checked on every visit.
 
 ## Troubleshooting
