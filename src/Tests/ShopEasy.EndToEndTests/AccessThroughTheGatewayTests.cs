@@ -23,6 +23,16 @@ public class AccessThroughTheGatewayTests(ShopFixture shop)
     }
 
     [Fact]
+    public async Task ARequestThatChangesSomething_NeedsTheShopsHeader_EvenWithAValidSession()
+    {
+        var forged = await shop.Customer.PostWithoutTheShopsHeaderAsync("/api/orders",
+            new { items = new[] { new { productId = Catalog.Chair, quantity = 1 } } });
+
+        forged.Status.Should().Be(HttpStatusCode.Forbidden, "{0}", forged);
+        forged.Json.Text("error").Should().Be("request_header_missing");
+    }
+
+    [Fact]
     public async Task ACustomer_IsKnownToTheGateway_ByTheAccountTheyCreated()
     {
         var me = await shop.Customer.GetAsync("/account/me");

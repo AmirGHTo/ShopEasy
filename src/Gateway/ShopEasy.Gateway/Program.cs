@@ -296,6 +296,10 @@ try
 
     app.UseMiddleware<CorrelationIdMiddleware>();
 
+    // Before anything is authenticated or proxied: a state-changing /api request without the
+    // header never gets that far
+    app.UseRequestedWithHeaderCheck();
+
     // The storefront's files; before the metrics, so serving a script is not counted as a request
     app.UseStorefrontFiles();
 
@@ -1028,7 +1032,7 @@ function fmt(q){ return q.replace('_error',''); }
 
 async function requeue(queueName){
   if(!confirm(`Requeue all messages from ${queueName} back to ${fmt(queueName)}?`)) return;
-  const res = await fetch(`/api/outbox/deadletters/${queueName}/requeue`, {method:'POST'});
+  const res = await fetch(`/api/outbox/deadletters/${queueName}/requeue`, {method:'POST', headers:{'X-Requested-With':'fetch'}});
   const data = await res.json();
   alert(data.message);
   load();
