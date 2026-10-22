@@ -32,6 +32,18 @@ public class AccessThroughTheGatewayTests(ShopFixture shop)
         forged.Json.Text("error").Should().Be("request_header_missing");
     }
 
+    [Theory]
+    [InlineData("/orders", "/orders")]
+    [InlineData("https://evil.example/phish", "/")]
+    [InlineData("//evil.example", "/")]
+    [InlineData("/\\evil.example", "/")]
+    public async Task SigningIn_OnlyLeadsBackToThisSite(string returnUrl, string expected)
+    {
+        var leadsTo = await shop.Customer.WhereSignInLeadsAsync(returnUrl);
+
+        leadsTo.Should().Be(expected);
+    }
+
     [Fact]
     public async Task ACustomer_IsKnownToTheGateway_ByTheAccountTheyCreated()
     {

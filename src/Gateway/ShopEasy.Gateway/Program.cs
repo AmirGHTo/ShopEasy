@@ -328,12 +328,13 @@ try
     // Auth endpoints — anonymous limit (login page)
     app.MapGet("/account/login", async (HttpContext ctx, string? returnUrl) =>
     {
+        var target = LocalReturnUrl.OrHome(returnUrl);
         if (ctx.User.Identity?.IsAuthenticated == true)
-            return Results.Redirect(returnUrl ?? "/");
+            return Results.Redirect(target);
 
         await ctx.ChallengeAsync("oidc", new AuthenticationProperties
         {
-            RedirectUri = returnUrl ?? "/"
+            RedirectUri = target
         });
         return Results.Empty;
     }).AllowAnonymous().RequireRateLimiting("anonymous");
