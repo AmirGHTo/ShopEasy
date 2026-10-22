@@ -16,12 +16,22 @@ COPY . .
 WORKDIR "/src/src/Gateway/ShopEasy.Gateway"
 RUN dotnet build "ShopEasy.Gateway.csproj" -c Release -o /app/build
 
+# The storefront (React) is built here; only its built files reach the final image, Node does not.
+FROM node:22-bookworm-slim AS web
+WORKDIR /web
+COPY ["src/Web/ShopEasy.Web/package.json", "src/Web/ShopEasy.Web/package-lock.json", "./"]
+RUN npm ci
+COPY src/Web/ShopEasy.Web/ ./
+RUN npm run build
+
 FROM build AS publish
 RUN dotnet publish "ShopEasy.Gateway.csproj" -c Release -o /app/publish /p:UseAppHost=false
 
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
+# The built storefront, served by the gateway from wwwroot
+COPY --from=web /web/dist ./wwwroot
 # Run as the unprivileged "app" user the base image provides (UID 1654), not as root.
 # The service listens on 8080 (> 1024) and writes nothing to the image's file system.
 USER $APP_UID

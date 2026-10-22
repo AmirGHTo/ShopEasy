@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # After `docker compose up --wait` with Prometheus among the services:
 #  1. Prometheus reaches the metrics port (9091) of all six application containers.
-#  2. The API port of none of them serves /metrics: the numbers must only be readable on the metrics
-#     port, which Compose does not publish.
+#  2. The API port of none of them serves the metrics: the numbers must only be readable on the
+#     metrics port, which Compose does not publish. The status code is no judge of that (the gateway
+#     answers an address nothing claims with the storefront page, 200), so the body is checked: the
+#     Prometheus text format has "# HELP" / "# TYPE" lines.
 set -euo pipefail
 
 targets=6
@@ -25,8 +27,12 @@ echo "Prometheus scrapes all $targets targets"
 failed=0
 for service in identity gateway product inventory payment order; do
   port="$(docker compose port "$service" 8080 | awk -F: '{print $NF}')"
-  status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 "http://localhost:$port/metrics")"
+  body="$(mktemp)"
+  status="$(curl --silent --output "$body" --write-out '%{http_code}' --max-time 10 "http://localhost:$port/metrics")"
   echo "$service: GET /metrics on the API port -> $status"
-  [ "$status" != "200" ] || { echo "::error::$service serves /metrics on its API port"; failed=1; }
+  if grep -qE '^# (HELP|TYPE) ' "$body"; then
+    echo "::error::$service serves its metrics on its API port"; failed=1
+  fi
+  rm -f "$body"
 done
 exit "$failed"
