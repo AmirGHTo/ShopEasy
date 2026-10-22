@@ -6,7 +6,9 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
 using ShopEasy.Gateway.Storefront;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
+using Yarp.ReverseProxy.Configuration;
 
 namespace ShopEasy.UnitTests.Gateway;
 
@@ -18,6 +20,7 @@ public sealed class StorefrontTests : IAsyncLifetime
 
     private readonly string _webRoot = Path.Combine(Path.GetTempPath(), "storefront-" + Guid.NewGuid().ToString("N"));
     private WebApplication _app = default!;
+    private WebApplication _service = default!;
     private HttpClient _client = default!;
 
     public async Task InitializeAsync()
@@ -30,15 +33,36 @@ public sealed class StorefrontTests : IAsyncLifetime
 
     private async Task StartAsync()
     {
+        // the service behind the gateway
+        var serviceBuilder = WebApplication.CreateBuilder();
+        serviceBuilder.Logging.ClearProviders();
+        serviceBuilder.WebHost.UseUrls("http://127.0.0.1:0");
+        _service = serviceBuilder.Build();
+        _service.MapFallback(() => Results.Text("from the service"));
+        await _service.StartAsync();
+
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { WebRootPath = _webRoot, ContentRootPath = _webRoot });
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
+        // A proxy route as the gateway configures it: orders-route has Order 1 so that the POST-only
+        // route for /api/orders wins for POST. An endpoint's Order is compared before its path.
+        builder.Services.AddReverseProxy().LoadFromMemory(
+            [new RouteConfig
+            {
+                RouteId = "orders-route", ClusterId = "orders", Order = 1,
+                Match = new RouteMatch { Path = "/api/orders/{**catch-all}" }
+            }],
+            [new ClusterConfig
+            {
+                ClusterId = "orders",
+                Destinations = new Dictionary<string, DestinationConfig> { ["only"] = new() { Address = _service.Urls.First() } }
+            }]);
 
         _app = builder.Build();
         _app.UseStorefrontFiles();
-        // an endpoint that exists, as the proxied APIs and /account/login do in the gateway
-        _app.MapGet("/api/orders", () => Results.Text("[]", "application/json"));
+        // an endpoint that exists, as /account/login does in the gateway
         _app.MapGet("/account/me", () => Results.Text("me"));
+        _app.MapReverseProxy();
         _app.MapStorefront();
         await _app.StartAsync();
 
@@ -49,6 +73,7 @@ public sealed class StorefrontTests : IAsyncLifetime
     {
         _client.Dispose();
         await _app.DisposeAsync();
+        await _service.DisposeAsync();
         Directory.Delete(_webRoot, recursive: true);
     }
 
@@ -101,7 +126,8 @@ public sealed class StorefrontTests : IAsyncLifetime
     [Fact]
     public async Task EndpointsThatExist_AreNotShadowedByTheApp()
     {
-        (await _client.GetStringAsync("/api/orders")).Should().Be("[]");
+        (await _client.GetStringAsync("/api/orders")).Should().Be("from the service");
+        (await _client.GetStringAsync("/api/orders/42")).Should().Be("from the service");
         (await _client.GetStringAsync("/account/me")).Should().Be("me");
     }
 

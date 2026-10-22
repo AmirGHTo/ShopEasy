@@ -18,13 +18,21 @@ public static class StorefrontExtensions
     // Every other page address belongs to the app's own router, so a GET nothing else claims is
     // answered with index.html. A path under /api or /account that nothing handled is a plain 404:
     // an API client must never receive HTML. Endpoints that exist (the proxied APIs, /account/login,
-    // /health, ...) are more specific and win. Returns the fallback, for the caller to add policies.
+    // /health, ...) win. Returns the fallback, for the caller to add policies.
     public static IEndpointConventionBuilder MapStorefront(this IEndpointRouteBuilder endpoints)
     {
-        endpoints.Map("/api/{**path}", () => Results.NotFound()).AllowAnonymous();
-        endpoints.Map("/account/{**path}", () => Results.NotFound()).AllowAnonymous();
+        // An endpoint's Order is compared before how specific its path is, and the proxy routes set
+        // their own (the gateway's orders-route has Order 1). These two must come after every one of
+        // them, but before the fallback below (which MapFallback ranks at int.MaxValue - 1000).
+        endpoints.Map("/api/{**path}", () => Results.NotFound()).AllowAnonymous().After(LastBeforeFallback);
+        endpoints.Map("/account/{**path}", () => Results.NotFound()).AllowAnonymous().After(LastBeforeFallback);
         return endpoints.MapFallbackToFile("index.html", Options).AllowAnonymous();
     }
+
+    private const int LastBeforeFallback = int.MaxValue - 2000;
+
+    private static void After(this IEndpointConventionBuilder builder, int order)
+        => builder.Add(endpoint => ((RouteEndpointBuilder)endpoint).Order = order);
 
     private static void SetCacheHeaders(StaticFileResponseContext context)
     {
