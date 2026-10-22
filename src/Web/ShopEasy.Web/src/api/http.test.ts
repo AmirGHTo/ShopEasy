@@ -1,33 +1,49 @@
+import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { jsonResponse, sentRequest, stubFetch } from '../test/fetch'
+import { server } from '../test/server'
 import { ApiError, perform, request, UnexpectedResponseError } from './http'
 
 const anything = z.unknown()
 const item = z.object({ id: z.number() })
 
+interface Seen {
+  headers: Headers
+  body: string
+}
+
+// Answers one address and notes what the app sent to it
+function answer(method: 'get' | 'post' | 'put' | 'patch' | 'delete', path: string, response: () => Response): Seen[] {
+  const seen: Seen[] = []
+  server.use(
+    http[method](path, async ({ request: sent }) => {
+      seen.push({ headers: sent.headers, body: await sent.text() })
+      return response()
+    }),
+  )
+  return seen
+}
+
 describe('request', () => {
   it('reads JSON and sends no body or marker header on a read', async () => {
-    const fetchMock = stubFetch(jsonResponse({ id: 7 }))
+    const seen = answer('get', '/api/v1/products/7', () => HttpResponse.json({ id: 7 }))
 
-    const result = await request('/api/v1/products/7', item)
+    await expect(request('/api/v1/products/7', item)).resolves.toEqual({ id: 7 })
 
-    expect(result).toEqual({ id: 7 })
-    const { path, init, headers } = sentRequest(fetchMock)
-    expect(path).toBe('/api/v1/products/7')
-    expect(init?.method).toBe('GET')
-    expect(init?.body).toBeUndefined()
-    expect(headers).toEqual({ Accept: 'application/json' })
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.body).toBe('')
+    expect(seen[0]?.headers.get('Accept')).toBe('application/json')
+    expect(seen[0]?.headers.has('X-Requested-With')).toBe(false)
   })
 
   it('hands on only what the schema names', async () => {
-    stubFetch(jsonResponse({ id: 7, internalNote: 'not for the page' }))
+    server.use(http.get('/api/v1/products/7', () => HttpResponse.json({ id: 7, internalNote: 'not for the page' })))
 
     await expect(request('/api/v1/products/7', item)).resolves.toStrictEqual({ id: 7 })
   })
 
   it('rejects an answer of the wrong shape, saying what is wrong', async () => {
-    stubFetch(jsonResponse({ id: 'seven' }))
+    server.use(http.get('/api/v1/products/7', () => HttpResponse.json({ id: 'seven' })))
 
     const error = await request('/api/v1/products/7', item).catch((e: unknown) => e)
 
@@ -37,7 +53,7 @@ describe('request', () => {
   })
 
   it('sends a body as JSON, with the headers the caller adds', async () => {
-    const fetchMock = stubFetch(jsonResponse({ id: 1 }, 201))
+    const seen = answer('post', '/api/orders', () => HttpResponse.json({ id: 1 }, { status: 201 }))
 
     await request('/api/orders', item, {
       method: 'POST',
@@ -45,17 +61,15 @@ describe('request', () => {
       headers: { 'Idempotency-Key': 'key-1' },
     })
 
-    const { init, headers } = sentRequest(fetchMock)
-    expect(init?.body).toBe('{"items":[{"productId":"p-1","quantity":2}]}')
-    expect(headers).toMatchObject({
-      'Content-Type': 'application/json',
-      'Idempotency-Key': 'key-1',
-      'X-Requested-With': 'ShopEasy.Web',
-    })
+    expect(seen[0]?.body).toBe('{"items":[{"productId":"p-1","quantity":2}]}')
+    expect(seen[0]?.headers.get('Content-Type')).toBe('application/json')
+    expect(seen[0]?.headers.get('Idempotency-Key')).toBe('key-1')
+    expect(seen[0]?.headers.get('X-Requested-With')).toBe('ShopEasy.Web')
   })
 
   it('rejects with the message, code and list of errors the service gave', async () => {
-    stubFetch(jsonResponse({ message: 'Order could not be placed.', errors: ['Quantity must be positive.', 7] }, 400))
+    const problem = { message: 'Order could not be placed.', errors: ['Quantity must be positive.', 7] }
+    server.use(http.post('/api/orders', () => HttpResponse.json(problem, { status: 400 })))
 
     const error = await request('/api/orders', anything, { method: 'POST', body: {} }).catch((e: unknown) => e)
 
@@ -68,7 +82,8 @@ describe('request', () => {
   })
 
   it('reads the short code of the gateway', async () => {
-    stubFetch(jsonResponse({ error: 'request_header_missing', message: 'Header missing.' }, 403))
+    const refusal = { error: 'request_header_missing', message: 'Header missing.' }
+    server.use(http.get('/api/orders', () => HttpResponse.json(refusal, { status: 403 })))
 
     const error = await request('/api/orders', anything).catch((e: unknown) => e)
 
@@ -76,39 +91,37 @@ describe('request', () => {
   })
 
   it('falls back to the status when the body is not JSON', async () => {
-    stubFetch(new Response('<html>Bad gateway</html>', { status: 502 }))
+    server.use(http.get('/api/v1/products', () => new HttpResponse('<html>Bad gateway</html>', { status: 502 })))
 
     const error = await request('/api/v1/products', anything).catch((e: unknown) => e)
 
     expect(error).toMatchObject({ status: 502, message: 'The request failed (502).', details: [] })
   })
 
-  it('lets a dropped connection through as it is', async () => {
-    const dropped = new TypeError('Failed to fetch')
-    const fetchMock = stubFetch()
-    fetchMock.mockRejectedValueOnce(dropped)
+  it('lets a dropped connection through as the fetch error it is', async () => {
+    server.use(http.get('/api/v1/products', () => HttpResponse.error()))
 
-    await expect(request('/api/v1/products', anything)).rejects.toBe(dropped)
+    await expect(request('/api/v1/products', anything)).rejects.toBeInstanceOf(TypeError)
   })
 })
 
 describe('perform', () => {
-  it.each(['POST', 'PUT', 'PATCH', 'DELETE'] as const)('marks a %s as coming from the shop', async (method) => {
-    const fetchMock = stubFetch(new Response(null, { status: 204 }))
+  it.each(['post', 'put', 'patch', 'delete'] as const)('marks a %s as coming from the shop', async (method) => {
+    const seen = answer(method, '/api/orders', () => new HttpResponse(null, { status: 204 }))
 
-    await perform('/api/orders', { method })
+    await perform('/api/orders', { method: method.toUpperCase() as Uppercase<typeof method> })
 
-    expect(sentRequest(fetchMock).headers['X-Requested-With']).toBe('ShopEasy.Web')
+    expect(seen[0]?.headers.get('X-Requested-With')).toBe('ShopEasy.Web')
   })
 
   it('resolves with nothing on 204 No Content', async () => {
-    stubFetch(new Response(null, { status: 204 }))
+    server.use(http.delete('/api/orders/1', () => new HttpResponse(null, { status: 204 })))
 
     await expect(perform('/api/orders/1', { method: 'DELETE' })).resolves.toBeUndefined()
   })
 
   it('rejects like request does when the service refuses', async () => {
-    stubFetch(jsonResponse({ message: 'Already shipped.' }, 409))
+    server.use(http.delete('/api/orders/1', () => HttpResponse.json({ message: 'Already shipped.' }, { status: 409 })))
 
     await expect(perform('/api/orders/1', { method: 'DELETE' })).rejects.toMatchObject({ status: 409 })
   })
