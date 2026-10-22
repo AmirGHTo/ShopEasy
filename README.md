@@ -780,7 +780,7 @@ BOOTSTRAP_ADMIN_PASSWORD=YourStr0ngPassword     # 8+ characters with a digit, a 
 docker-compose up --build        # first start; on an existing stack: docker-compose up -d --build identity
 ```
 
-Then open `http://localhost:5000` and sign in with that email and password. Identity logs `Created the first administrator …` when it has done so.
+Then open `http://localhost:5000/account/login` and sign in with that email and password. Identity logs `Created the first administrator …` when it has done so.
 
 How it behaves:
 
@@ -1035,11 +1035,11 @@ Expected: **at most 5 orders end up `Confirmed`**, the rest `Cancelled` (their `
 
 ## Developer Portal & Monitoring
 
-All reachable from the landing page at `http://localhost:5000`:
+All reachable from the developer portal at `http://localhost:5000/portal` (the shop itself is at `http://localhost:5000`):
 
 | Tool | URL | Credentials |
 |---|---|---|
-| **Developer Portal** | http://localhost:5000 | — |
+| **Developer Portal** | http://localhost:5000/portal | — |
 | Outbox Monitor | http://localhost:5000/outbox | log in as an admin |
 | **Saga Monitor** | http://localhost:5000/sagas | log in as an admin |
 | Dead Letter Monitor | http://localhost:5000/deadletters | log in as an admin |
@@ -1446,6 +1446,8 @@ npm run build         # production build into dist/
 ```
 
 `npm run dev` expects the Compose stack to be running; the gateway it forwards to is `http://localhost:5000`, or `VITE_GATEWAY_URL` if you set it.
+
+In the Compose stack and in Kubernetes the gateway serves the built app itself, at `http://localhost:5000`: the gateway image builds it in a Node stage and copies only the built files into `wwwroot`. Every address that no endpoint claims (`/products/…`, `/cart`) answers with the app, so refreshing a page or opening a bookmark works; a path under `/api` or `/account` that nothing handles is a plain `404`, never HTML. Files under `/assets` have names that change with their content and are cached for a year; `index.html` is checked on every visit.
 
 ## Troubleshooting
 

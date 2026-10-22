@@ -16,6 +16,7 @@ using System.Threading.RateLimiting;
 using Yarp.ReverseProxy.Transforms;
 using ShopEasy.Gateway.Resilience;
 using ShopEasy.Gateway.Security;
+using ShopEasy.Gateway.Storefront;
 
 Log.Logger = new LoggerConfiguration()
     .ConfigureShopEasy("ShopEasy.Gateway")
@@ -295,6 +296,9 @@ try
 
     app.UseMiddleware<CorrelationIdMiddleware>();
 
+    // The storefront's files; before the metrics, so serving a script is not counted as a request
+    app.UseStorefrontFiles();
+
     app.UseHttpMetrics(options =>
     {
         // Track HTTP request metrics automatically
@@ -382,7 +386,8 @@ try
 
     // Public endpoints — anonymous rate limit
     // ── Dev Portal Landing Page ───────────────────────────────────────────────
-    app.MapGet("/", () => Results.Content("""
+    // "/" belongs to the storefront; the portal for developers is at /portal
+    app.MapGet("/portal", () => Results.Content("""
 <!DOCTYPE html>
 <html>
 <head>
@@ -576,7 +581,7 @@ try
   <div class="actions">
     <span class="badge ok" id="badge">Healthy</span>
     <button class="btn" onclick="load()">↻ Refresh</button>
-    <a href="/" class="btn">← Back</a>
+    <a href="/portal" class="btn">← Back</a>
   </div>
 </div>
 <div class="stats">
@@ -725,7 +730,7 @@ setInterval(load,5000);
   <div class="actions">
     <span class="badge badge-ok" id="badge">Loading…</span>
     <button class="btn" onclick="load()">↻ Refresh</button>
-    <a href="/" class="btn">← Back</a>
+    <a href="/portal" class="btn">← Back</a>
   </div>
 </div>
 
@@ -997,7 +1002,7 @@ setInterval(load, 3000);
   <div class="actions">
     <span class="badge badge-ok" id="badge">Checking…</span>
     <button class="btn" onclick="load()">↻ Refresh</button>
-    <a href="/" class="btn">← Back</a>
+    <a href="/portal" class="btn">← Back</a>
   </div>
 </div>
 
@@ -1096,6 +1101,9 @@ setInterval(load, 15000);
     #endregion
 
     app.MapReverseProxy();
+
+    // Last: the storefront answers whatever no endpoint above claimed
+    app.MapStorefront().RequireRateLimiting("anonymous");
 
     app.Run();
 }

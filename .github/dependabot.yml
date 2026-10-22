@@ -78,6 +78,9 @@ updates:
       # every service). Moving to a newer .NET is a project decision, not an automatic bump.
       - dependency-name: "dotnet/*"
         update-types: ["version-update:semver-major"]
+      # The gateway image builds the storefront with Node 22 (the LTS the CI job also uses)
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
 
   # The storefront's npm packages (src/Web/ShopEasy.Web)
   - package-ecosystem: npm

@@ -324,6 +324,9 @@ jobs:
           curl --fail --silent --show-error http://localhost:5000/health
           echo
 
+      - name: Gateway serves the storefront
+        run: bash .github/scripts/check-storefront.sh
+
       # The system as a customer uses it: sign up, sign in through the gateway, place an order and
       # wait for the saga to confirm it. Compose starts the payment provider in "always succeeds"
       # mode, so a failure here is a broken system, not a declined payment.
