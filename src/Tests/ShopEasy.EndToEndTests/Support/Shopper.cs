@@ -45,6 +45,14 @@ public sealed class Shopper : IDisposable
         Timeout = TimeSpan.FromSeconds(30),
     };
 
+    // Where the gateway's sign-in sends a browser that is already signed in
+    public async Task<string?> WhereSignInLeadsAsync(string returnUrl)
+    {
+        using var response = await _http.GetAsync(
+            new Uri(Stack.Gateway, "/account/login?returnUrl=" + Uri.EscapeDataString(returnUrl)));
+        return response.Headers.Location?.OriginalString;
+    }
+
     // ── the API, through the gateway ─────────────────────────────────────────────────────────
     public Task<Reply> GetAsync(string path) => SendAsync(HttpMethod.Get, path);
 
