@@ -37,6 +37,22 @@ describe('Header', () => {
     expect(await screen.findByText('alice@example.com')).toBeInTheDocument()
   })
 
+  it('still greets an account that has neither name nor email', async () => {
+    stubFetch(jsonResponse({ ...alice, name: null, email: null }))
+
+    renderWithProviders(<Header />)
+
+    expect(await screen.findByText('Your account')).toBeInTheDocument()
+  })
+
+  it('says so when the gateway answers with something unexpected', async () => {
+    stubFetch(jsonResponse({ hello: 'world' }))
+
+    renderWithProviders(<Header />)
+
+    expect(await screen.findByText('Your account is unavailable.')).toBeInTheDocument()
+  })
+
   it('shows neither link while it is still finding out', () => {
     stubFetch().mockReturnValue(new Promise<Response>(() => undefined))
 

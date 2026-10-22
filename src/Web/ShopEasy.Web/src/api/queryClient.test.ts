@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ApiError } from './http'
+import { ApiError, UnexpectedResponseError } from './http'
 import { createQueryClient, shouldRetry } from './queryClient'
 
 describe('createQueryClient', () => {
@@ -11,6 +11,10 @@ describe('createQueryClient', () => {
 describe('shouldRetry', () => {
   it('does not repeat a request the gateway has answered with a 4xx', () => {
     expect(shouldRetry(0, new ApiError(404, 'Not found'))).toBe(false)
+  })
+
+  it('does not repeat an answer of the wrong shape', () => {
+    expect(shouldRetry(0, new UnexpectedResponseError('/api/v1/products', []))).toBe(false)
   })
 
   it('repeats a 5xx or a dropped connection, twice', () => {
