@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using OpenTelemetry.Resources;
@@ -36,6 +37,9 @@ try
 
     // Believe the X-Forwarded-* headers of the ingress in front of the gateway, if one is configured
     builder.Services.AddConfiguredForwardedHeaders(builder.Configuration);
+
+    // 401 (not the redirect to Identity) for a call under /api without a session
+    builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, ApiAuthorizationResultHandler>();
 
     // Renewal of the access token in the session (see AccessTokenRenewal)
     builder.Services.AddMemoryCache();
