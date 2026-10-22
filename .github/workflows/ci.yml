@@ -72,6 +72,41 @@ jobs:
             echo "Documentation only: build, tests and container jobs skipped." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  # ── The storefront (src/Web/ShopEasy.Web): lint, types, tests, production build ───────────
+  # Needs nothing but Node, so it runs next to the .NET jobs.
+  web:
+    name: Storefront (lint, types, tests, build)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: src/Web/ShopEasy.Web
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: src/Web/ShopEasy.Web/.nvmrc
+          cache: npm
+          cache-dependency-path: src/Web/ShopEasy.Web/package-lock.json
+
+      - name: Install exactly what package-lock.json says
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
   # ── Build + every test, including the ones that need PostgreSQL and RabbitMQ ─────────────
   build-and-test:
     name: Build and test
@@ -371,7 +406,7 @@ jobs:
   ci-passed:
     name: CI passed
     if: always()
-    needs: [changes, build-and-test, validate-deployment-files, container-smoke-test, image-scan]
+    needs: [changes, web, build-and-test, validate-deployment-files, container-smoke-test, image-scan]
     runs-on: ubuntu-latest
     steps:
       - name: All required jobs succeeded?
