@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, queryOptions, useQuery } from '@tanstack/react-query'
 import { fetchCategories, fetchProduct, fetchProducts, type CatalogQuery } from './catalog'
 
 // One place for the cache keys, so that what is fetched and what is invalidated cannot drift apart
@@ -19,12 +19,18 @@ export function useProducts(query: CatalogQuery) {
   })
 }
 
-// data is the product, or null when there is no such product
-export function useProduct(id: string) {
-  return useQuery({
+// The description of the query, shared by whoever needs the product: the product page asks with
+// useQuery, the cart asks for many at once with useQueries, and both fill the same cache entry
+export function productQuery(id: string) {
+  return queryOptions({
     queryKey: catalogKeys.product(id),
     queryFn: ({ signal }) => fetchProduct(id, signal),
   })
+}
+
+// data is the product, or null when there is no such product
+export function useProduct(id: string) {
+  return useQuery(productQuery(id))
 }
 
 // Changes rarely, and the list works without it

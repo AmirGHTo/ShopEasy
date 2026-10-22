@@ -1,9 +1,11 @@
 import { Link, useLocation } from 'react-router'
+import { useCart } from '../features/cart/useCart'
 import { signInUrl, signOutUrl, type Session } from '../session/session'
 import { useSession } from '../session/useSession'
 
 export default function Header() {
   const { data: session, isPending, isError } = useSession()
+  const { count } = useCart()
 
   return (
     <header className="border-b border-slate-200 bg-white">
@@ -16,6 +18,10 @@ export default function Header() {
           {isError && <span className="text-slate-500">Your account is unavailable.</span>}
           {session === null && <SignInLink />}
           {session && <SignedIn session={session} />}
+          <Link to="/cart" aria-label={`Cart, ${String(count)} ${count === 1 ? 'item' : 'items'}`} className={linkClass}>
+            Cart
+            <span className="ml-1 rounded-full bg-indigo-100 px-2 py-0.5 text-xs text-indigo-700">{count}</span>
+          </Link>
         </nav>
       </div>
     </header>
