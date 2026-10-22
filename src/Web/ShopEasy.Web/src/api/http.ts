@@ -13,7 +13,7 @@ export interface RequestOptions {
   method?: Method
   body?: unknown
   headers?: Record<string, string>
-  signal?: AbortSignal
+  signal?: AbortSignal | undefined
 }
 
 // An answer from the gateway or a service that is not a success. The services explain themselves in
@@ -32,7 +32,7 @@ export class ApiError extends Error {
   }
 }
 
-// Resolves with the JSON body (`undefined` for 204 No Content, ask for `void` then) and rejects
+// Resolves with the JSON body (`undefined` for 204 No Content, ask for `undefined` then) and rejects
 // with an ApiError for any other status. A dropped connection rejects with the fetch error itself.
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, headers, signal } = options
@@ -41,12 +41,11 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   if (body !== undefined) sent['Content-Type'] = 'application/json'
   if (CHANGES_STATE.has(method)) sent[REQUESTED_WITH] = 'ShopEasy.Web'
 
-  const response = await fetch(path, {
-    method,
-    headers: sent,
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal,
-  })
+  const init: RequestInit = { method, headers: sent }
+  if (body !== undefined) init.body = JSON.stringify(body)
+  if (signal) init.signal = signal
+
+  const response = await fetch(path, init)
 
   if (!response.ok) throw await toApiError(response)
   if (response.status === 204) return undefined as T
@@ -64,15 +63,17 @@ async function toApiError(response: Response): Promise<ApiError> {
 }
 
 interface Problem {
-  message?: string
-  error?: string
-  errors?: string[]
+  message: string | undefined
+  error: string | undefined
+  errors: string[] | undefined
 }
+
+const UNKNOWN_PROBLEM: Problem = { message: undefined, error: undefined, errors: undefined }
 
 async function readProblem(response: Response): Promise<Problem> {
   try {
     const body: unknown = await response.json()
-    if (typeof body !== 'object' || body === null) return {}
+    if (typeof body !== 'object' || body === null) return UNKNOWN_PROBLEM
     const { message, error, errors } = body as Record<string, unknown>
     return {
       message: typeof message === 'string' ? message : undefined,
@@ -80,6 +81,6 @@ async function readProblem(response: Response): Promise<Problem> {
       errors: Array.isArray(errors) ? errors.filter((e): e is string => typeof e === 'string') : undefined,
     }
   } catch {
-    return {} // an error page, an empty body: only the status is known
+    return UNKNOWN_PROBLEM // an error page, an empty body: only the status is known
   }
 }

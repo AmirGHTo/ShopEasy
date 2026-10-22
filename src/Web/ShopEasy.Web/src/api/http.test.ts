@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { jsonResponse, sentHeaders, stubFetch } from '../test/fetch'
+import { jsonResponse, sentRequest, stubFetch } from '../test/fetch'
 import { ApiError, request } from './http'
 
 describe('request', () => {
@@ -9,19 +9,19 @@ describe('request', () => {
     const result = await request<{ id: number }>('/api/v1/products/7')
 
     expect(result).toEqual({ id: 7 })
-    const [path, init] = fetchMock.mock.calls[0]
+    const { path, init, headers } = sentRequest(fetchMock)
     expect(path).toBe('/api/v1/products/7')
     expect(init?.method).toBe('GET')
     expect(init?.body).toBeUndefined()
-    expect(sentHeaders(fetchMock)).toEqual({ Accept: 'application/json' })
+    expect(headers).toEqual({ Accept: 'application/json' })
   })
 
   it.each(['POST', 'PUT', 'PATCH', 'DELETE'] as const)('marks a %s as coming from the shop', async (method) => {
     const fetchMock = stubFetch(new Response(null, { status: 204 }))
 
-    await request<void>('/api/orders', { method })
+    await request<undefined>('/api/orders', { method })
 
-    expect(sentHeaders(fetchMock)['X-Requested-With']).toBe('ShopEasy.Web')
+    expect(sentRequest(fetchMock).headers['X-Requested-With']).toBe('ShopEasy.Web')
   })
 
   it('sends a body as JSON, with the headers the caller adds', async () => {
@@ -33,9 +33,9 @@ describe('request', () => {
       headers: { 'Idempotency-Key': 'key-1' },
     })
 
-    const init = fetchMock.mock.calls[0][1]
+    const { init, headers } = sentRequest(fetchMock)
     expect(init?.body).toBe('{"items":[{"productId":"p-1","quantity":2}]}')
-    expect(sentHeaders(fetchMock)).toMatchObject({
+    expect(headers).toMatchObject({
       'Content-Type': 'application/json',
       'Idempotency-Key': 'key-1',
       'X-Requested-With': 'ShopEasy.Web',
@@ -45,7 +45,7 @@ describe('request', () => {
   it('resolves with nothing on 204 No Content', async () => {
     stubFetch(new Response(null, { status: 204 }))
 
-    await expect(request<void>('/api/orders/1', { method: 'DELETE' })).resolves.toBeUndefined()
+    await expect(request<undefined>('/api/orders/1', { method: 'DELETE' })).resolves.toBeUndefined()
   })
 
   it('rejects with the message, code and list of errors the service gave', async () => {

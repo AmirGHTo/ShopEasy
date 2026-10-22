@@ -18,5 +18,12 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: ['src/**/*.test.{ts,tsx}', 'src/test/**', 'src/main.tsx'],
+      // a floor, not a goal: a change that leaves code untested fails here instead of going unnoticed
+      thresholds: { statements: 90, branches: 85, functions: 90, lines: 90 },
+    },
   },
 })
