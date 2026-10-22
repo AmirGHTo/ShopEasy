@@ -14,12 +14,24 @@ public class AccessThroughTheGatewayTests(ShopFixture shop)
         catalog.Status.Should().Be(HttpStatusCode.OK, "{0}", catalog);
         catalog.Json.Prop("items").GetArrayLength().Should().BeGreaterThan(0);
 
-        // without a session the gateway sends the visitor to sign in (API clients see 401)
+        // a call without a session is answered with 401, not with a redirect to Identity that a
+        // script (the storefront's fetch) could not follow
         var orders = await visitor.GetAsync("/api/orders");
-        orders.Status.Should().BeOneOf(HttpStatusCode.Unauthorized, HttpStatusCode.Redirect, HttpStatusCode.Found);
+        orders.Status.Should().Be(HttpStatusCode.Unauthorized, "{0}", orders);
+        orders.Json.Text("error").Should().Be("not_signed_in");
         var placing = await visitor.PostAsync("/api/orders",
             new { items = new[] { new { productId = Catalog.Chair, quantity = 1 } } });
-        placing.Status.Should().BeOneOf(HttpStatusCode.Unauthorized, HttpStatusCode.Redirect, HttpStatusCode.Found);
+        placing.Status.Should().Be(HttpStatusCode.Unauthorized, "{0}", placing);
+    }
+
+    [Fact]
+    public async Task AVisitor_OpeningAPageThatNeedsASession_IsSentToSignIn()
+    {
+        using var visitor = Shopper.Visitor();
+
+        var page = await visitor.GetAsync("/sagas");
+
+        page.Status.Should().BeOneOf(HttpStatusCode.Redirect, HttpStatusCode.Found);
     }
 
     [Fact]
