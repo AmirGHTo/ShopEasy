@@ -53,13 +53,21 @@ public sealed class Shopper : IDisposable
     public Task<Reply> PostAsync(string path, object body, string? idempotencyKey = null) =>
         SendAsync(HttpMethod.Post, path, body, idempotencyKey);
 
-    private async Task<Reply> SendAsync(HttpMethod method, string path, object? body = null, string? idempotencyKey = null)
+    // What a page of another site could make the browser send: the cookie, but not the header
+    // the shop's own pages add to every request that changes something
+    public Task<Reply> PostWithoutTheShopsHeaderAsync(string path, object body) =>
+        SendAsync(HttpMethod.Post, path, body, theShopsHeader: false);
+
+    private async Task<Reply> SendAsync(
+        HttpMethod method, string path, object? body = null, string? idempotencyKey = null, bool theShopsHeader = true)
     {
         using var request = new HttpRequestMessage(method, new Uri(Stack.Gateway, path));
         if (body is not null)
             request.Content = JsonContent.Create(body);
         if (idempotencyKey is not null)
             request.Headers.Add("Idempotency-Key", idempotencyKey);
+        if (theShopsHeader)
+            request.Headers.Add("X-Requested-With", "ShopEasy.EndToEndTests");
         using var response = await _http.SendAsync(request);
         return await Reply.ReadAsync(response);
     }
