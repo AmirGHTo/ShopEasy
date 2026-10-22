@@ -27,28 +27,41 @@ public class ProductsController(
 
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
 
+    // Longer than any name or description is worth searching for; a limit on what an anonymous
+    // caller can make the database compare
+    public const int MaxSearchLength = 50;
+
     // ── GET /api/v1/products ──────────────────────────────────────────────────
     [HttpGet]
     [AllowAnonymous]
     public async Task<ActionResult<PagedResult<ProductResponseV1>>> GetAll(
         [FromQuery] string? category,
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 10)
+        [FromQuery] int pageSize = 10,
+        [FromQuery] string? search = null)
     {
         pageSize = Math.Clamp(pageSize, 1, 50);
 
-        // A blank category is no filter: it must not get a cache key of its own
+        // A blank category or search is no filter: it must not get a cache key of its own
         if (string.IsNullOrWhiteSpace(category)) category = null;
+        search = string.IsNullOrWhiteSpace(search) ? null : search.Trim();
+
+        if (search is { Length: > MaxSearchLength })
+            return BadRequest(new { message = $"The search text can be at most {MaxSearchLength} characters." });
 
         // Build a cache key that includes filter parameters
         var cacheKey = $"{CacheKeys.ProductsAll}:{category ?? "all"}:{page}:{pageSize}";
 
-        // Try cache first
-        var cached = await _cache.GetAsync<PagedResult<ProductResponseV1>>(cacheKey);
-        if (cached is not null)
+        // Try cache first. A search is not cached: its text is free, so every distinct text a caller
+        // makes up would be another key in Redis, and none of them is worth keeping.
+        if (search is null)
         {
-            Response.Headers["X-Cache"] = "HIT";
-            return Ok(cached);
+            var cached = await _cache.GetAsync<PagedResult<ProductResponseV1>>(cacheKey);
+            if (cached is not null)
+            {
+                Response.Headers["X-Cache"] = "HIT";
+                return Ok(cached);
+            }
         }
 
         // Cache miss — query database
@@ -58,6 +71,14 @@ public class ProductsController(
 
         if (category is not null)
             query = query.Where(p => p.Category == category);
+
+        // Name or description contains the text, in any letter case. Contains is translated with the
+        // wildcards (% and _) escaped, so "50%" looks for those characters and does not match everything.
+        if (search is not null)
+        {
+            var text = search.ToLowerInvariant();
+            query = query.Where(p => p.Name.ToLower().Contains(text) || p.Description.ToLower().Contains(text));
+        }
 
         var total = await query.CountAsync();
         var items = await query
@@ -74,7 +95,7 @@ public class ProductsController(
         // Store in cache, but only a page that has products. The key holds the category and the page
         // of an anonymous request: caching the empty answer for a category or page that does not exist
         // would let anyone fill Redis with keys that are worth nothing.
-        if (items.Count > 0)
+        if (items.Count > 0 && search is null)
             await _cache.SetAsync(cacheKey, result, CacheTtl);
         Response.Headers["X-Cache"] = "MISS";
 
