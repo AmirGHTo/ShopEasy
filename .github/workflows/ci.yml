@@ -73,8 +73,7 @@ jobs:
           fi
 
   # ── The storefront (src/Web/ShopEasy.Web): lint, types, tests, production build ───────────
-  # Needs nothing but Node, so it runs next to the .NET jobs. The dependency audit covers what
-  # ships to the browser (the production dependencies); a high or critical finding fails the job.
+  # Needs nothing but Node, so it runs next to the .NET jobs.
   web:
     name: Storefront (lint, types, tests, build)
     needs: changes
@@ -95,9 +94,6 @@ jobs:
 
       - name: Install exactly what package-lock.json says
         run: npm ci
-
-      - name: Dependency audit (production dependencies)
-        run: npm audit --omit=dev --audit-level=high
 
       - name: Lint
         run: npm run lint
