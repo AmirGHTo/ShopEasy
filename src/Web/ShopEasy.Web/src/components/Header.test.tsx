@@ -18,6 +18,17 @@ describe('Header', () => {
     await expectNoAccessibilityViolations(container)
   })
 
+  it('comes back to the page with its filters, as the router knows it', async () => {
+    server.use(nobodyIsSignedIn())
+
+    renderWithProviders(<Header />, '/products?q=desk&page=2')
+
+    expect(await screen.findByRole('link', { name: 'Sign in' })).toHaveAttribute(
+      'href',
+      '/account/login?returnUrl=%2Fproducts%3Fq%3Ddesk%26page%3D2',
+    )
+  })
+
   it('shows who is signed in, with a way to sign out', async () => {
     server.use(signedInAs())
 

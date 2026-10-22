@@ -1,3 +1,4 @@
+import { Link, useLocation } from 'react-router'
 import { signInUrl, signOutUrl, type Session } from '../session/session'
 import { useSession } from '../session/useSession'
 
@@ -7,9 +8,9 @@ export default function Header() {
   return (
     <header className="border-b border-slate-200 bg-white">
       <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
-        <a href="/" className="text-xl font-semibold tracking-tight">
+        <Link to="/" className="text-xl font-semibold tracking-tight">
           ShopEasy
-        </a>
+        </Link>
         <nav aria-label="Account" aria-busy={isPending} className="flex items-center gap-4 text-sm">
           {isPending && <span aria-hidden="true" className="h-5 w-28 animate-pulse rounded bg-slate-200" />}
           {isError && <span className="text-slate-500">Your account is unavailable.</span>}
@@ -23,8 +24,11 @@ export default function Header() {
 
 const linkClass = 'font-medium text-indigo-600 hover:text-indigo-500'
 
+// Signing in and out are page loads of the gateway (it talks to Identity and comes back), so these
+// are plain links and not router links
 function SignInLink() {
-  const here = window.location.pathname + window.location.search
+  const { pathname, search } = useLocation()
+  const here = pathname + search
   return (
     <a href={signInUrl(here)} className={linkClass}>
       Sign in
