@@ -79,6 +79,17 @@ updates:
       - dependency-name: "dotnet/*"
         update-types: ["version-update:semver-major"]
 
+  # The storefront's npm packages (src/Web/ShopEasy.Web)
+  - package-ecosystem: npm
+    directory: /src/Web/ShopEasy.Web
+    schedule:
+      interval: weekly
+    groups:
+      # one pull request for all minor and patch updates; each major arrives on its own to be judged
+      npm-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
   # The actions used by the workflows above
   - package-ecosystem: github-actions
     directory: /
