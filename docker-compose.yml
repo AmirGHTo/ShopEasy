@@ -422,6 +422,14 @@ services:
       Oidc__ClientSecret: ${GATEWAY_CLIENT_SECRET:?Set GATEWAY_CLIENT_SECRET in .env}
       # Exposes GET /account/token (raw access token) — local development only
       Features__ExposeAccessToken: "${EXPOSE_ACCESS_TOKEN:-false}"
+      # Requests a minute for each kind of caller (README, "Rate Limiting")
+      RateLimiting__AnonymousPerMinute: "${RATE_LIMIT_ANONYMOUS_PER_MINUTE:-120}"
+      RateLimiting__AuthenticatedPerMinute: "${RATE_LIMIT_AUTHENTICATED_PER_MINUTE:-100}"
+      RateLimiting__AdminPerMinute: "${RATE_LIMIT_ADMIN_PER_MINUTE:-500}"
+      RateLimiting__OrdersPerMinute: "${RATE_LIMIT_ORDERS_PER_MINUTE:-10}"
+      # Content-Security-Policy and the other security headers (README, "Security headers")
+      SecurityHeaders__Enabled: "${SECURITY_HEADERS_ENABLED:-true}"
+      SecurityHeaders__ImageSources: "${SECURITY_HEADERS_IMAGE_SOURCES:-https:}"
       ReverseProxy__Clusters__products-cluster__Destinations__primary__Address: "http://product:8080"
       ReverseProxy__Clusters__orders-cluster__Destinations__primary__Address: "http://order:8080"
       ReverseProxy__Clusters__inventory-cluster__Destinations__primary__Address: "http://inventory:8080"
