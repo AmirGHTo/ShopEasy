@@ -47,3 +47,37 @@ export function orderApiAnswers(answer: (attempt: number) => Response | Promise<
 }
 
 export const created = (order: object) => HttpResponse.json(order, { status: 201 })
+
+// An order as GET /api/orders/{id} answers (the read model), by default still Pending
+export function anOrderSummary(orderId: string, overrides: Record<string, unknown> = {}) {
+  return {
+    orderId,
+    userId: 'u-1',
+    userEmail: 'alice@example.com',
+    statusName: 'Pending',
+    statusCode: 0,
+    totalAmount: 678.99,
+    amountDisplay: '$678.99',
+    itemCount: 3,
+    itemsSummary: 'Standing Desk x1, Desk Lamp x2',
+    paymentStatus: null,
+    failureReason: null,
+    placedAt: '2026-10-23T10:00:00Z',
+    updatedAt: '2026-10-23T10:00:00Z',
+    ...overrides,
+  }
+}
+
+// The order as the customer's later looks find it: each look gets the next answer, the last one is
+// repeated. `looks()` is how many times it was asked.
+export function theOrderMovesThrough(orderId: string, answers: object[]) {
+  let looks = 0
+  server.use(
+    http.get(`/api/orders/${orderId}`, () => {
+      const answer = answers[Math.min(looks, answers.length - 1)] ?? {}
+      looks += 1
+      return HttpResponse.json(answer)
+    }),
+  )
+  return { looks: () => looks }
+}
