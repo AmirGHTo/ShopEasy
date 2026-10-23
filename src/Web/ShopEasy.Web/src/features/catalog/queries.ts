@@ -1,11 +1,12 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { fetchCategories, fetchProducts, type CatalogQuery } from './catalog'
+import { fetchCategories, fetchProduct, fetchProducts, type CatalogQuery } from './catalog'
 
 // One place for the cache keys, so that what is fetched and what is invalidated cannot drift apart
 export const catalogKeys = {
   all: ['catalog'] as const,
   list: (query: CatalogQuery) => [...catalogKeys.all, 'list', query] as const,
   categories: () => [...catalogKeys.all, 'categories'] as const,
+  product: (id: string) => [...catalogKeys.all, 'product', id] as const,
 }
 
 // While the next page loads, the previous one stays on screen (isPlaceholderData) instead of
@@ -15,6 +16,14 @@ export function useProducts(query: CatalogQuery) {
     queryKey: catalogKeys.list(query),
     queryFn: ({ signal }) => fetchProducts(query, signal),
     placeholderData: keepPreviousData,
+  })
+}
+
+// data is the product, or null when there is no such product
+export function useProduct(id: string) {
+  return useQuery({
+    queryKey: catalogKeys.product(id),
+    queryFn: ({ signal }) => fetchProduct(id, signal),
   })
 }
 

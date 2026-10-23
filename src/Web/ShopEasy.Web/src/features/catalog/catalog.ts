@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { request } from '../../api/http'
+import { ApiError, request } from '../../api/http'
 
 // Twelve fill a grid of 2, 3 or 4 columns without a gap in the last row
 export const PAGE_SIZE = 12
@@ -42,6 +42,18 @@ export function fetchProducts(query: CatalogQuery, signal?: AbortSignal): Promis
   if (query.category) params.set('category', query.category)
 
   return request(`/api/v1/products?${params.toString()}`, productPageSchema, { signal })
+}
+
+// null when the catalog has no such product (or the id is not even an id): not an error, an answer
+export async function fetchProduct(id: string, signal?: AbortSignal): Promise<Product | null> {
+  if (!z.uuid().safeParse(id).success) return null
+
+  try {
+    return await request(`/api/v1/products/${id}`, productSchema, { signal })
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null
+    throw error
+  }
 }
 
 export function fetchCategories(signal?: AbortSignal): Promise<string[]> {
