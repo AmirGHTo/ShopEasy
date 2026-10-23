@@ -125,6 +125,8 @@ test('a customer signs up, buys something, sees the order confirmed, and cancels
   await test.step('they sign out', async () => {
     await page.getByRole('link', { name: 'Sign out' }).click()
 
+    // back in the shop, as a visitor: signing out goes through Identity and returns
+    await expect(page).toHaveURL(/\/products$/)
     await expect(page.getByRole('link', { name: 'Sign in' })).toBeVisible()
   })
 })
