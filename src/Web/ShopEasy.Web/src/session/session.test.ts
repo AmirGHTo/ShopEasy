@@ -1,20 +1,13 @@
+import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { ApiError, UnexpectedResponseError } from '../api/http'
-import { jsonResponse, sentRequest, stubFetch } from '../test/fetch'
+import { alice, nobodyIsSignedIn, signedInAs } from '../test/gateway'
+import { server } from '../test/server'
 import { fetchSession, signInUrl } from './session'
 
-const alice = { isAuthenticated: true, userId: 'u-1', email: 'alice@example.com', name: 'Alice', roles: ['customer'] }
-
 describe('fetchSession', () => {
-  it('returns who is signed in', async () => {
-    const fetchMock = stubFetch(jsonResponse(alice))
-
-    await expect(fetchSession()).resolves.toMatchObject({ userId: 'u-1', email: 'alice@example.com', roles: ['customer'] })
-    expect(sentRequest(fetchMock).path).toBe('/account/me')
-  })
-
-  it('keeps only what the app uses', async () => {
-    stubFetch(jsonResponse(alice))
+  it('returns who is signed in, with only what the app uses', async () => {
+    server.use(signedInAs())
 
     await expect(fetchSession()).resolves.toStrictEqual({
       userId: 'u-1',
@@ -25,19 +18,25 @@ describe('fetchSession', () => {
   })
 
   it('refuses an answer that is not a session', async () => {
-    stubFetch(jsonResponse({ userId: 42, roles: 'customer' }))
+    server.use(signedInAs({ userId: 42, roles: 'customer' }))
 
     await expect(fetchSession()).rejects.toBeInstanceOf(UnexpectedResponseError)
   })
 
+  it('accepts an account with neither name nor email', async () => {
+    server.use(signedInAs({ ...alice, name: null, email: null }))
+
+    await expect(fetchSession()).resolves.toMatchObject({ name: null, email: null })
+  })
+
   it('returns null when nobody is signed in', async () => {
-    stubFetch(new Response(null, { status: 401 }))
+    server.use(nobodyIsSignedIn())
 
     await expect(fetchSession()).resolves.toBeNull()
   })
 
   it('does not hide any other failure', async () => {
-    stubFetch(jsonResponse({ message: 'Down.' }, 503))
+    server.use(http.get('/account/me', () => HttpResponse.json({ message: 'Down.' }, { status: 503 })))
 
     await expect(fetchSession()).rejects.toBeInstanceOf(ApiError)
   })
