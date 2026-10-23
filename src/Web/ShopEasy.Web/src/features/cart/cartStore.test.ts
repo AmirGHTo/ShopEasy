@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { MAX_QUANTITY } from './cart'
 import { createCartStore, STORAGE_KEY } from './cartStore'
 
-const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+const id = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`
 
 // A storage that remembers in a Map, like localStorage does for the length of a test
 function fakeStorage(initial: Record<string, string> = {}) {
