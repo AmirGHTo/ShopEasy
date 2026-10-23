@@ -108,3 +108,23 @@ export function theOrdersAre(orders: readonly ReturnType<typeof anOrderSummary>[
   )
   return requests
 }
+
+export interface SentCancel {
+  requestedWith: string | null
+}
+
+// The Order API's DELETE /api/orders/{id}: every request that arrives is noted, and answered by `answer`
+// (given the number of the request, 1 for the first)
+export function cancelApiAnswers(orderId: string, answer: (attempt: number) => Response | Promise<Response>): SentCancel[] {
+  const sent: SentCancel[] = []
+  server.use(
+    http.delete(`/api/orders/${orderId}`, ({ request }) => {
+      sent.push({ requestedWith: request.headers.get('X-Requested-With') })
+      return answer(sent.length)
+    }),
+  )
+  return sent
+}
+
+export const cancelled = () => new HttpResponse(null, { status: 204 })
+export const cancelling = () => HttpResponse.json({ status: 'Cancelling', message: 'Releasing the stock.' }, { status: 202 })

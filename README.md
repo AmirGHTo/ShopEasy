@@ -1468,6 +1468,8 @@ npm run build         # production build into dist/
 
 **My orders.** `/orders` lists the signed-in customer's orders, newest first, ten to a page, and can be narrowed to one status; the page and the status are in the address, like the product list's, and each order links to its status page. The header links to it for a signed-in customer.
 
+**Cancelling an order.** An order that is Pending or Confirmed has a "Cancel order" button on its page, with a question first because it cannot be undone. The Order API answers either "done" (204) or "cancelling" (202: the stock is put back and a payment refunded first); in the second case the page keeps looking at the order, like it does for a Pending one, until it says Cancelled, and then tells the customer so. If the order has already shipped, or its payment is just being finalized, the API refuses (409) and the page shows its reason.
+
 **What the checks enforce.** TypeScript runs with `strict`, `noUncheckedIndexedAccess` (an array element or map entry may be missing) and `exactOptionalPropertyTypes`. ESLint uses the strict, type-aware rule sets, so an unhandled promise, a condition that can never be true or an `any` fails the build; `dangerouslySetInnerHTML` and `eval` are banned. Component tests also run the axe accessibility rules on what they render.
 
 **Signing in during development.** Signing in and out are page loads (`/account/login`, `/account/logout`), so after Identity the browser comes back to the gateway at `http://localhost:5000`, not to the dev server. The session cookie is shared between the two ports: open `http://localhost:5173` again and the header shows who is signed in.
