@@ -61,7 +61,7 @@ public class OutboxDeliveryGateTests
         for (var cycle = 0; cycle < 3; cycle++)
             await service.DeliverPendingMessages(CancellationToken.None);
 
-        await publish.DidNotReceiveWithAnyArgs().Publish(default(OrderConfirmedEvent)!, default);
+        await publish.DidNotReceiveWithAnyArgs().Publish(default(OrderConfirmedEvent)!, default(IPipe<PublishContext<OrderConfirmedEvent>>)!, default);
 
         using var scope = provider.CreateScope();
         var entry = await scope.ServiceProvider.GetRequiredService<OrderDbContext>()
@@ -81,7 +81,7 @@ public class OutboxDeliveryGateTests
 
         await service.DeliverPendingMessages(CancellationToken.None);
 
-        await publish.DidNotReceiveWithAnyArgs().Publish(default(OrderConfirmedEvent)!, default);
+        await publish.DidNotReceiveWithAnyArgs().Publish(default(OrderConfirmedEvent)!, default(IPipe<PublishContext<OrderConfirmedEvent>>)!, default);
         using var scope = provider.CreateScope();
         (await scope.ServiceProvider.GetRequiredService<OrderDbContext>()
             .OutboxEntries.SingleAsync()).RetryCount.Should().Be(0);

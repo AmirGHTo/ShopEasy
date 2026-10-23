@@ -184,7 +184,10 @@ public class OutboxDeliveryService(
                         {
                             PropertyNameCaseInsensitive = true
                         })!;
-                await publishEndpoint.Publish(evt, ct);
+                // Always under the entry's own id. If the message is published but marking the entry
+                // delivered then fails, the next cycle publishes it again; with the same MessageId
+                // the receiving inbox recognises the copy instead of treating it as a new event.
+                await publishEndpoint.Publish(evt, context => context.MessageId = entry.Id, ct);
                 break;
 
             default:
