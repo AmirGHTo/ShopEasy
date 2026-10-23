@@ -210,6 +210,9 @@ services:
       ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_identity;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
       Clients__Gateway__Secret: ${GATEWAY_CLIENT_SECRET:?Set GATEWAY_CLIENT_SECRET in .env}
       Clients__OrderService__Secret: ${ORDER_SERVICE_CLIENT_SECRET:?Set ORDER_SERVICE_CLIENT_SECRET in .env}
+      # The one address tokens name as their issuer: where browsers reach Identity, the same value
+      # as the gateway's IdentityServer__PublicUrl (README, "Service configuration keys")
+      IdentityServer__IssuerUri: "${IDENTITY_PUBLIC_URL:-http://localhost:5001}"
       # Demo users are only created when Seed__Enabled is true (local development)
       Seed__Enabled: "${SEED_DEMO_USERS:-false}"
       Seed__AdminPassword: ${SEED_ADMIN_PASSWORD:-}
@@ -418,7 +421,7 @@ services:
       Resilience__Gateway__GetRetries: "${RESILIENCE_GATEWAY_GET_RETRIES:-2}"
       ASPNETCORE_URLS: http://+:8080
       IdentityServer__Authority: "http://identity:8080"
-      IdentityServer__PublicUrl: "http://localhost:5001"
+      IdentityServer__PublicUrl: "${IDENTITY_PUBLIC_URL:-http://localhost:5001}"
       Oidc__ClientSecret: ${GATEWAY_CLIENT_SECRET:?Set GATEWAY_CLIENT_SECRET in .env}
       # Exposes GET /account/token (raw access token) — local development only
       Features__ExposeAccessToken: "${EXPOSE_ACCESS_TOKEN:-false}"
