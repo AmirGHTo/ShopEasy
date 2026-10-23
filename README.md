@@ -702,7 +702,8 @@ Services read standard ASP.NET Core configuration, so every key can be an enviro
 |---|---|---|
 | `ConnectionStrings__DefaultConnection` | all with a DB | **Required.** Each service has its own database. No default. |
 | `IdentityServer__Authority` | all APIs, Gateway | Internal URL of Identity, e.g. `http://identity:8080`. |
-| `IdentityServer__PublicUrl` | Gateway | Browser-facing Identity URL (used for login redirects), e.g. `http://localhost:5001`. |
+| `IdentityServer__PublicUrl` | Gateway | Browser-facing Identity URL (used for login redirects), e.g. `http://localhost:5001`. In Compose it is `IDENTITY_PUBLIC_URL`, which Identity also uses as its `IdentityServer__IssuerUri`. |
+| `IdentityServer__IssuerUri` | Identity | The one address every token names as its issuer: set it to the same public URL as the gateway's `IdentityServer__PublicUrl`. Without it Identity takes the issuer from the address of each request, and it is reached by two names (`http://identity:8080` inside the network, the public one for browsers): the gateway's ID token then names a different issuer than the browser's sign-out request, Identity cannot check it, and a customer who signs out is left on Identity's page instead of the shop. The APIs and the gateway read the issuer from Identity's discovery document, so they need no setting. Default empty (see Compose and the Kubernetes manifests for the values used). A value that is not an `http(s)` address without a path stops Identity. |
 | `Oidc__ClientSecret` | Gateway | **Required.** Must equal `Clients__Gateway__Secret`. |
 | `Clients__Gateway__Secret`, `Clients__OrderService__Secret` | Identity | **Required.** Secrets of the registered OAuth2 clients. |
 | `Clients__Gateway__PublicUrl` | Identity | Browser-facing gateway URL for redirect URIs. Default `http://localhost:5000`. |

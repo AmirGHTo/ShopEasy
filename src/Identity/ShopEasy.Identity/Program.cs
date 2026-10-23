@@ -83,9 +83,14 @@ try
     });
 
     // ── Duende IdentityServer ────────────────────────────────────────────────
+    var issuer = IssuerSettings.From(builder.Configuration);
+    issuer.Validate();
     builder.Services
         .AddIdentityServer(options =>
         {
+            // one issuer whichever name a caller used (see IssuerSettings)
+            if (issuer.IssuerUri.Length > 0)
+                options.IssuerUri = issuer.IssuerUri;
             options.Events.RaiseErrorEvents       = true;
             options.Events.RaiseInformationEvents = true;
             options.Events.RaiseFailureEvents     = true;

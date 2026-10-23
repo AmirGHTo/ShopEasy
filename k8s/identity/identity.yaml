@@ -68,6 +68,10 @@ spec:
                 secretKeyRef:
                   name: shopeasy-secrets
                   key: identity-db-connection
+            # The one address tokens name as their issuer: where browsers reach Identity, the same
+            # value as the gateway's IdentityServer__PublicUrl (k8s/gateway/gateway.yaml)
+            - name: IdentityServer__IssuerUri
+              value: "http://localhost:30001"
             - name: Clients__Gateway__Secret
               valueFrom:
                 secretKeyRef:
