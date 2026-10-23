@@ -13,7 +13,10 @@ export function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
-// The headers of the nth call as a plain object
-export function sentHeaders(mock: ReturnType<typeof stubFetch>, call = 0): Record<string, string> {
-  return mock.mock.calls[call][1]?.headers as Record<string, string>
+// What the nth call to fetch was given
+export function sentRequest(mock: ReturnType<typeof stubFetch>, call = 0) {
+  const sent = mock.mock.calls[call]
+  if (!sent) throw new Error(`fetch was not called ${String(call + 1)} time(s)`)
+  const [path, init] = sent
+  return { path, init, headers: (init?.headers ?? {}) as Record<string, string> }
 }

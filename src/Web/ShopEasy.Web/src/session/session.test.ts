@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from '../api/http'
-import { jsonResponse, stubFetch } from '../test/fetch'
+import { jsonResponse, sentRequest, stubFetch } from '../test/fetch'
 import { fetchSession, signInUrl } from './session'
 
 const alice = { isAuthenticated: true, userId: 'u-1', email: 'alice@example.com', name: 'Alice', roles: ['customer'] }
@@ -10,7 +10,7 @@ describe('fetchSession', () => {
     const fetchMock = stubFetch(jsonResponse(alice))
 
     await expect(fetchSession()).resolves.toMatchObject({ userId: 'u-1', email: 'alice@example.com', roles: ['customer'] })
-    expect(fetchMock.mock.calls[0][0]).toBe('/account/me')
+    expect(sentRequest(fetchMock).path).toBe('/account/me')
   })
 
   it('returns null when nobody is signed in', async () => {

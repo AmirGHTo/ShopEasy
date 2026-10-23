@@ -1216,7 +1216,7 @@ Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new p
 | Job | What it checks |
 |---|---|
 | **Detect changes** | Decides whether the pull request touches anything that is built, tested or deployed (plain `git diff`, no third-party action). Skipped jobs count as passed in **CI passed**, so the check can stay required for documentation-only changes. |
-| **Storefront (lint, types, tests, build)** | `src/Web/ShopEasy.Web` with Node 22: `npm ci` (exactly what `package-lock.json` says), ESLint, `tsc`, the Vitest tests and the production build. Needs no other service. |
+| **Storefront (lint, types, tests, build)** | `src/Web/ShopEasy.Web` with Node 22: `npm ci` (exactly what `package-lock.json` says), ESLint, `tsc`, the Vitest tests with their coverage floor and the production build. Needs no other service. |
 | **Build and test** | `dotnet restore/build` (Release) and all 861 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 82 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
 | **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, they take the shared ConfigMap (so a setting changed there reaches every service), third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
 | **Compose stack and end-to-end test** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. Last, it runs the [end-to-end test](#end-to-end-test) against those containers: a customer signs up, signs in, buys something and the order is confirmed, which no unit test can show because it needs every service, the broker and the databases working together. |
@@ -1451,15 +1451,18 @@ ShopEasy/
 cd src/Web/ShopEasy.Web
 npm ci                # exactly the versions in package-lock.json (Node 22)
 npm run dev           # http://localhost:5173, forwards /api and /account to the gateway
-npm run lint          # ESLint
-npm run typecheck     # tsc
+npm run lint          # ESLint (strict, type-aware rules)
+npm run typecheck     # tsc (strict, plus noUncheckedIndexedAccess and exactOptionalPropertyTypes)
 npm test              # Vitest + Testing Library
+npm run test:coverage # the same with a coverage floor (90 % statements, lines, functions; 85 % branches)
 npm run build         # production build into dist/
 ```
 
 `npm run dev` expects the Compose stack to be running; the gateway it forwards to is `http://localhost:5000`, or `VITE_GATEWAY_URL` if you set it.
 
 **Code layout.** `src/api` holds the single `fetch` wrapper (`request`): JSON in and out, an `ApiError` for any non-success answer, and the `X-Requested-With` header the gateway requires on every request that changes something. `src/session` asks the gateway who is signed in (`/account/me`) and exposes it as `useSession()` (TanStack Query); `src/components` holds the shared pieces such as the header. Tests stub `fetch`, so none of them needs a running gateway.
+
+**What the checks enforce.** TypeScript runs with `strict`, `noUncheckedIndexedAccess` (an array element or map entry may be missing) and `exactOptionalPropertyTypes`. ESLint uses the strict, type-aware rule sets, so an unhandled promise, a condition that can never be true or an `any` fails the build; `dangerouslySetInnerHTML` and `eval` are banned. Component tests also run the axe accessibility rules on what they render.
 
 **Signing in during development.** Signing in and out are page loads (`/account/login`, `/account/logout`), so after Identity the browser comes back to the gateway at `http://localhost:5000`, not to the dev server. The session cookie is shared between the two ports: open `http://localhost:5173` again and the header shows who is signed in.
 

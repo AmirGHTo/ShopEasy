@@ -101,8 +101,8 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
-      - name: Tests
-        run: npm test
+      - name: Tests (with the coverage floor)
+        run: npm run test:coverage
 
       - name: Production build
         run: npm run build

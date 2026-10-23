@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from './http'
-import { shouldRetry } from './queryClient'
+import { createQueryClient, shouldRetry } from './queryClient'
+
+describe('createQueryClient', () => {
+  it('retries by that rule', () => {
+    expect(createQueryClient().getDefaultOptions().queries?.retry).toBe(shouldRetry)
+  })
+})
 
 describe('shouldRetry', () => {
   it('does not repeat a request the gateway has answered with a 4xx', () => {

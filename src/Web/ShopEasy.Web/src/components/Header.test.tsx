@@ -1,6 +1,7 @@
 import { screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { jsonResponse, stubFetch } from '../test/fetch'
+import { expectNoAccessibilityViolations } from '../test/a11y'
 import { renderWithProviders } from '../test/render'
 import Header from './Header'
 
@@ -10,18 +11,20 @@ describe('Header', () => {
   it('offers to sign in when nobody is, and comes back to this page', async () => {
     stubFetch(new Response(null, { status: 401 }))
 
-    renderWithProviders(<Header />)
+    const { container } = renderWithProviders(<Header />)
 
     expect(await screen.findByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/account/login?returnUrl=%2F')
+    await expectNoAccessibilityViolations(container)
     expect(screen.queryByRole('link', { name: 'Sign out' })).not.toBeInTheDocument()
   })
 
   it('shows who is signed in, with a way to sign out', async () => {
     stubFetch(jsonResponse(alice))
 
-    renderWithProviders(<Header />)
+    const { container } = renderWithProviders(<Header />)
 
     expect(await screen.findByText('Alice')).toBeInTheDocument()
+    await expectNoAccessibilityViolations(container)
     expect(screen.getByRole('link', { name: 'Sign out' })).toHaveAttribute('href', '/account/logout')
     expect(screen.queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument()
   })
@@ -35,7 +38,7 @@ describe('Header', () => {
   })
 
   it('shows neither link while it is still finding out', () => {
-    stubFetch().mockReturnValue(new Promise<Response>(() => {}))
+    stubFetch().mockReturnValue(new Promise<Response>(() => undefined))
 
     renderWithProviders(<Header />)
 
