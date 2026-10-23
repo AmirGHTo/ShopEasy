@@ -34,6 +34,8 @@ try
     authSettings.Validate();
     var identityAuthority = authSettings.Authority;
     var webSecurity = WebSecurityOptions.From(builder.Configuration);
+    var securityHeaders = SecurityHeadersSettings.From(builder.Configuration);
+    securityHeaders.Validate();
 
     // Believe the X-Forwarded-* headers of the ingress in front of the gateway, if one is configured
     builder.Services.AddConfiguredForwardedHeaders(builder.Configuration);
@@ -299,6 +301,10 @@ try
     app.UseConfiguredForwardedHeaders(builder.Configuration);
 
     app.UseMiddleware<CorrelationIdMiddleware>();
+
+    // Early, so that every answer has the headers, also the ones refused or redirected below
+    if (securityHeaders.Enabled)
+        app.UseSecurityHeaders(securityHeaders);
 
     // Before anything is authenticated or proxied: a state-changing /api request without the
     // header never gets that far
