@@ -9,7 +9,7 @@ export const MAX_QUANTITY = 100
 // when the cart is shown, and the order itself is priced by the server, so a stale or edited
 // number in the browser can never change what is charged.
 export const cartLineSchema = z.object({
-  productId: z.uuid(),
+  productId: z.guid(), // a .NET Guid, see productSchema
   quantity: z.int().min(1).max(MAX_QUANTITY),
 })
 

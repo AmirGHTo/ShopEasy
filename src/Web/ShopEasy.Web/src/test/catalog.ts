@@ -5,7 +5,7 @@ import { server } from './server'
 // The nth product of a made-up catalog; any field can be replaced
 export function aProduct(n: number, overrides: Partial<Product> = {}): Product {
   return {
-    id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
+    id: `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`,
     name: `Product ${String(n)}`,
     description: `About product ${String(n)}`,
     price: 10 + n,

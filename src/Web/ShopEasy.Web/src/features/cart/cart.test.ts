@@ -12,7 +12,7 @@ import {
   type Cart,
 } from './cart'
 
-const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+const id = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`
 const line = (n: number, quantity = 1) => ({ productId: id(n), quantity })
 
 describe('addToCart', () => {
@@ -96,6 +96,12 @@ describe('itemCount', () => {
 })
 
 describe('parseStoredCart', () => {
+  it('reads the ids of the seeded catalog, which are Guids but not RFC UUIDs', () => {
+    const stored = JSON.stringify([{ productId: '00000000-0000-0000-0000-000000000004', quantity: 1 }])
+
+    expect(parseStoredCart(stored)).toHaveLength(1)
+  })
+
   it('reads a cart it wrote', () => {
     expect(parseStoredCart(JSON.stringify([line(1, 2), line(2)]))).toEqual([line(1, 2), line(2)])
   })

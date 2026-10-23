@@ -7,8 +7,12 @@ export const PAGE_SIZE = 12
 // The Product API refuses a longer search text (400); stop at the input so the user never sees that
 export const MAX_SEARCH_LENGTH = 50
 
+// The API's ids are .NET Guids: any 32 hex digits in the 8-4-4-4-12 shape. They are not always
+// RFC 4122 UUIDs (the seeded products are 00000000-0000-0000-0000-000000000001), and z.uuid() rejects
+// those, so the whole list would fail to load. z.guid() checks the shape, which is all that matters
+// for an id that ends up in a link.
 export const productSchema = z.object({
-  id: z.uuid(),
+  id: z.guid(),
   name: z.string(),
   description: z.string(),
   price: z.number(),
@@ -46,7 +50,7 @@ export function fetchProducts(query: CatalogQuery, signal?: AbortSignal): Promis
 
 // null when the catalog has no such product (or the id is not even an id): not an error, an answer
 export async function fetchProduct(id: string, signal?: AbortSignal): Promise<Product | null> {
-  if (!z.uuid().safeParse(id).success) return null
+  if (!z.guid().safeParse(id).success) return null
 
   try {
     return await request(`/api/v1/products/${id}`, productSchema, { signal })
