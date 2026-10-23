@@ -628,10 +628,11 @@ First build takes a few minutes. When it settles, every service will have run it
 
 ### Verify it's up
 
-Open the developer portal:
+Open the shop, and the developer portal beside it:
 
 ```
-http://localhost:5000
+http://localhost:5000          # the shop
+http://localhost:5000/portal   # links to the APIs and the monitoring pages
 ```
 
 ### Stop it
