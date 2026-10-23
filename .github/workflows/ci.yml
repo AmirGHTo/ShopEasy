@@ -107,6 +107,21 @@ jobs:
       - name: Production build
         run: npm run build
 
+      # The packages in package-lock.json against the advisory database, with the same scanner (and
+      # the same pinned version) as the image scan below. `npm audit` is not used: on a runner it
+      # waits five minutes for npm's advisory service and then fails. Development tools count too,
+      # because they run on the machines that build the app. Only a vulnerability that is HIGH or
+      # CRITICAL and has a fix fails the job.
+      - name: Known vulnerabilities in the packages (Trivy)
+        working-directory: .
+        run: |
+          docker run --rm \
+            -v "$PWD:/work:ro" -w /work \
+            aquasec/trivy:0.75.0 fs \
+            --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --include-dev-deps \
+            --exit-code 1 --no-progress \
+            src/Web/ShopEasy.Web/package-lock.json
+
   # ── Build + every test, including the ones that need PostgreSQL and RabbitMQ ─────────────
   build-and-test:
     name: Build and test
