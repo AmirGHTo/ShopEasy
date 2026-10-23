@@ -1,41 +1,65 @@
 import { screen } from '@testing-library/react'
+import { delay, http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
-import { jsonResponse, stubFetch } from '../test/fetch'
+import { expectNoAccessibilityViolations } from '../test/a11y'
+import { alice, nobodyIsSignedIn, signedInAs } from '../test/gateway'
 import { renderWithProviders } from '../test/render'
+import { server } from '../test/server'
 import Header from './Header'
-
-const alice = { isAuthenticated: true, userId: 'u-1', email: 'alice@example.com', name: 'Alice', roles: ['customer'] }
 
 describe('Header', () => {
   it('offers to sign in when nobody is, and comes back to this page', async () => {
-    stubFetch(new Response(null, { status: 401 }))
+    server.use(nobodyIsSignedIn())
 
-    renderWithProviders(<Header />)
+    const { container } = renderWithProviders(<Header />)
 
     expect(await screen.findByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/account/login?returnUrl=%2F')
     expect(screen.queryByRole('link', { name: 'Sign out' })).not.toBeInTheDocument()
+    await expectNoAccessibilityViolations(container)
   })
 
   it('shows who is signed in, with a way to sign out', async () => {
-    stubFetch(jsonResponse(alice))
+    server.use(signedInAs())
 
-    renderWithProviders(<Header />)
+    const { container } = renderWithProviders(<Header />)
 
     expect(await screen.findByText('Alice')).toBeInTheDocument()
+    await expectNoAccessibilityViolations(container)
     expect(screen.getByRole('link', { name: 'Sign out' })).toHaveAttribute('href', '/account/logout')
     expect(screen.queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument()
   })
 
   it('shows the email of an account that has no name', async () => {
-    stubFetch(jsonResponse({ ...alice, name: null }))
+    server.use(signedInAs({ ...alice, name: null }))
 
     renderWithProviders(<Header />)
 
     expect(await screen.findByText('alice@example.com')).toBeInTheDocument()
   })
 
+  it('still greets an account that has neither name nor email', async () => {
+    server.use(signedInAs({ ...alice, name: null, email: null }))
+
+    renderWithProviders(<Header />)
+
+    expect(await screen.findByText('Your account')).toBeInTheDocument()
+  })
+
+  it('says so when the gateway answers with something unexpected', async () => {
+    server.use(signedInAs({ hello: 'world' }))
+
+    renderWithProviders(<Header />)
+
+    expect(await screen.findByText('Your account is unavailable.')).toBeInTheDocument()
+  })
+
   it('shows neither link while it is still finding out', () => {
-    stubFetch().mockReturnValue(new Promise<Response>(() => {}))
+    server.use(
+      http.get('/account/me', async () => {
+        await delay('infinite')
+        return HttpResponse.json(alice)
+      }),
+    )
 
     renderWithProviders(<Header />)
 
@@ -44,7 +68,7 @@ describe('Header', () => {
   })
 
   it('says so when the account cannot be looked up', async () => {
-    stubFetch(jsonResponse({ message: 'Down.' }, 503))
+    server.use(http.get('/account/me', () => HttpResponse.json({ message: 'Down.' }, { status: 503 })))
 
     renderWithProviders(<Header />)
 
