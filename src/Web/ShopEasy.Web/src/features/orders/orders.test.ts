@@ -2,7 +2,7 @@ import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { ApiError, UnexpectedResponseError } from '../../api/http'
 import { server } from '../../test/server'
-import { fetchOrder, isSettled, placeOrder } from './orders'
+import { fetchOrder, fetchOrders, isSettled, placeOrder } from './orders'
 
 const id = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`
 
@@ -179,5 +179,42 @@ describe('isSettled', () => {
     for (const status of ['Confirmed', 'Cancelled', 'PaymentFailed', 'Shipped', 'Delivered', 'SomethingNew']) {
       expect(isSettled(status)).toBe(true)
     }
+  })
+})
+
+describe('fetchOrders', () => {
+  it('asks for the page, the page size and the status', async () => {
+    const asked: URL[] = []
+    server.use(
+      http.get('/api/orders', ({ request }) => {
+        asked.push(new URL(request.url))
+        return HttpResponse.json({ total: 1, page: 2, pageSize: 10, items: [summary] })
+      }),
+    )
+
+    const page = await fetchOrders({ status: 'Confirmed', page: 2 })
+
+    expect(Object.fromEntries(asked[0]?.searchParams ?? [])).toEqual({ page: '2', pageSize: '10', status: 'Confirmed' })
+    expect(page.items.map((order) => order.orderId)).toEqual([id(77)])
+  })
+
+  it('leaves out an empty status', async () => {
+    const asked: URL[] = []
+    server.use(
+      http.get('/api/orders', ({ request }) => {
+        asked.push(new URL(request.url))
+        return HttpResponse.json({ total: 0, page: 1, pageSize: 10, items: [] })
+      }),
+    )
+
+    await fetchOrders({ status: '', page: 1 })
+
+    expect(asked[0]?.searchParams.has('status')).toBe(false)
+  })
+
+  it('refuses an answer that is not a page of orders', async () => {
+    server.use(http.get('/api/orders', () => HttpResponse.json({ items: [{ orderId: 'nope' }] })))
+
+    await expect(fetchOrders({ status: '', page: 1 })).rejects.toBeInstanceOf(UnexpectedResponseError)
   })
 })

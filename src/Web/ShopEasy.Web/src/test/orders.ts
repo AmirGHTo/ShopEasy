@@ -81,3 +81,30 @@ export function theOrderMovesThrough(orderId: string, answers: object[]) {
   )
   return { looks: () => looks }
 }
+
+// The Order API's list as far as the storefront uses it: the customer's orders, newest first, filtered
+// by status, a page at a time. `requests` shows what the app asked for.
+export function theOrdersAre(orders: readonly ReturnType<typeof anOrderSummary>[]) {
+  const requests: URL[] = []
+  server.use(
+    http.get('/api/orders', ({ request }) => {
+      const url = new URL(request.url)
+      requests.push(url)
+
+      const status = url.searchParams.get('status') ?? ''
+      const page = Number(url.searchParams.get('page') ?? '1')
+      const pageSize = Number(url.searchParams.get('pageSize') ?? '10')
+
+      const matching = orders
+        .filter((order) => status === '' || order.statusName === status)
+        .sort((a, b) => b.placedAt.localeCompare(a.placedAt))
+      return HttpResponse.json({
+        total: matching.length,
+        page,
+        pageSize,
+        items: matching.slice((page - 1) * pageSize, page * pageSize),
+      })
+    }),
+  )
+  return requests
+}
