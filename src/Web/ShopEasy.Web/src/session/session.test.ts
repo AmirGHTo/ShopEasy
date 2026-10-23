@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ApiError } from '../api/http'
+import { ApiError, UnexpectedResponseError } from '../api/http'
 import { jsonResponse, sentRequest, stubFetch } from '../test/fetch'
 import { fetchSession, signInUrl } from './session'
 
@@ -11,6 +11,23 @@ describe('fetchSession', () => {
 
     await expect(fetchSession()).resolves.toMatchObject({ userId: 'u-1', email: 'alice@example.com', roles: ['customer'] })
     expect(sentRequest(fetchMock).path).toBe('/account/me')
+  })
+
+  it('keeps only what the app uses', async () => {
+    stubFetch(jsonResponse(alice))
+
+    await expect(fetchSession()).resolves.toStrictEqual({
+      userId: 'u-1',
+      email: 'alice@example.com',
+      name: 'Alice',
+      roles: ['customer'],
+    })
+  })
+
+  it('refuses an answer that is not a session', async () => {
+    stubFetch(jsonResponse({ userId: 42, roles: 'customer' }))
+
+    await expect(fetchSession()).rejects.toBeInstanceOf(UnexpectedResponseError)
   })
 
   it('returns null when nobody is signed in', async () => {
