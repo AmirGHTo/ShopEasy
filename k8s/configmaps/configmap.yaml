@@ -27,6 +27,10 @@ data:
   RateLimiting__Login__WindowSeconds: "60"
   RateLimiting__Registration__PermitLimit: "10"
   RateLimiting__Registration__WindowSeconds: "3600"
+  # Content-Security-Policy and the other security headers of the gateway. ImageSources: where the
+  # storefront may load product images from; name your image host, e.g. "https://images.example.com".
+  SecurityHeaders__Enabled: "true"
+  SecurityHeaders__ImageSources: "https:"
   ForwardedHeaders__Enabled: "false"
   ForwardedHeaders__KnownNetworks: ""
   ForwardedHeaders__KnownProxies: ""

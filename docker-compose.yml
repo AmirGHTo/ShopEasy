@@ -422,6 +422,9 @@ services:
       Oidc__ClientSecret: ${GATEWAY_CLIENT_SECRET:?Set GATEWAY_CLIENT_SECRET in .env}
       # Exposes GET /account/token (raw access token) — local development only
       Features__ExposeAccessToken: "${EXPOSE_ACCESS_TOKEN:-false}"
+      # Content-Security-Policy and the other security headers (README, "Security headers")
+      SecurityHeaders__Enabled: "${SECURITY_HEADERS_ENABLED:-true}"
+      SecurityHeaders__ImageSources: "${SECURITY_HEADERS_IMAGE_SOURCES:-https:}"
       ReverseProxy__Clusters__products-cluster__Destinations__primary__Address: "http://product:8080"
       ReverseProxy__Clusters__orders-cluster__Destinations__primary__Address: "http://order:8080"
       ReverseProxy__Clusters__inventory-cluster__Destinations__primary__Address: "http://inventory:8080"
