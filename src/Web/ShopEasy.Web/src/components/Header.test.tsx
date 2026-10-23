@@ -1,9 +1,11 @@
-import { screen } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 import { delay, http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { expectNoAccessibilityViolations } from '../test/a11y'
+import { aProduct } from '../test/catalog'
 import { alice, nobodyIsSignedIn, signedInAs } from '../test/gateway'
 import { renderWithProviders } from '../test/render'
+import { cartStore } from '../features/cart/cartStore'
 import { server } from '../test/server'
 import Header from './Header'
 
@@ -27,6 +29,27 @@ describe('Header', () => {
       'href',
       '/account/login?returnUrl=%2Fproducts%3Fq%3Ddesk%26page%3D2',
     )
+  })
+
+  it('links to the cart, with the number of pieces in it', async () => {
+    server.use(nobodyIsSignedIn())
+    cartStore.add(aProduct(1).id)
+    cartStore.add(aProduct(1).id)
+    cartStore.add(aProduct(2).id)
+
+    renderWithProviders(<Header />)
+
+    expect(await screen.findByRole('link', { name: 'Cart, 3 items' })).toHaveAttribute('href', '/cart')
+  })
+
+  it('follows the cart as it changes', async () => {
+    server.use(nobodyIsSignedIn())
+    renderWithProviders(<Header />)
+    expect(await screen.findByRole('link', { name: 'Cart, 0 items' })).toBeInTheDocument()
+
+    act(() => { cartStore.add(aProduct(1).id) })
+
+    expect(screen.getByRole('link', { name: 'Cart, 1 item' })).toBeInTheDocument()
   })
 
   it('shows who is signed in, with a way to sign out', async () => {

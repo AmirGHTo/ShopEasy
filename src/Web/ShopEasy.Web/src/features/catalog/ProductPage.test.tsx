@@ -7,6 +7,8 @@ import { aProduct, catalogHas, desk, headphones } from '../../test/catalog'
 import { nobodyIsSignedIn } from '../../test/gateway'
 import { renderApp } from '../../test/render'
 import { server } from '../../test/server'
+import { MAX_LINES, MAX_QUANTITY } from '../cart/cart'
+import { cartStore } from '../cart/cartStore'
 
 describe('ProductPage', () => {
   it('shows the product: name, category, price, description', async () => {
@@ -23,6 +25,56 @@ describe('ProductPage', () => {
     expect(screen.getByRole('link', { name: '← All products' })).toHaveAttribute('href', '/products')
     expect(document.title).toBe('Wireless Headphones · ShopEasy')
     await expectNoAccessibilityViolations(container)
+  })
+
+  it('adds the product to the cart, says so, and the header counts it', async () => {
+    const user = userEvent.setup()
+    server.use(nobodyIsSignedIn())
+    catalogHas([headphones])
+    renderApp(`/products/${headphones.id}`)
+
+    await user.click(await screen.findByRole('button', { name: 'Add to cart' }))
+    expect(screen.getByRole('status')).toHaveTextContent('Added to your cart. View cart')
+    expect(screen.getByRole('link', { name: 'View cart' })).toHaveAttribute('href', '/cart')
+    expect(screen.getByRole('link', { name: 'Cart, 1 item' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Add to cart' }))
+    expect(screen.getByRole('status')).toHaveTextContent('In your cart: 2. View cart')
+    expect(screen.getByRole('link', { name: 'Cart, 2 items' })).toBeInTheDocument()
+    expect(cartStore.getSnapshot()).toEqual([{ productId: headphones.id, quantity: 2 }])
+  })
+
+  it('offers no way to buy a product that is no longer sold', async () => {
+    server.use(nobodyIsSignedIn())
+    catalogHas([aProduct(7, { name: 'Old Radio', isActive: false })])
+
+    renderApp(`/products/${aProduct(7).id}`)
+
+    await screen.findByRole('heading', { name: 'Old Radio' })
+    expect(screen.queryByRole('button', { name: 'Add to cart' })).not.toBeInTheDocument()
+  })
+
+  it('says why it cannot add more than an order can take of one product', async () => {
+    server.use(nobodyIsSignedIn())
+    catalogHas([headphones])
+    cartStore.add(headphones.id)
+    cartStore.setQuantity(headphones.id, MAX_QUANTITY)
+
+    renderApp(`/products/${headphones.id}`)
+
+    expect(await screen.findByRole('button', { name: 'Add to cart' })).toBeDisabled()
+    expect(screen.getByRole('status')).toHaveTextContent(`most you can order of this product (${String(MAX_QUANTITY)})`)
+  })
+
+  it('says why it cannot add a product to a cart that is full', async () => {
+    server.use(nobodyIsSignedIn())
+    catalogHas([headphones])
+    for (let n = 1; n <= MAX_LINES; n++) cartStore.add(aProduct(1000 + n).id)
+
+    renderApp(`/products/${headphones.id}`)
+
+    expect(await screen.findByRole('button', { name: 'Add to cart' })).toBeDisabled()
+    expect(screen.getByRole('status')).toHaveTextContent(`Your cart is full (${String(MAX_LINES)} products).`)
   })
 
   it('says that a product the shop no longer sells is not available', async () => {

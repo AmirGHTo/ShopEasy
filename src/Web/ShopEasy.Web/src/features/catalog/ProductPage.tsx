@@ -1,6 +1,7 @@
 import { Link, useParams } from 'react-router'
 import { formatPrice } from '../../lib/format'
 import NotFoundPage from '../../pages/NotFoundPage'
+import AddToCart from '../cart/AddToCart'
 import ProductImage from './ProductImage'
 import { useProduct } from './queries'
 
@@ -48,7 +49,9 @@ export default function ProductPage() {
           <p className="text-slate-700">{description}</p>
 
           {/* the catalog keeps a deleted product (orders refer to it) but it can no longer be bought */}
-          {!isActive && (
+          {isActive ? (
+            <AddToCart productId={product.data.id} />
+          ) : (
             <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900 ring-1 ring-amber-200">
               This product is no longer available.
             </p>
