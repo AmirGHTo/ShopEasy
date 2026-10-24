@@ -2,7 +2,7 @@ import { Link, useLocation, useParams } from 'react-router'
 import { ApiError } from '../../api/http'
 import { formatDateTime } from '../../lib/format'
 import NotFoundPage from '../../pages/NotFoundPage'
-import { signInUrl } from '../../session/session'
+import SignInPrompt from '../../components/SignInPrompt'
 import { isSettled, type OrderSummary } from './orders'
 import { MAX_POLLS, POLL_MS, useOrder } from './queries'
 
@@ -44,13 +44,10 @@ export default function OrderPage({ pollMs = POLL_MS, maxPolls = MAX_POLLS }: Or
 
       {order.isError &&
         (order.error instanceof ApiError && order.error.status === 401 ? (
-          <div className="flex flex-col items-start gap-3 rounded-xl border border-slate-200 bg-white p-6">
+          <>
             <h1 className="text-3xl font-semibold tracking-tight">Your order</h1>
-            <p className="text-slate-700">Sign in to see your order.</p>
-            <a href={signInUrl(pathname)} className={linkClass}>
-              Sign in
-            </a>
-          </div>
+            <SignInPrompt message="Sign in to see your order." returnTo={pathname} />
+          </>
         ) : (
           <div role="alert" className="flex flex-col items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4">
             <p className="text-red-800">We could not load your order. It has not been lost.</p>

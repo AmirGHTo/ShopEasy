@@ -1,8 +1,8 @@
 import { useSearchParams } from 'react-router'
+import Pagination from '../../components/Pagination'
 import { PAGE_SIZE, type CatalogQuery } from './catalog'
 import CatalogFilterBar from './CatalogFilterBar'
 import { readQuery, writeQuery } from './catalogQuery'
-import Pagination from './Pagination'
 import ProductCard from './ProductCard'
 import { useCategories, useProducts } from './queries'
 

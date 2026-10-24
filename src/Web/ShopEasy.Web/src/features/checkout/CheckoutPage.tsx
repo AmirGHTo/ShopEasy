@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, type SyntheticEvent } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { formatCents, toCents } from '../../lib/format'
-import { signInUrl } from '../../session/session'
+import SignInPrompt from '../../components/SignInPrompt'
 import { sessionQueryKey, useSession } from '../../session/useSession'
 import { useCartPricing } from '../cart/useCartPricing'
 import { NOTES_MAX_LENGTH, placeOrder } from '../orders/orders'
@@ -26,14 +26,7 @@ export default function CheckoutPage() {
 
       {session.isError && <p className="text-slate-600">Your account is unavailable. Try again in a moment.</p>}
 
-      {session.data === null && (
-        <div className="flex flex-col items-start gap-3 rounded-xl border border-slate-200 bg-white p-6">
-          <p className="text-slate-700">Sign in to place your order. Your cart is kept.</p>
-          <a href={signInUrl('/checkout')} className={linkClass}>
-            Sign in
-          </a>
-        </div>
-      )}
+      {session.data === null && <SignInPrompt message="Sign in to place your order. Your cart is kept." returnTo="/checkout" />}
 
       {session.data && <CheckoutForm />}
     </div>

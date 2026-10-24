@@ -1,9 +1,19 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { fetchOrder, isSettled } from './orders'
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
+import { fetchOrder, fetchOrders, isSettled, type OrdersQuery } from './orders'
 
 export const orderKeys = {
   all: ['orders'] as const,
   detail: (id: string) => [...orderKeys.all, 'detail', id] as const,
+  list: (query: OrdersQuery) => [...orderKeys.all, 'list', query] as const,
+}
+
+// The old page stays on screen while the next one loads
+export function useOrders(query: OrdersQuery) {
+  return useQuery({
+    queryKey: orderKeys.list(query),
+    queryFn: ({ signal }) => fetchOrders(query, signal),
+    placeholderData: keepPreviousData,
+  })
 }
 
 // How often a Pending order is looked at again, and how many times: 30 looks two seconds apart is a

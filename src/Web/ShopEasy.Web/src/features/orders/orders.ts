@@ -47,7 +47,7 @@ export function placeOrder(
 }
 
 // An order as the list of orders (the read model of the Order service) shows it
-const orderSummarySchema = z.object({
+export const orderSummarySchema = z.object({
   orderId: z.guid(),
   statusName: z.string(),
   totalAmount: z.number(),
@@ -61,6 +61,39 @@ const orderSummarySchema = z.object({
 })
 
 export type OrderSummary = z.infer<typeof orderSummarySchema>
+
+// The customer's orders, newest first, a page at a time (GET /api/orders)
+const ordersPageSchema = z.object({
+  total: z.int().nonnegative(),
+  page: z.int().positive(),
+  pageSize: z.int().positive(),
+  items: z.array(orderSummarySchema),
+})
+
+export type OrdersPage = z.infer<typeof ordersPageSchema>
+
+export const ORDERS_PAGE_SIZE = 10
+
+// The statuses the list can be narrowed to, with the words the customer sees ('' is every order)
+export const ORDER_STATUS_FILTERS = [
+  { value: '', label: 'All orders' },
+  { value: 'Pending', label: 'Pending' },
+  { value: 'Confirmed', label: 'Confirmed' },
+  { value: 'Cancelled', label: 'Cancelled' },
+  { value: 'PaymentFailed', label: 'Payment failed' },
+] as const
+
+export interface OrdersQuery {
+  status: string
+  page: number
+}
+
+export function fetchOrders(query: OrdersQuery, signal?: AbortSignal): Promise<OrdersPage> {
+  const params = new URLSearchParams({ page: String(query.page), pageSize: String(ORDERS_PAGE_SIZE) })
+  if (query.status) params.set('status', query.status)
+
+  return request(`/api/orders?${params.toString()}`, ordersPageSchema, { signal })
+}
 
 // null when there is no such order of this customer (or the id is not even an id)
 export async function fetchOrder(id: string, signal?: AbortSignal): Promise<OrderSummary | null> {
