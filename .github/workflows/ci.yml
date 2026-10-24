@@ -425,6 +425,10 @@ jobs:
           load: true
           tags: shopeasy-${{ matrix.service }}:scan
           cache-from: type=gha,scope=${{ matrix.service }}
+          # The `base` stage runs `apt-get upgrade`. From the cache it would be the packages of the day
+          # that layer was built, so a fix Debian published since would be missing and the scan would
+          # report a vulnerability that a fresh build does not have. The .NET build stages stay cached.
+          no-cache-filter: base
 
       - name: Scan the image for known vulnerabilities (Trivy)
         run: |
@@ -513,3 +517,5 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,scope=${{ matrix.service }},mode=max
+          # What is published has the Debian fixes of today, not of the day the cached layer was built
+          no-cache-filter: base
