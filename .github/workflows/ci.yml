@@ -424,16 +424,10 @@ jobs:
           file: ${{ matrix.dockerfile }}
           load: true
           tags: shopeasy-${{ matrix.service }}:scan
-          cache-from: type=gha,scope=${{ matrix.service }}
-          # The `base` stage runs `apt-get upgrade`. From the cache it would be the packages of the day
-          # that layer was built, so a fix Debian published since would be missing and the scan would
-          # report a vulnerability that a fresh build does not have. The .NET build stages stay cached.
-          no-cache-filters: base
-
-      - name: TEMPORARY - what the image's package database says about libbrotli1
-        run: |
-          docker run --rm --entrypoint sh shopeasy-${{ matrix.service }}:scan -c \
-            "dpkg-query -W -f='\${Package} \${Version} source=\${Source}\n' libbrotli1; grep -c '^Package: libbrotli1\$' /var/lib/dpkg/status; ls /var/lib/dpkg | head -20; ls -la /var/lib/dpkg/status*"
+          # No layer cache: the `base` stage runs `apt-get upgrade`, and a cached layer (or a cached
+          # later stage that was built on top of it) holds the packages of the day it was made. A fix
+          # that Debian published since would be missing, and the scan would judge an image that is
+          # not the one a fresh build produces.
 
       - name: Scan the image for known vulnerabilities (Trivy)
         run: |
@@ -520,7 +514,5 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,scope=${{ matrix.service }},mode=max
-          # What is published has the Debian fixes of today, not of the day the cached layer was built
-          no-cache-filters: base
+          # No layer cache, so that what is published has the Debian fixes of today and not those of
+          # the day a cached layer was made (see the image scan)
