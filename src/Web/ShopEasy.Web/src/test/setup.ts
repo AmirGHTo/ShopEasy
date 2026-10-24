@@ -14,7 +14,8 @@ beforeAll(() => {
 afterEach(() => {
   cleanup()
   server.resetHandlers()
-  cartStore.clear() // each test starts with an empty cart
+  cartStore.clear() // each test starts with an empty cart and no checkout attempt
+  sessionStorage.clear()
 })
 
 afterAll(() => {

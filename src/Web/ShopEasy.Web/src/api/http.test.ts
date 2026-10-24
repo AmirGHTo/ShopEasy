@@ -105,6 +105,42 @@ describe('request', () => {
   })
 })
 
+describe('the time to wait', () => {
+  const answer = (headers: Record<string, string>, body: Record<string, unknown>) => {
+    server.use(http.get('/api/orders', () => HttpResponse.json(body, { status: 429, headers })))
+  }
+
+  it('is read from the Retry-After header', async () => {
+    answer({ 'Retry-After': '42' }, {})
+
+    await expect(request('/api/orders', anything)).rejects.toMatchObject({ retryAfterSeconds: 42 })
+  })
+
+  it('is read from the body when there is no header (the gateway sends both)', async () => {
+    answer({}, { error: 'Too many requests', retryAfter: 60 })
+
+    await expect(request('/api/orders', anything)).rejects.toMatchObject({ retryAfterSeconds: 60 })
+  })
+
+  it('prefers the header', async () => {
+    answer({ 'Retry-After': '5' }, { retryAfter: 60 })
+
+    await expect(request('/api/orders', anything)).rejects.toMatchObject({ retryAfterSeconds: 5 })
+  })
+
+  it.each(['Wed, 21 Oct 2026 07:28:00 GMT', '-3', '1.5', '', 'soon'])('is unknown for the header %j', async (value) => {
+    answer({ 'Retry-After': value }, {})
+
+    await expect(request('/api/orders', anything)).rejects.toMatchObject({ retryAfterSeconds: undefined })
+  })
+
+  it('is unknown for a body value that is not a whole number of seconds', async () => {
+    answer({}, { retryAfter: 'soon' })
+
+    await expect(request('/api/orders', anything)).rejects.toMatchObject({ retryAfterSeconds: undefined })
+  })
+})
+
 describe('perform', () => {
   it.each(['post', 'put', 'patch', 'delete'] as const)('marks a %s as coming from the shop', async (method) => {
     const seen = answer(method, '/api/orders', () => new HttpResponse(null, { status: 204 }))

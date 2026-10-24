@@ -4,11 +4,12 @@ import { defineConfig, globalIgnores } from 'eslint/config'
 import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import testingLibrary from 'eslint-plugin-testing-library'
+import playwright from 'eslint-plugin-playwright'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
 export default defineConfig([
-  globalIgnores(['dist', 'coverage']),
+  globalIgnores(['dist', 'coverage', 'playwright-report', 'test-results']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
@@ -49,5 +50,11 @@ export default defineConfig([
       // the fetch mock is inspected on purpose
       '@typescript-eslint/unbound-method': 'off',
     },
+  },
+  {
+    // the browser tests: they run in Node and drive a browser through Playwright's own API
+    files: ['e2e/**/*.ts'],
+    extends: [playwright.configs['flat/recommended']],
+    languageOptions: { globals: globals.node },
   },
 ])

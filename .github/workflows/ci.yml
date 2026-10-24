@@ -338,6 +338,37 @@ jobs:
       - name: Gateway serves the storefront
         run: bash .github/scripts/check-storefront.sh
 
+      # The storefront in a real browser, under the gateway's Content-Security-Policy: a visitor
+      # signs up, buys something, sees it confirmed and cancels it. It also fails on any script error,
+      # failed request or policy violation the browser reports. (The gateway shares its rate limits
+      # with the tests below; both stay well within them.)
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: src/Web/ShopEasy.Web/.nvmrc
+          cache: npm
+          cache-dependency-path: src/Web/ShopEasy.Web/package-lock.json
+
+      - name: Install the browser and the tools of the browser tests
+        working-directory: src/Web/ShopEasy.Web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Browser test (a customer signs up, buys and cancels in Chromium)
+        working-directory: src/Web/ShopEasy.Web
+        run: npm run test:e2e
+
+      - name: Upload the browser test report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-test-report
+          path: |
+            src/Web/ShopEasy.Web/playwright-report/
+            src/Web/ShopEasy.Web/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
       # The system as a customer uses it: sign up, sign in through the gateway, place an order and
       # wait for the saga to confirm it. Compose starts the payment provider in "always succeeds"
       # mode, so a failure here is a broken system, not a declined payment.

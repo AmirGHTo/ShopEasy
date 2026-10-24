@@ -1,0 +1,130 @@
+import { http, HttpResponse } from 'msw'
+import { server } from './server'
+
+// An order as POST /api/orders answers (201), priced by the server
+export function aPlacedOrder(id: string, totalAmount = 649.97) {
+  return {
+    id,
+    userId: 'u-1',
+    userEmail: 'alice@example.com',
+    status: 0,
+    totalAmount,
+    notes: null,
+    createdAt: '2026-10-23T10:00:00Z',
+    updatedAt: '2026-10-23T10:00:00Z',
+    items: [
+      {
+        id: '00000000-0000-0000-0000-0000000000a1',
+        productId: '00000000-0000-0000-0000-000000000003',
+        productName: 'Standing Desk',
+        quantity: 1,
+        unitPrice: totalAmount,
+        lineTotal: totalAmount,
+      },
+    ],
+  }
+}
+
+export interface SentOrder {
+  idempotencyKey: string | null
+  body: { items: { productId: string; quantity: number }[]; notes?: string }
+}
+
+// The Order API's POST: every request that arrives is noted, and answered by `answer` (given the
+// number of the request, 1 for the first)
+export function orderApiAnswers(answer: (attempt: number) => Response | Promise<Response>): SentOrder[] {
+  const sent: SentOrder[] = []
+  server.use(
+    http.post('/api/orders', async ({ request }) => {
+      sent.push({
+        idempotencyKey: request.headers.get('Idempotency-Key'),
+        body: (await request.json()) as SentOrder['body'],
+      })
+      return answer(sent.length)
+    }),
+  )
+  return sent
+}
+
+export const created = (order: object) => HttpResponse.json(order, { status: 201 })
+
+// An order as GET /api/orders/{id} answers (the read model), by default still Pending
+export function anOrderSummary(orderId: string, overrides: Record<string, unknown> = {}) {
+  return {
+    orderId,
+    userId: 'u-1',
+    userEmail: 'alice@example.com',
+    statusName: 'Pending',
+    statusCode: 0,
+    totalAmount: 678.99,
+    amountDisplay: '$678.99',
+    itemCount: 3,
+    itemsSummary: 'Standing Desk x1, Desk Lamp x2',
+    paymentStatus: null,
+    failureReason: null,
+    placedAt: '2026-10-23T10:00:00Z',
+    updatedAt: '2026-10-23T10:00:00Z',
+    ...overrides,
+  }
+}
+
+// The order as the customer's later looks find it: each look gets the next answer, the last one is
+// repeated. `looks()` is how many times it was asked.
+export function theOrderMovesThrough(orderId: string, answers: object[]) {
+  let looks = 0
+  server.use(
+    http.get(`/api/orders/${orderId}`, () => {
+      const answer = answers[Math.min(looks, answers.length - 1)] ?? {}
+      looks += 1
+      return HttpResponse.json(answer)
+    }),
+  )
+  return { looks: () => looks }
+}
+
+// The Order API's list as far as the storefront uses it: the customer's orders, newest first, filtered
+// by status, a page at a time. `requests` shows what the app asked for.
+export function theOrdersAre(orders: readonly ReturnType<typeof anOrderSummary>[]) {
+  const requests: URL[] = []
+  server.use(
+    http.get('/api/orders', ({ request }) => {
+      const url = new URL(request.url)
+      requests.push(url)
+
+      const status = url.searchParams.get('status') ?? ''
+      const page = Number(url.searchParams.get('page') ?? '1')
+      const pageSize = Number(url.searchParams.get('pageSize') ?? '10')
+
+      const matching = orders
+        .filter((order) => status === '' || order.statusName === status)
+        .sort((a, b) => b.placedAt.localeCompare(a.placedAt))
+      return HttpResponse.json({
+        total: matching.length,
+        page,
+        pageSize,
+        items: matching.slice((page - 1) * pageSize, page * pageSize),
+      })
+    }),
+  )
+  return requests
+}
+
+export interface SentCancel {
+  requestedWith: string | null
+}
+
+// The Order API's DELETE /api/orders/{id}: every request that arrives is noted, and answered by `answer`
+// (given the number of the request, 1 for the first)
+export function cancelApiAnswers(orderId: string, answer: (attempt: number) => Response | Promise<Response>): SentCancel[] {
+  const sent: SentCancel[] = []
+  server.use(
+    http.delete(`/api/orders/${orderId}`, ({ request }) => {
+      sent.push({ requestedWith: request.headers.get('X-Requested-With') })
+      return answer(sent.length)
+    }),
+  )
+  return sent
+}
+
+export const cancelled = () => new HttpResponse(null, { status: 204 })
+export const cancelling = () => HttpResponse.json({ status: 'Cancelling', message: 'Releasing the stock.' }, { status: 202 })
