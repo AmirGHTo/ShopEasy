@@ -107,6 +107,23 @@ describe('CartPage', () => {
     expect(localStorage.getItem(STORAGE_KEY)).toBe('[]')
   })
 
+  it('leads on to the checkout when there is something to buy', async () => {
+    cartStore.add(lamp.id)
+    openCart()
+
+    expect(await screen.findByRole('link', { name: 'Checkout' })).toHaveAttribute('href', '/checkout')
+  })
+
+  it('offers no checkout when nothing in the cart can be bought', async () => {
+    const old = aProduct(7, { name: 'Old Radio', isActive: false })
+    cartStore.add(old.id)
+    openCart([old])
+
+    await screen.findByText('No longer available')
+
+    expect(screen.queryByRole('link', { name: 'Checkout' })).not.toBeInTheDocument()
+  })
+
   it('keeps a product that is no longer sold out of the total, and lets it be removed', async () => {
     const user = userEvent.setup()
     const old = aProduct(7, { name: 'Old Radio', price: 50, isActive: false })
