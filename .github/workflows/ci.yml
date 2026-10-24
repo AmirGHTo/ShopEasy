@@ -430,6 +430,11 @@ jobs:
           # report a vulnerability that a fresh build does not have. The .NET build stages stay cached.
           no-cache-filters: base
 
+      - name: TEMPORARY - what the image's package database says about libbrotli1
+        run: |
+          docker run --rm --entrypoint sh shopeasy-${{ matrix.service }}:scan -c \
+            "dpkg-query -W -f='\${Package} \${Version} source=\${Source}\n' libbrotli1; grep -c '^Package: libbrotli1\$' /var/lib/dpkg/status; ls /var/lib/dpkg | head -20; ls -la /var/lib/dpkg/status*"
+
       - name: Scan the image for known vulnerabilities (Trivy)
         run: |
           docker run --rm \
