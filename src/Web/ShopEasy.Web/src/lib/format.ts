@@ -13,3 +13,10 @@ export function toCents(price: number): number {
 export function formatCents(cents: number): string {
   return usd.format(cents / 100)
 }
+
+// "Oct 23, 2026, 10:00 AM" in the visitor's own time zone; empty when the text is not a date
+export function formatDateTime(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+}

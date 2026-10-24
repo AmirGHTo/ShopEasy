@@ -29,3 +29,8 @@ export function renderWithProviders(ui: ReactElement, address = '/') {
 export function renderApp(address: string) {
   return renderRoutes(routes, address)
 }
+
+// One page of the app at an address, as the route it is mounted on (so it can read its parameters)
+export function renderRoute(path: string, element: ReactElement, address: string) {
+  return renderRoutes([{ path, element }], address)
+}
