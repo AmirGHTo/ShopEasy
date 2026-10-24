@@ -72,7 +72,7 @@ public class OutboxDeliveryPostgresTests
 
         await service.DeliverPendingMessages(CancellationToken.None);
 
-        await publish.Received(3).Publish(Arg.Any<OrderConfirmedEvent>(), Arg.Any<CancellationToken>());
+        await publish.Received(3).Publish(Arg.Any<OrderConfirmedEvent>(), Arg.Any<IPipe<PublishContext<OrderConfirmedEvent>>>(), Arg.Any<CancellationToken>());
         (await EntriesAsync(provider)).Should().OnlyContain(e => e.DeliveredAt != null && e.RetryCount == 0);
     }
 
@@ -86,7 +86,7 @@ public class OutboxDeliveryPostgresTests
         await service.DeliverPendingMessages(CancellationToken.None);
         await service.DeliverPendingMessages(CancellationToken.None);
 
-        await publish.DidNotReceiveWithAnyArgs().Publish(default(OrderConfirmedEvent)!, default);
+        await publish.DidNotReceiveWithAnyArgs().Publish(default(OrderConfirmedEvent)!, default(IPipe<PublishContext<OrderConfirmedEvent>>)!, default);
         (await EntriesAsync(provider)).Should().OnlyContain(e => e.DeliveredAt == null && e.RetryCount == 0);
     }
 
@@ -96,7 +96,7 @@ public class OutboxDeliveryPostgresTests
         await using var database = await PostgresTestDatabase.CreateAsync("outbox_fail");
         var (service, publish, provider) = await CreateAsync(database, busReady: true, pendingEntries: 1);
         await using var _ = provider;
-        publish.Publish(Arg.Any<OrderConfirmedEvent>(), Arg.Any<CancellationToken>())
+        publish.Publish(Arg.Any<OrderConfirmedEvent>(), Arg.Any<IPipe<PublishContext<OrderConfirmedEvent>>>(), Arg.Any<CancellationToken>())
             .Returns<Task>(_ => throw new InvalidOperationException("broker said no"));
 
         await service.DeliverPendingMessages(CancellationToken.None);
@@ -106,7 +106,7 @@ public class OutboxDeliveryPostgresTests
         afterFailure.RetryCount.Should().Be(1);
 
         // the next cycle succeeds
-        publish.Publish(Arg.Any<OrderConfirmedEvent>(), Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);
+        publish.Publish(Arg.Any<OrderConfirmedEvent>(), Arg.Any<IPipe<PublishContext<OrderConfirmedEvent>>>(), Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);
         await service.DeliverPendingMessages(CancellationToken.None);
 
         (await EntriesAsync(provider)).Single().DeliveredAt.Should().NotBeNull();
@@ -139,7 +139,7 @@ public class OutboxDeliveryPostgresTests
         var poison = entries.Single(e => e.EventType == "SomethingRemoved");
         poison.RetryCount.Should().Be(5);
         poison.DeliveredAt.Should().BeNull();
-        await publish.DidNotReceiveWithAnyArgs().Publish(default(OrderConfirmedEvent)!, default);
+        await publish.DidNotReceiveWithAnyArgs().Publish(default(OrderConfirmedEvent)!, default(IPipe<PublishContext<OrderConfirmedEvent>>)!, default);
 
         // the next cycle skips the dead-lettered entry and delivers the good one
         await service.DeliverPendingMessages(CancellationToken.None);
@@ -156,7 +156,7 @@ public class OutboxDeliveryPostgresTests
         await using var _ = provider;
 
         var calls = 0;
-        publish.Publish(Arg.Any<OrderConfirmedEvent>(), Arg.Any<CancellationToken>())
+        publish.Publish(Arg.Any<OrderConfirmedEvent>(), Arg.Any<IPipe<PublishContext<OrderConfirmedEvent>>>(), Arg.Any<CancellationToken>())
             .Returns(_ => ++calls == 2
                 ? Task.FromException(new InvalidOperationException("broker said no"))
                 : Task.CompletedTask);
@@ -189,7 +189,7 @@ public class OutboxDeliveryPostgresTests
         }
 
         var seen = new List<string?>();
-        publish.Publish(Arg.Any<OrderConfirmedEvent>(), Arg.Any<CancellationToken>())
+        publish.Publish(Arg.Any<OrderConfirmedEvent>(), Arg.Any<IPipe<PublishContext<OrderConfirmedEvent>>>(), Arg.Any<CancellationToken>())
             .Returns(_ => { seen.Add(CorrelationContext.Current); return Task.CompletedTask; });
 
         await service.DeliverPendingMessages(CancellationToken.None);
