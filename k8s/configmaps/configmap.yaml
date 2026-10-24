@@ -27,6 +27,11 @@ data:
   RateLimiting__Login__WindowSeconds: "60"
   RateLimiting__Registration__PermitLimit: "10"
   RateLimiting__Registration__WindowSeconds: "3600"
+  # Requests a minute the gateway allows for each kind of caller.
+  RateLimiting__AnonymousPerMinute: "120"
+  RateLimiting__AuthenticatedPerMinute: "100"
+  RateLimiting__AdminPerMinute: "500"
+  RateLimiting__OrdersPerMinute: "10"
   # Content-Security-Policy and the other security headers of the gateway. ImageSources: where the
   # storefront may load product images from; name your image host, e.g. "https://images.example.com".
   SecurityHeaders__Enabled: "true"

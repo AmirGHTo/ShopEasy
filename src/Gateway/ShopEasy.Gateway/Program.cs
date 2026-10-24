@@ -13,7 +13,6 @@ using ShopEasy.Shared.Messaging;
 using ShopEasy.Shared.Middleware;
 using ShopEasy.Shared.Security;
 using System.Net.Http.Headers;
-using System.Threading.RateLimiting;
 using Yarp.ReverseProxy.Transforms;
 using ShopEasy.Gateway.Resilience;
 using ShopEasy.Gateway.Security;
@@ -36,6 +35,8 @@ try
     var webSecurity = WebSecurityOptions.From(builder.Configuration);
     var securityHeaders = SecurityHeadersSettings.From(builder.Configuration);
     securityHeaders.Validate();
+    var rateLimits = GatewayRateLimitSettings.From(builder.Configuration);
+    rateLimits.Validate();
 
     // Believe the X-Forwarded-* headers of the ingress in front of the gateway, if one is configured
     builder.Services.AddConfiguredForwardedHeaders(builder.Configuration);
@@ -147,59 +148,8 @@ try
     {
         options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
-        // ── Global policy — applies to all routes ─────────────────────────────
-        // Anonymous users: 30 requests per minute per IP
-        options.AddPolicy("anonymous", context =>
-            RateLimitPartition.GetFixedWindowLimiter(
-                partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-                factory: _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
-                {
-                    PermitLimit = 30,
-                    Window = TimeSpan.FromMinutes(1),
-                    QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
-                    QueueLimit = 0
-                }));
-
-        // ── Authenticated policy — higher limit for logged-in users ───────────
-        // Uses user ID as partition key — fair per-user limiting
-        options.AddPolicy("authenticated", context =>
-        {
-            var userId = context.User.FindFirst("sub")?.Value;
-
-            // If authenticated use userId, otherwise fall back to IP
-            var key = userId ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-            var isAdmin = context.User.IsInRole("admin");
-
-            return RateLimitPartition.GetFixedWindowLimiter(
-                partitionKey: key,
-                factory: _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
-                {
-                    // Admins get higher limit
-                    PermitLimit = isAdmin ? 500 : 100,
-                    Window = TimeSpan.FromMinutes(1),
-                    QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
-                    QueueLimit = 0
-                });
-        });
-
-        // ── Order creation — strictest limit ──────────────────────────────────
-        // Prevent order spam — max 10 orders per minute per user
-        options.AddPolicy("orders", context =>
-        {
-            var userId = context.User.FindFirst("sub")?.Value
-                      ?? context.Connection.RemoteIpAddress?.ToString()
-                      ?? "unknown";
-
-            return RateLimitPartition.GetFixedWindowLimiter(
-                partitionKey: $"orders:{userId}",
-                factory: _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
-                {
-                    PermitLimit = 10,
-                    Window = TimeSpan.FromMinutes(1),
-                    QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
-                    QueueLimit = 0
-                });
-        });
+        // The limits (README, "Rate Limiting"): anonymous, authenticated and orders
+        options.AddGatewayPolicies(rateLimits);
 
         // ── Response when rate limit exceeded ─────────────────────────────────
         options.OnRejected = async (context, ct) =>
@@ -1117,8 +1067,9 @@ setInterval(load, 15000);
 
     app.MapReverseProxy();
 
-    // Last: the storefront answers whatever no endpoint above claimed
-    app.MapStorefront().RequireRateLimiting("anonymous");
+    // Last: the storefront answers whatever no endpoint above claimed. Not rate limited, like the
+    // static files before routing: it is the same few files and costs the services nothing.
+    app.MapStorefront();
 
     app.Run();
 }
