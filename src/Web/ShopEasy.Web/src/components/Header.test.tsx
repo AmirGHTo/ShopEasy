@@ -63,6 +63,18 @@ describe('Header', () => {
     expect(screen.queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument()
   })
 
+  it('links a signed-in customer to their orders, and a visitor to nothing of the kind', async () => {
+    server.use(signedInAs())
+    const { unmount } = renderWithProviders(<Header />)
+    expect(await screen.findByRole('link', { name: 'Orders' })).toHaveAttribute('href', '/orders')
+    unmount()
+
+    server.use(nobodyIsSignedIn())
+    renderWithProviders(<Header />)
+    await screen.findByRole('link', { name: 'Sign in' })
+    expect(screen.queryByRole('link', { name: 'Orders' })).not.toBeInTheDocument()
+  })
+
   it('shows the email of an account that has no name', async () => {
     server.use(signedInAs({ ...alice, name: null }))
 

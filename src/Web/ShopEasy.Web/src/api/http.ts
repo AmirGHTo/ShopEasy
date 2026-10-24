@@ -25,17 +25,26 @@ export interface RequestOptions {
 
 // An answer from the gateway or a service that is not a success. The services explain themselves in
 // JSON: `message`, a list of `errors` (order validation) or `error`, a short code (the gateway).
+// A 429 or 503 says how long to wait: `retryAfterSeconds`.
 export class ApiError extends Error {
   readonly status: number
   readonly code: string | undefined
   readonly details: readonly string[]
+  readonly retryAfterSeconds: number | undefined
 
-  constructor(status: number, message: string, code?: string, details: readonly string[] = []) {
+  constructor(
+    status: number,
+    message: string,
+    code?: string,
+    details: readonly string[] = [],
+    retryAfterSeconds?: number,
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
     this.details = details
+    this.retryAfterSeconds = retryAfterSeconds
   }
 }
 
@@ -93,26 +102,36 @@ async function toApiError(response: Response): Promise<ApiError> {
     problem.message ?? `The request failed (${response.status}).`,
     problem.error,
     problem.errors ?? [],
+    // the header is the standard way; the gateway's JSON body also carries it
+    parseSeconds(response.headers.get('Retry-After')) ?? problem.retryAfter,
   )
+}
+
+// "Retry-After" is a number of seconds or a date; only the first form is used, anything else is "unknown"
+function parseSeconds(value: string | null): number | undefined {
+  if (value === null || !/^\d{1,6}$/.test(value.trim())) return undefined
+  return Number(value)
 }
 
 interface Problem {
   message: string | undefined
   error: string | undefined
   errors: string[] | undefined
+  retryAfter: number | undefined
 }
 
-const UNKNOWN_PROBLEM: Problem = { message: undefined, error: undefined, errors: undefined }
+const UNKNOWN_PROBLEM: Problem = { message: undefined, error: undefined, errors: undefined, retryAfter: undefined }
 
 async function readProblem(response: Response): Promise<Problem> {
   try {
     const body: unknown = await response.json()
     if (typeof body !== 'object' || body === null) return UNKNOWN_PROBLEM
-    const { message, error, errors } = body as Record<string, unknown>
+    const { message, error, errors, retryAfter } = body as Record<string, unknown>
     return {
       message: typeof message === 'string' ? message : undefined,
       error: typeof error === 'string' ? error : undefined,
       errors: Array.isArray(errors) ? errors.filter((e): e is string => typeof e === 'string') : undefined,
+      retryAfter: typeof retryAfter === 'number' && Number.isInteger(retryAfter) && retryAfter >= 0 ? retryAfter : undefined,
     }
   } catch {
     return UNKNOWN_PROBLEM // an error page, an empty body: only the status is known

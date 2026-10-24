@@ -3,9 +3,9 @@
 # of the app with it, caches its files as intended, never answers an unknown API path with HTML, and
 # sends the security headers (a strict Content-Security-Policy the built app has to satisfy).
 #
-# Every address is fetched once, and its headers are read from that same answer: the gateway lets one
-# client make 30 anonymous requests a minute, and the end-to-end test that runs right after this
-# script needs nearly all of that budget (the files under /assets do not count against it).
+# Every address is fetched once, and its headers are read from that same answer. The storefront's
+# files and page shell are not rate limited; only /portal counts against the anonymous limit, which
+# the end-to-end test that runs right after this script shares.
 set -euo pipefail
 
 base=http://localhost:5000

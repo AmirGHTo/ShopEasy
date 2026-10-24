@@ -1,14 +1,11 @@
-import { useQueries } from '@tanstack/react-query'
 import { Link } from 'react-router'
-import { formatCents, toCents } from '../../lib/format'
-import { productQuery } from '../catalog/queries'
-import { MAX_QUANTITY, itemCount, type CartLine } from './cart'
+import { formatCents } from '../../lib/format'
+import { MAX_QUANTITY, itemCount } from './cart'
 import CartRow from './CartRow'
-import { useCart } from './useCart'
+import { useCartPricing } from './useCartPricing'
 
 export default function CartPage() {
-  const cart = useCart()
-  const results = useQueries({ queries: cart.lines.map((line) => productQuery(line.productId)) })
+  const { cart, rows, buyable, subtotalCents, someGone } = useCartPricing()
 
   if (cart.lines.length === 0) {
     return (
@@ -22,15 +19,6 @@ export default function CartPage() {
       </div>
     )
   }
-
-  // what can be bought: the product is known and still sold
-  const rows = cart.lines.map((line, index) => ({ line, result: results[index] }))
-  const buyable: { line: CartLine; price: number }[] = []
-  for (const { line, result } of rows) {
-    if (result?.data?.isActive) buyable.push({ line, price: result.data.price })
-  }
-  const subtotal = buyable.reduce((sum, { line, price }) => sum + toCents(price) * line.quantity, 0)
-  const someGone = rows.some(({ result }) => result?.isSuccess && !result.data?.isActive)
 
   return (
     <div className="flex flex-col gap-6">
@@ -54,12 +42,20 @@ export default function CartPage() {
       <div className="flex flex-col items-end gap-1">
         <p className="text-lg font-semibold text-slate-900">
           Subtotal ({String(itemCount(buyable.map(({ line }) => line)))} items):{' '}
-          <span>{formatCents(subtotal)}</span>
+          <span>{formatCents(subtotalCents)}</span>
         </p>
         {someGone && <p className="text-sm text-slate-600">Products that are no longer available are not counted.</p>}
         <p className="text-sm text-slate-600">
           Prices are confirmed when you place the order. At most {MAX_QUANTITY} of a product.
         </p>
+        {buyable.length > 0 && (
+          <Link
+            to="/checkout"
+            className="mt-3 rounded-lg bg-indigo-600 px-5 py-2.5 font-medium text-white hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
+          >
+            Checkout
+          </Link>
+        )}
       </div>
     </div>
   )

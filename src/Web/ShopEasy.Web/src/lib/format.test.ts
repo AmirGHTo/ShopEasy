@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCents, formatPrice, toCents } from './format'
+import { formatCents, formatDateTime, formatPrice, toCents } from './format'
 
 describe('formatPrice', () => {
   it.each([
@@ -20,5 +20,16 @@ describe('toCents and formatCents', () => {
   it('round a price to the cent', () => {
     expect(toCents(299.99)).toBe(29999)
     expect(toCents(19.999)).toBe(2000)
+  })
+})
+
+describe('formatDateTime', () => {
+  it('writes a date and a time', () => {
+    expect(formatDateTime('2026-10-23T10:00:00Z')).toMatch(/^Oct 2[34], 2026, \d{1,2}:\d{2}\s?[AP]M$/)
+  })
+
+  it('writes nothing for what is not a date', () => {
+    expect(formatDateTime('')).toBe('')
+    expect(formatDateTime('yesterday')).toBe('')
   })
 })

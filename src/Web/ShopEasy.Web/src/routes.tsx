@@ -23,6 +23,18 @@ export const routes: RouteObject[] = [
         path: 'cart',
         lazy: async () => ({ Component: (await import('./features/cart/CartPage')).default }),
       },
+      {
+        path: 'orders',
+        lazy: async () => ({ Component: (await import('./features/orders/OrdersPage')).default }),
+      },
+      {
+        path: 'orders/:id',
+        lazy: async () => ({ Component: (await import('./features/orders/OrderPage')).default }),
+      },
+      {
+        path: 'checkout',
+        lazy: async () => ({ Component: (await import('./features/checkout/CheckoutPage')).default }),
+      },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

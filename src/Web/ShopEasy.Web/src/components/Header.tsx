@@ -46,6 +46,9 @@ function SignedIn({ session }: { session: Session }) {
   return (
     <>
       <span className="text-slate-700">{session.name ?? session.email ?? 'Your account'}</span>
+      <Link to="/orders" className={linkClass}>
+        Orders
+      </Link>
       <a href={signOutUrl} className={linkClass}>
         Sign out
       </a>
