@@ -4,6 +4,7 @@ import { formatDateTime } from '../../lib/format'
 import NotFoundPage from '../../pages/NotFoundPage'
 import SignInPrompt from '../../components/SignInPrompt'
 import { isSettled, type OrderSummary } from './orders'
+import CancelOrder from './CancelOrder'
 import { MAX_POLLS, POLL_MS, useOrder } from './queries'
 
 const linkClass = 'font-medium text-indigo-600 hover:text-indigo-500'
@@ -69,13 +70,21 @@ export default function OrderPage({ pollMs = POLL_MS, maxPolls = MAX_POLLS }: Or
           // still Pending after the last look: say so, and let the customer look again
           gaveUp={!isSettled(order.data.statusName) && order.looks >= maxPolls}
           onRefresh={() => void order.refetch()}
+          polling={{ pollMs, maxPolls }}
         />
       )}
     </div>
   )
 }
 
-function OrderDetails({ order, gaveUp, onRefresh }: { order: OrderSummary; gaveUp: boolean; onRefresh: () => void }) {
+interface OrderDetailsProps {
+  order: OrderSummary
+  gaveUp: boolean
+  onRefresh: () => void
+  polling: { pollMs: number; maxPolls: number }
+}
+
+function OrderDetails({ order, gaveUp, onRefresh, polling }: OrderDetailsProps) {
   const status = STATUS_TEXT[order.statusName] ?? { title: `Status: ${order.statusName}`, tone: 'neutral' as const }
   const pending = order.statusName === 'Pending'
 
@@ -132,6 +141,8 @@ function OrderDetails({ order, gaveUp, onRefresh }: { order: OrderSummary; gaveU
           </>
         )}
       </dl>
+
+      <CancelOrder orderId={order.orderId} statusName={order.statusName} pollMs={polling.pollMs} maxPolls={polling.maxPolls} />
 
       <Link to="/products" className={linkClass}>
         Continue shopping
