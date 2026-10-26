@@ -183,7 +183,7 @@ public class OutageRecoveryTests : IAsyncLifetime
             () => _customer.GetAsync($"/api/orders/{orderId}"),
             reply => reply.Status == HttpStatusCode.OK && reply.Json.Text("statusName") is "Confirmed" or "Cancelled" or "Failed",
             $"order {orderId} to be finished after the outage", Recovery, TimeSpan.FromSeconds(2));
-        confirmed.Json.Text("statusName").Should().Be("Confirmed", "{0}", confirmed);
+        confirmed.Json.Text("statusName").Should().Be("Confirmed", "{0}\nWhat the tests did to the stack:\n{1}", confirmed, Chaos.Timeline());
 
         var payment = await _customer.GetAsync($"/api/payments/order/{orderId}");
         payment.Status.Should().Be(HttpStatusCode.OK, "{0}", payment);

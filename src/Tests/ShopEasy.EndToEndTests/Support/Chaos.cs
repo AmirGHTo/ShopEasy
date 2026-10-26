@@ -43,7 +43,26 @@ public static class Chaos
         public async ValueTask DisposeAsync() => await StartAsync(service);
     }
 
+    // What was done to the stack and when, for the message of a test that fails: the services' own logs
+    // are in CI's container log, and this says which minute of them to read.
+    private static readonly System.Collections.Concurrent.ConcurrentQueue<string> Events = new();
+
+    public static string Timeline() => string.Join(Environment.NewLine, Events);
+
     private static async Task RunAsync(string action, string service)
+    {
+        var clock = Stopwatch.StartNew();
+        try
+        {
+            await RunCoreAsync(action, service);
+        }
+        finally
+        {
+            Events.Enqueue($"{DateTime.UtcNow:HH:mm:ss}Z  {action} {service} (the command took {clock.Elapsed.TotalSeconds:0.0} s)");
+        }
+    }
+
+    private static async Task RunCoreAsync(string action, string service)
     {
         var (program, arguments) = Command(action, service);
         var start = new ProcessStartInfo(program)
