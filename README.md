@@ -64,7 +64,7 @@ There is no distributed-transaction coordinator and no shared database. An **orc
 | **Observable** | One correlation id across HTTP and messages, structured logs, distributed traces, Prometheus metrics, Grafana dashboards, and built-in saga, outbox and dead-letter monitors. |
 | **Deployable** | Docker Compose for development and Kubernetes manifests with pinned images. GitHub Actions builds, tests against real PostgreSQL and RabbitMQ, validates the deployment files, starts the stack and publishes the images. |
 
-**Scope.** ShopEasy ships the APIs and an operations portal, not a customer-facing storefront, and payments go through a simulated provider. The [known limitations](#production-hardening-and-known-limitations) are listed at the end of this document.
+**Scope.** ShopEasy ships the APIs, a customer storefront (a React app the gateway serves) and an operations portal, and payments go through a simulated provider. The [known limitations](#production-hardening-and-known-limitations) are listed at the end of this document.
 
 ---
 
@@ -231,7 +231,7 @@ The saga state is saved before the next command is published, every handler acts
 
 | Service | Role | Owns | Interfaces | Port (Compose) |
 |---|---|---|---|---|
-| **Gateway** | Single entry point: YARP reverse proxy and Backend-for-Frontend. Authentication, rate limiting, routing, operations portal. | Session cookie | Public HTTP | 5000 |
+| **Gateway** | Single entry point: YARP reverse proxy and Backend-for-Frontend. Authentication, rate limiting, routing, the storefront, the operations portal. | Session cookie | Public HTTP | 5000 |
 | **Identity** | OAuth 2.0 / OpenID Connect provider (Duende IdentityServer). Issues JWTs. | Users, keys, grants | OIDC endpoints | 5001 |
 | **Product** | Product catalog. API-versioned (v1 and v2), Redis-cached. | Catalog | REST | 5101 |
 | **Order** | Order placement and orchestration: validation, server-side pricing, the saga, the outbox, the CQRS read model and the idempotent order API. Horizontally scalable. | Orders, saga, outbox, read model, idempotency keys | REST, RabbitMQ | behind the gateway (scaled) |
@@ -1579,7 +1579,6 @@ What has been hardened, and what is known to be missing.
 - After an outage of the database or of the Order service, a saga that waits for a reply (`ReservingInventory` and later) can still be timed out one interval after the service is back, if the reply is in a consumer's retry pause (up to 60 s by default). The compensation is safe (stock released, order cancelled); only a saga in `Started`, where nothing has been done yet, is fully protected.
 - A database outage longer than the patient-retry window (about 7 minutes by default) sends the messages that were in flight to the `*_error` queues; requeue them once the database is back (pattern 14). While it lasts, every consumer slot retries in parallel (bounded by the pool size and the consumers' concurrency); there is no circuit breaker that pauses consumption.
 - The gateway has no circuit breaker or passive health check: each cluster has a single destination, so there is nothing to fail over to (pattern 26). The retry budget and the timeouts bound the damage, but a dead service is still attempted on every request and answered with `502` after the connection fails. The Order service's `InventoryClient` (REST) has older, fixed Polly settings; it is registered but not used for the stock check.
-- Redis calls have no explicit timeouts of their own: a Redis server that accepts connections and never answers stalls each cache lookup until the StackExchange.Redis defaults (5 s) apply.
 - Identity has no self-service "forgot password" reset (it needs an e-mail service, which the project does not have) and no e-mail verification: customers can sign up and change a password they know, administrators can manage roles, disable accounts and hand out a one-time temporary password, but a user cannot recover a forgotten password on their own, and a temporary password does not expire by itself. The first administrator comes from the configuration.
 - The Swagger UIs and the metrics are unauthenticated, so they are kept out of reach instead. `Swagger__Enabled` is `false` in the code and in Kubernetes, and only the local Compose stack turns it on. The metrics are served on their own port (`9091`), which Compose does not publish; in Kubernetes the default-deny network policy closes it until you allow your Prometheus to reach it. The metrics include sales figures.
 - Traffic between the services is plain HTTP inside the network, so bearer tokens (a user's lasts one hour, a service's 15 minutes) cross it in the clear. Network policies limit who can reach whom; TLS on every service or a mesh with mutual TLS is needed to protect the tokens in transit.
