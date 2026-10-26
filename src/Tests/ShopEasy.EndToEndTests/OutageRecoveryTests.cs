@@ -115,12 +115,13 @@ public class OutageRecoveryTests : IAsyncLifetime
         await AssertUnitsLeftTheShelfAsync(Catalog.Chair, before, units: 1);
     }
 
-    // A crash loop: the services that do the work are killed one after the other, twice over, while
-    // four orders move through them. Each kill can land anywhere: in the middle of a message, between
-    // saving and acknowledging it, with a command half sent. The broker then delivers the message again
-    // (at-least-once), and the receiving service must recognise it has already done the work (an
-    // idempotent consumer). If it did not, a customer would be charged twice or the stock would drop
-    // twice; if the work were lost instead, an order would never finish.
+    // A crash loop: the services that do the work are killed one after the other, twice over, and a new
+    // order is placed just before each kill, so there is always work moving through the one that dies.
+    // A kill can land anywhere: in the middle of a message, between saving and acknowledging it, with a
+    // command half sent. The broker then delivers the message again (at-least-once), and the receiving
+    // service must recognise that it has already done the work (an idempotent consumer). If it did not,
+    // a customer would be charged twice or the stock would drop twice; if the work were lost instead,
+    // an order would never finish.
     [Fact]
     public async Task WhileOrdersAreInFlight_KillingPaymentInventoryAndOrderInTurn_LosesNothingAndRepeatsNothing()
     {
@@ -128,29 +129,36 @@ public class OutageRecoveryTests : IAsyncLifetime
         var webcams = await Catalog.StockAsync(_customer, Catalog.Webcam);
 
         var orders = new List<(string Id, decimal Total)>();
-        foreach (var product in new[] { Catalog.Keyboard, Catalog.Webcam, Catalog.Keyboard, Catalog.Webcam })
+        var keyboardsOrdered = 0;
+        var webcamsOrdered = 0;
+        async Task PlaceNextAsync()
         {
-            var placed = await PlaceAsync(product);
+            var keyboard = orders.Count % 2 == 0;
+            var placed = await PlaceAsync(keyboard ? Catalog.Keyboard : Catalog.Webcam);
             orders.Add((placed.Json.Text("id"), placed.Json.Number("totalAmount")));
+            if (keyboard) keyboardsOrdered++; else webcamsOrdered++;
         }
 
+        await PlaceNextAsync();
         for (var round = 1; round <= 2; round++)
         {
             foreach (var service in new[] { "payment", "inventory", "order" })
             {
+                await PlaceNextAsync();
+                await Task.Delay(TimeSpan.FromMilliseconds(400)); // let it get under way
                 await using (await Chaos.TakeDownAsync(service, crash: true))
                 {
                     await Task.Delay(TimeSpan.FromSeconds(3));
                 }
                 // time to come back and take some work up again before the next one is killed
-                await Task.Delay(TimeSpan.FromSeconds(6));
+                await Task.Delay(TimeSpan.FromSeconds(4));
             }
         }
 
         foreach (var (id, total) in orders)
             await AssertConfirmedAndPaidAsync(id, total);
-        await AssertUnitsLeftTheShelfAsync(Catalog.Keyboard, keyboards, units: 2);
-        await AssertUnitsLeftTheShelfAsync(Catalog.Webcam, webcams, units: 2);
+        await AssertUnitsLeftTheShelfAsync(Catalog.Keyboard, keyboards, keyboardsOrdered);
+        await AssertUnitsLeftTheShelfAsync(Catalog.Webcam, webcams, webcamsOrdered);
     }
 
     private async Task<Reply> PlaceAsync(Guid productId)
