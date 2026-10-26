@@ -24,6 +24,7 @@ public class PostgresConnectionTests
         result.TcpKeepAlive.Should().BeTrue();
         result.TcpKeepAliveTime.Should().Be(30);
         result.TcpKeepAliveInterval.Should().Be(10);
+        result.KeepAlive.Should().Be(10, "idle pooled connections are checked every 10 s");
         result.Options.Should().Contain("-c lock_timeout=10000");
         result.Options.Should().Contain("-c idle_in_transaction_session_timeout=60000");
     }
@@ -72,12 +73,13 @@ public class PostgresConnectionTests
             IdleInTransactionTimeoutSeconds = 0,
             CommandTimeoutSeconds = 0,
             ConnectTimeoutSeconds = 0,
-            TcpKeepAliveSeconds = 0
+            TcpKeepAliveSeconds = 0,
+            IdleCheckSeconds = 0
         }));
 
         result.Options.Should().BeNullOrEmpty();
         result.Keys.Cast<string>().Should().NotContain(
-            ["Command Timeout", "Timeout", "TCP Keepalive", "TCP Keepalive Time", "TCP Keepalive Interval"]);
+            ["Command Timeout", "Timeout", "TCP Keepalive", "TCP Keepalive Time", "TCP Keepalive Interval", "Keepalive"]);
     }
 
     [Fact]

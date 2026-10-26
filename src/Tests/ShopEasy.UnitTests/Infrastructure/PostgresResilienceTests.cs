@@ -139,6 +139,75 @@ public class PostgresResilienceTests
         TransientFaults.IsTransient(failure).Should().BeTrue($"the failure was {failure}");
     }
 
+    // ── a database that restarted ────────────────────────────────────────────
+
+    // Terminating a backend is what the server does to every session when it restarts: the client gets
+    // "57P01: terminating connection due to administrator command" the next time it uses the connection.
+    private static async Task TerminateBackendAsync(string connectionString, int pid)
+    {
+        await using var admin = new NpgsqlConnection(connectionString);
+        await admin.OpenAsync();
+        await ExecuteAsync(admin, $"SELECT pg_terminate_backend({pid})");
+    }
+
+    // Uses a connection from the pool and gives it back, so it sits idle there afterwards
+    private static async Task<int> BackendPidAsync(string connectionString)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand("SELECT pg_backend_pid()", connection);
+        return (int)(await command.ExecuteScalarAsync())!;
+    }
+
+    // The test databases switch pooling off; the check is about connections that wait in a pool
+    private static string Pooled(PostgresTestDatabase database, int idleCheckSeconds) =>
+        new NpgsqlConnectionStringBuilder(PostgresConnection.Harden(database.ConnectionString,
+            new PostgresResilienceOptions { IdleCheckSeconds = idleCheckSeconds })) { Pooling = true }.ConnectionString;
+
+    [RequiresPostgresFact]
+    public async Task AConnectionTheServerClosedWhileItWasIdle_IsDroppedByTheCheck_SoTheNextRequestWorks()
+    {
+        await using var database = await PostgresTestDatabase.CreateAsync("idlecheck");
+        var pooled = Pooled(database, idleCheckSeconds: 1);
+        try
+        {
+            var dead = await BackendPidAsync(pooled);
+            await TerminateBackendAsync(database.ConnectionString, dead);
+            await Task.Delay(TimeSpan.FromSeconds(5)); // the check runs every second and finds the dead connection
+
+            var failure = await Record.ExceptionAsync(() => BackendPidAsync(pooled));
+
+            failure.Should().BeNull("the pool already threw the dead connection away and opened a new one");
+            (await BackendPidAsync(pooled)).Should().NotBe(dead);
+        }
+        finally
+        {
+            NpgsqlConnection.ClearPool(new NpgsqlConnection(pooled));
+        }
+    }
+
+    [RequiresPostgresFact]
+    public async Task WithoutTheCheck_TheFirstRequestOnThatConnectionFails_AsEveryRestartUsedTo()
+    {
+        await using var database = await PostgresTestDatabase.CreateAsync("noidlecheck");
+        var pooled = Pooled(database, idleCheckSeconds: 0);
+        try
+        {
+            var dead = await BackendPidAsync(pooled);
+            await TerminateBackendAsync(database.ConnectionString, dead);
+            await Task.Delay(TimeSpan.FromSeconds(5));
+
+            var failure = await Record.ExceptionAsync(() => BackendPidAsync(pooled));
+
+            failure.Should().BeOfType<PostgresException>().Which.SqlState.Should().Be("57P01");
+            (await BackendPidAsync(pooled)).Should().NotBe(dead, "only that one request is lost: the broken connection is gone afterwards");
+        }
+        finally
+        {
+            NpgsqlConnection.ClearPool(new NpgsqlConnection(pooled));
+        }
+    }
+
     // ── a query that runs for ever ───────────────────────────────────────────
 
     [RequiresPostgresFact]

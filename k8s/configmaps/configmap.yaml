@@ -61,6 +61,7 @@ data:
   Resilience__Postgres__ConnectTimeoutSeconds: "15"
   Resilience__Postgres__MaxPoolSize: "20"
   Resilience__Postgres__TcpKeepAliveSeconds: "30"
+  Resilience__Postgres__IdleCheckSeconds: "10"
   Resilience__Consumers__TransientRetryLimit: "12"
   Resilience__Consumers__TransientMinIntervalSeconds: "1"
   Resilience__Consumers__TransientMaxIntervalSeconds: "60"
