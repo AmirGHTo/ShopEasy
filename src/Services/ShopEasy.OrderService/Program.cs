@@ -329,6 +329,21 @@ try
         .ValidateOnStart();
     builder.Services.AddHostedService<SagaOrchestrator>();
     builder.Services.AddHostedService<SagaTimeoutService>();
+
+    // Compares settled orders with what Payment holds (README, "Consistency check")
+    builder.Services.AddOptions<ConsistencyCheckOptions>()
+        .Bind(builder.Configuration.GetSection(ConsistencyCheckOptions.SectionName))
+        .Validate(o => o.IntervalIsValid,
+            $"{ConsistencyCheckOptions.SectionName}:{nameof(ConsistencyCheckOptions.IntervalSeconds)} must be 10 to 119: " +
+            "the PollingLoopStalled alert fires when a loop completes no pass for 2 minutes.")
+        .Validate(o => o.SettleIsValid,
+            $"{ConsistencyCheckOptions.SectionName}:{nameof(ConsistencyCheckOptions.SettleSeconds)} must be 0 to 3600.")
+        .Validate(o => o.LookbackIsLongEnough,
+            $"{ConsistencyCheckOptions.SectionName}:{nameof(ConsistencyCheckOptions.LookbackMinutes)} must be longer than SettleSeconds plus IntervalSeconds, or there is nothing to look at.")
+        .Validate(o => o.MaxOrdersIsValid,
+            $"{ConsistencyCheckOptions.SectionName}:{nameof(ConsistencyCheckOptions.MaxOrdersPerPass)} must be 1 to 5000.")
+        .ValidateOnStart();
+    builder.Services.AddHostedService<ConsistencyCheck>();
     builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing
         .SetResourceBuilder(ResourceBuilder.CreateDefault()

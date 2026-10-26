@@ -111,6 +111,21 @@ public static class OrderMetrics
             "shopeasy_saga_command_oldest_pending_age_seconds",
             "Age of the oldest saga command that RabbitMQ has not taken yet (0 when there is none): rises when the broker is unreachable");
 
+    private static readonly Gauge ConsistencyViolations = Prometheus.Metrics
+        .CreateGauge(
+            "shopeasy_consistency_violations",
+            "Settled orders that disagree with what Payment holds, by rule (see ConsistencyRules): found by two " +
+            "passes in a row and not yet put right. Should be 0",
+            new GaugeConfiguration
+            {
+                LabelNames = new[] { "rule" }
+            });
+
+    private static readonly Counter ConsistencyOrdersChecked = Prometheus.Metrics
+        .CreateCounter(
+            "shopeasy_consistency_orders_checked_total",
+            "Settled orders the consistency check compared with what Payment holds");
+
     private static readonly Gauge BackgroundLoopLastSuccess = Prometheus.Metrics
         .CreateGauge(
             "shopeasy_background_loop_last_success_timestamp_seconds",
@@ -174,6 +189,16 @@ public static class OrderMetrics
 
     public static void RecordCircuitTransition(string target, string state)
         => CircuitTransitions.WithLabels(target, state).Inc();
+
+    // The gauge of every rule exists (at 0) from the start, so "no violations" is a value, not a gap
+    public static void SetConsistencyViolations(IReadOnlyDictionary<string, int> byRule)
+    {
+        foreach (var (rule, count) in byRule)
+            ConsistencyViolations.WithLabels(rule).Set(count);
+    }
+
+    public static void RecordConsistencyChecked(int orders)
+        => ConsistencyOrdersChecked.Inc(orders);
 
     // Both series exist from the moment a loop is created, so a loop that never completes a pass still ages
     public static void RegisterLoop(string loop)
