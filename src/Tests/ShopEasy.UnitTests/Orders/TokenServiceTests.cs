@@ -76,6 +76,27 @@ public class TokenServiceTests
     }
 
     [Fact]
+    public async Task ATokenServiceForPayment_AsksForThePaymentScopeOnly_AndKeepsItsOwnToken()
+    {
+        var (inventory, identity, _) = Create();
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient("idp").Returns(_ => new HttpClient(identity));
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["IdentityServer:Authority"] = "http://identity.test/",
+            ["ServiceAuth:ClientSecret"] = "the-secret",
+        }).Build();
+        var payment = new TokenService(factory, config, NullLogger<TokenService>.Instance, scope: "payment.read");
+
+        var forInventory = await inventory.GetServiceTokenAsync();
+        var forPayment = await payment.GetServiceTokenAsync();
+
+        identity.LastForm["scope"].Should().Be("payment.read", "one scope per token, so the token names one API");
+        forPayment.Should().NotBe(forInventory, "each API has its own token, neither replaces the other");
+        (await inventory.GetServiceTokenAsync()).Should().Be(forInventory);
+    }
+
+    [Fact]
     public async Task KeepsTheToken_UntilItIsAboutToExpire()
     {
         var (service, identity, clock) = Create();

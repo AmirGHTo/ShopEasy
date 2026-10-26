@@ -61,12 +61,30 @@ try
     builder.Services.AddSingleton<StockFetchCoordinator>();
     builder.Services.AddSingleton<InventoryServiceCall>();
 
+    // One token service per API the Order service calls as itself, each asking Identity for the one
+    // scope it needs there (so each token names a single API): Inventory by default, Payment keyed
     builder.Services.AddSingleton<ITokenService, TokenService>();
+    builder.Services.AddKeyedSingleton<ITokenService>(ApiScopes.PaymentRead, (sp, _) => new TokenService(
+        sp.GetRequiredService<IHttpClientFactory>(),
+        sp.GetRequiredService<IConfiguration>(),
+        sp.GetRequiredService<ILogger<TokenService>>(),
+        scope: ApiScopes.PaymentRead));
 
     // The token endpoint of Identity, used by TokenService. Bounded: when Identity is down the
     // service token is simply not renewed (the cached one is used while it is valid) instead of
     // every stock check waiting out the default 100 seconds.
     builder.Services.AddHttpClient("idp", client => client.Timeout = TimeSpan.FromSeconds(5));
+
+    // ── Typed HTTP Client for the Payment service (what it holds for an order) ─
+    // Used by the consistency check, nothing on the way of a customer's request.
+    builder.Services.AddHttpClient("payment-audit", http =>
+        {
+            http.BaseAddress = new Uri(builder.Configuration["Services:PaymentService"] ?? "http://payment:8080");
+            http.Timeout = TimeSpan.FromSeconds(15);
+        })
+        .AddTypedClient<IPaymentAuditClient>((http, sp) => new PaymentAuditClient(http,
+            sp.GetRequiredKeyedService<ITokenService>(ApiScopes.PaymentRead),
+            sp.GetRequiredService<ILogger<PaymentAuditClient>>()));
 
     // ── Typed HTTP Client for ProductService (server-side price lookup) ───────
     // PlaceOrder never trusts client-supplied prices: it asks the Product service.

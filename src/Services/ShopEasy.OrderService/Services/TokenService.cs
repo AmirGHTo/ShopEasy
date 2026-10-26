@@ -4,8 +4,9 @@ using ShopEasy.Shared.Security;
 namespace ShopEasy.OrderService.Services;
 
 // The token the Order service uses when it calls another service as itself, without a user
-// (OAuth 2.0 client credentials). It is issued for Inventory only and carries the single scope
-// the Order service needs there (inventory.read).
+// (OAuth 2.0 client credentials). One instance serves one API: it asks Identity for the single scope
+// the Order service needs there (inventory.read for Inventory, payment.read for Payment), so the
+// token names that API as its audience and no other API accepts it.
 public interface ITokenService
 {
     // A valid service token; fetched from Identity when there is none or it is about to expire.
@@ -38,6 +39,7 @@ public class TokenService : ITokenService
     private readonly IConfiguration _config;
     private readonly ILogger<TokenService> _logger;
     private readonly TimeProvider _clock;
+    private readonly string _scope;
 
     private sealed record CachedToken(string Value, DateTimeOffset Expiry);
 
@@ -50,8 +52,10 @@ public class TokenService : ITokenService
         IHttpClientFactory httpClientFactory,
         IConfiguration config,
         ILogger<TokenService> logger,
-        TimeProvider? clock = null)
+        TimeProvider? clock = null,
+        string scope = ApiScopes.InventoryRead)
     {
+        _scope = scope;
         _httpClientFactory = httpClientFactory;
         _config = config;
         _logger = logger;
@@ -139,7 +143,7 @@ public class TokenService : ITokenService
                 ["client_id"] = _config["ServiceAuth:ClientId"] ?? "order-service",
                 ["client_secret"] = _config["ServiceAuth:ClientSecret"]
                     ?? throw new InvalidOperationException("ServiceAuth:ClientSecret is not configured."),
-                ["scope"] = ApiScopes.InventoryRead
+                ["scope"] = _scope
             }), ct);
 
         response.EnsureSuccessStatusCode();
