@@ -4,6 +4,7 @@ namespace ShopEasy.EndToEndTests.Support;
 // Each scenario uses a product of its own, so that the stock it reads is changed by nobody else.
 public static class Catalog
 {
+    public static readonly Guid Headphones = Guid.Parse("00000000-0000-0000-0000-000000000001");
     public static readonly Guid Webcam = Guid.Parse("00000000-0000-0000-0000-000000000005");
     public static readonly Guid Keyboard = Guid.Parse("00000000-0000-0000-0000-000000000002");
     public static readonly Guid Desk = Guid.Parse("00000000-0000-0000-0000-000000000003");

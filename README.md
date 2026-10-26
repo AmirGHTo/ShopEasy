@@ -739,7 +739,7 @@ Services read standard ASP.NET Core configuration, so every key can be an enviro
 | `Resilience__Gateway__*` | Gateway | Timeout for a silent service, connect timeout, connection lifetime and the retries of `GET` requests. Same pattern. |
 | `Resilience__RetryBudget__*` | Order, Gateway | How many extra requests retries may add to a dependency. Same pattern. |
 | `Seq__ServerUrl` | all | Where logs are shipped, default `http://seq:5341` (the Compose Seq). **Empty = off** (console only) — the Kubernetes manifests set it empty because they do not run Seq. |
-| `Testing__ForcePaymentSuccess` | Payment | Test-only: forces simulated payments to succeed. |
+| `Testing__ForcePaymentSuccess` | Payment | Test-only: takes away the simulated random bank decline (about one payment in ten), so that a test run does not fail for no reason. The single-transaction limit (10,000) still applies, so a test can provoke a decline with a large order. |
 
 ### Kubernetes
 
@@ -1109,7 +1109,7 @@ docker-compose start payment
 #    and issues a refund. The Payment column now shows "Refunded 💜".
 ```
 
-To reliably force a successful payment for the refund test, set `Testing__ForcePaymentSuccess: "true"` on the payment service in `docker-compose.yml`.
+To reliably get a successful payment for the refund test, set `Testing__ForcePaymentSuccess: "true"` on the payment service in `docker-compose.yml` (Compose already does). To get a declined one on purpose, order more than 10,000 worth: the provider's single-transaction limit declines it even then.
 
 ---
 
@@ -1123,7 +1123,7 @@ dotnet test src/Tests/ShopEasy.UnitTests
 dotnet test src/Tests/ShopEasy.EndToEndTests
 ```
 
-**Unit tests — 990 test cases.** 906 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 84 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 807 (see [CI/CD](#cicd)).
+**Unit tests — 991 test cases.** 907 run anywhere (they use the EF Core InMemory provider with a fresh database per test); the other 84 need a real PostgreSQL or RabbitMQ and are **skipped automatically** unless the environment variables below are set, so `dotnet test` is green on a machine without them. CI runs all 807 (see [CI/CD](#cicd)).
 
 | Area | Where | What it covers |
 |---|---|---|
@@ -1185,7 +1185,7 @@ docker run -d --name shopeasy-test-mq -e RABBITMQ_DEFAULT_USER=test -e RABBITMQ_
 
 export SHOPEASY_TEST_POSTGRES="Host=localhost;Port=55432;Username=postgres;Password=test"
 export SHOPEASY_TEST_RABBITMQ="amqp://test:test@localhost:55672"
-dotnet test src/Tests/ShopEasy.UnitTests          # now 990 run, 0 skipped
+dotnet test src/Tests/ShopEasy.UnitTests          # now 991 run, 0 skipped
 
 docker rm -f shopeasy-test-pg shopeasy-test-mq
 ```
@@ -1203,8 +1203,10 @@ docker rm -f shopeasy-test-pg shopeasy-test-mq
 | An order that cannot be filled | An unknown product and a quantity above the stock are each refused (`400`) with the reason; nothing is saved and the stock is unchanged. |
 | Who may see what | A visitor sees the catalog but not orders and cannot place one; a customer is known by the account they created; another customer is told the order does not exist (`404`) and may not read its payment (`403`); monitoring endpoints refuse a customer. |
 | Order budgets | A customer who sends 10 order requests in a minute gets the eleventh refused (`429`), and another customer is not affected: both the gateway and the Order service limit per user, not per client address. |
+| A declined payment | An order above the payment provider's single-transaction limit (10,000) is declined even though Compose forces the random bank decline off: the order ends `Cancelled` with the provider's reason, the payment is recorded as failed (never succeeded), and the stock reserved for it is back. |
+| A cancel while the saga runs | A customer cancels at six moments spread over the first eight seconds, before the saga was picked up, while it reserves the stock, and after the payment. Whichever step it falls on, the order ends `Cancelled`, the stock is back, and a payment that went through was refunded (never left `Succeeded`).
 
-CI runs it in the **Compose stack and end-to-end test** job, right after the containers are up, with the throw-away values of `.env.example`. Compose starts the payment provider in "always succeeds" mode (`Testing__ForcePaymentSuccess`), so a failure here means a broken system, not a declined payment. To run it yourself:
+CI runs it in the **Compose stack and end-to-end test** job, right after the containers are up, with the throw-away values of `.env.example`. Compose starts the payment provider in "always succeeds" mode (`Testing__ForcePaymentSuccess`), so a failure here means a broken system, not a random bank decline (the one decline the tests provoke is an order above the provider's 10,000 limit). To run it yourself:
 
 ```bash
 docker compose up -d --build --wait postgres rabbitmq redis identity product inventory payment order gateway
@@ -1227,7 +1229,7 @@ Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new p
 |---|---|
 | **Detect changes** | Decides whether the pull request touches anything that is built, tested or deployed (plain `git diff`, no third-party action). Skipped jobs count as passed in **CI passed**, so the check can stay required for documentation-only changes. |
 | **Storefront (lint, types, tests, build)** | `src/Web/ShopEasy.Web` with Node 22: `npm ci` (exactly what `package-lock.json` says), ESLint, `tsc`, the Vitest tests with their coverage floor, the production build, and a **Trivy** scan of `package-lock.json` (development tools included; HIGH or CRITICAL with a fix fails the job; `npm audit` is not used because on a runner it waits five minutes for npm's advisory service and then fails). Needs no other service. |
-| **Build and test** | `dotnet restore/build` (Release) and all 990 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 84 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
+| **Build and test** | `dotnet restore/build` (Release) and all 991 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 84 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
 | **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, they take the shared ConfigMap (so a setting changed there reaches every service), third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
 | **Compose stack and end-to-end test** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. Last, it runs the [end-to-end test](#end-to-end-test) against those containers: a customer signs up, signs in, buys something and the order is confirmed, which no unit test can show because it needs every service, the broker and the databases working together. After that it opens the storefront in a real browser ([Browser tests](#storefront)). |
 | **Image scan** (one job per service) | Builds the service image and scans it with **Trivy**, run from its official image, pinned to a version (bump it by hand): the operating-system packages and the .NET runtime of the base image as well as the application. A vulnerability that is **HIGH or CRITICAL and has a fix fails the job**; one without a fix yet does not. The Dockerfiles run `apt-get upgrade`, so an image has Debian's security fixes even when Microsoft has not rebuilt the base image yet. The scan and the publish step build without the layer cache, so an image always has the fixes Debian has published, not those of the day a cached layer was made. A finding that has to be accepted goes into `.trivyignore` with the reason and a date to look at it again. A new CVE with a fix can turn this red without any change in the code: re-run the job (the base image tag is rebuilt when Microsoft releases a fix) or accept the finding. |
@@ -1569,7 +1571,6 @@ What has been hardened, and what is known to be missing.
 - The MassTransit inbox only remembers a message for its 30-minute duplicate-detection window; beyond that, duplicates are caught by the business-level checks (pattern 7).
 - Inventory endpoints process one message at a time per instance (`ConcurrentMessageLimit = 1`). Correctness no longer depends on it (row locks do), so it can be raised for throughput.
 - The CI is a *gate* only if branch protection requires the `CI passed` check (a one-time repository setting, see CI/CD); otherwise it reports but does not block.
-- The end-to-end test covers the happy path, cancelling a confirmed order and the refusals, not a declined payment or a cancel while the saga runs.
 - Images are published to GHCR and the manifests pin them by commit, but nothing deploys them automatically (that needs credentials for a specific cluster), and the pinned tag in `k8s/kustomization.yaml` is bumped by hand (`k8s/set-image-tag.sh`).
 - The Kubernetes manifests were validated (schema and the deployment rules above) and the same hardening runs in CI under Compose, but they have not been applied to a live cluster in CI. NetworkPolicies need a network plugin that enforces them, and egress of the application pods is not restricted.
 - The gateway keeps its login cookie's Data Protection keys in memory/on its own file system, so a restart signs users out and it cannot run several replicas (Identity can).

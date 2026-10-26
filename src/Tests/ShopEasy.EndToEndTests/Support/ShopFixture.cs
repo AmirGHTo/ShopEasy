@@ -6,6 +6,8 @@ namespace ShopEasy.EndToEndTests.Support;
 // One customer may send 10 order requests a minute (gateway and Order service both limit it) and the
 // scenarios of a run use 7 of them for the first customer: one that places more orders has to be
 // counted against that, or sign up its own customer (OrderBudgetTests does).
+// The second customer places the orders of OrderFailureTests (7 in the same minute at most) and is the
+// "another customer" of OrderBudgetTests.
 public sealed class ShopFixture : IAsyncLifetime
 {
     public Shopper Customer { get; private set; } = default!;
