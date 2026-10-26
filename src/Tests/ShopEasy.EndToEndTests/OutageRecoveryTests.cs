@@ -89,6 +89,70 @@ public class OutageRecoveryTests : IAsyncLifetime
         await AssertFinishedOnceAsync(orderId, total, Catalog.Webcam, before);
     }
 
+    [Fact]
+    public async Task WhenTheDatabaseGoesAwayInTheMiddleOfTheSaga_TheOrderIsFinishedOnceItIsBack()
+    {
+        var before = await Catalog.StockAsync(_customer, Catalog.Chair);
+        var placed = await PlaceAsync(Catalog.Chair);
+        var orderId = placed.Json.Text("id");
+        var total = placed.Json.Number("totalAmount");
+
+        // Wait until the saga is under way (the stock is reserved), then take away the one thing every
+        // service writes to. PostgreSQL is stopped, so the services cannot save anything for a while;
+        // they have to wait and retry rather than give the order up. Their patience is minutes (about 7),
+        // the saga's own limit is two, which is why the outage is short: this tests that a brief outage
+        // is survived, not that a long one is.
+        await Wait.UntilAsync(
+            () => Catalog.StockAsync(_customer, Catalog.Chair),
+            stock => stock.Available == before.Available - 1, "the stock to be reserved", TimeSpan.FromSeconds(45));
+
+        await using (await Chaos.TakeDownAsync("postgres"))
+        {
+            await Task.Delay(TimeSpan.FromSeconds(15));
+        }
+
+        await AssertConfirmedAndPaidAsync(orderId, total);
+        await AssertUnitsLeftTheShelfAsync(Catalog.Chair, before, units: 1);
+    }
+
+    // A crash loop: the services that do the work are killed one after the other, twice over, while
+    // four orders move through them. Each kill can land anywhere: in the middle of a message, between
+    // saving and acknowledging it, with a command half sent. The broker then delivers the message again
+    // (at-least-once), and the receiving service must recognise it has already done the work (an
+    // idempotent consumer). If it did not, a customer would be charged twice or the stock would drop
+    // twice; if the work were lost instead, an order would never finish.
+    [Fact]
+    public async Task WhileOrdersAreInFlight_KillingPaymentInventoryAndOrderInTurn_LosesNothingAndRepeatsNothing()
+    {
+        var keyboards = await Catalog.StockAsync(_customer, Catalog.Keyboard);
+        var webcams = await Catalog.StockAsync(_customer, Catalog.Webcam);
+
+        var orders = new List<(string Id, decimal Total)>();
+        foreach (var product in new[] { Catalog.Keyboard, Catalog.Webcam, Catalog.Keyboard, Catalog.Webcam })
+        {
+            var placed = await PlaceAsync(product);
+            orders.Add((placed.Json.Text("id"), placed.Json.Number("totalAmount")));
+        }
+
+        for (var round = 1; round <= 2; round++)
+        {
+            foreach (var service in new[] { "payment", "inventory", "order" })
+            {
+                await using (await Chaos.TakeDownAsync(service, crash: true))
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(3));
+                }
+                // time to come back and take some work up again before the next one is killed
+                await Task.Delay(TimeSpan.FromSeconds(6));
+            }
+        }
+
+        foreach (var (id, total) in orders)
+            await AssertConfirmedAndPaidAsync(id, total);
+        await AssertUnitsLeftTheShelfAsync(Catalog.Keyboard, keyboards, units: 2);
+        await AssertUnitsLeftTheShelfAsync(Catalog.Webcam, webcams, units: 2);
+    }
+
     private async Task<Reply> PlaceAsync(Guid productId)
     {
         var placed = await _customer.PostAsync("/api/orders",
@@ -101,6 +165,12 @@ public class OutageRecoveryTests : IAsyncLifetime
     // the one unit ordered: not two (a repeated message acted on twice), not none (a lost one)
     private async Task AssertFinishedOnceAsync(string orderId, decimal total, Guid productId, Stock before)
     {
+        await AssertConfirmedAndPaidAsync(orderId, total);
+        await AssertUnitsLeftTheShelfAsync(productId, before, units: 1);
+    }
+
+    private async Task AssertConfirmedAndPaidAsync(string orderId, decimal total)
+    {
         var confirmed = await Wait.UntilAsync(
             () => _customer.GetAsync($"/api/orders/{orderId}"),
             reply => reply.Status == HttpStatusCode.OK && reply.Json.Text("statusName") is "Confirmed" or "Cancelled" or "Failed",
@@ -110,10 +180,13 @@ public class OutageRecoveryTests : IAsyncLifetime
         var payment = await _customer.GetAsync($"/api/payments/order/{orderId}");
         payment.Status.Should().Be(HttpStatusCode.OK, "{0}", payment);
         payment.Json.Number("amount").Should().Be(total, "charged what the order costs, once");
+    }
 
+    private async Task AssertUnitsLeftTheShelfAsync(Guid productId, Stock before, int units)
+    {
         var stock = await Wait.UntilAsync(
             () => Catalog.StockAsync(_customer, productId),
-            s => s.Quantity == before.Quantity - 1, "the unit to leave the shelf", TimeSpan.FromSeconds(45));
-        stock.Should().Be(new Stock(before.Quantity - 1, before.Available - 1), "one unit ordered, one unit gone");
+            s => s.Quantity == before.Quantity - units, "the units to leave the shelf", TimeSpan.FromSeconds(60));
+        stock.Should().Be(new Stock(before.Quantity - units, before.Available - units), "as many units gone as were ordered, no more, no fewer");
     }
 }
