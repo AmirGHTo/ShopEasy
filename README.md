@@ -1215,7 +1215,7 @@ docker compose up -d --build --wait postgres rabbitmq redis identity product inv
 dotnet test src/Tests/ShopEasy.EndToEndTests
 ```
 
-It expects the gateway at `http://localhost:5000` and Identity at `http://localhost:5001` (`E2E_GATEWAY_URL` and `E2E_IDENTITY_URL` change that). Each run creates three accounts, and sign-up is limited to 10 per hour per address (`RATE_LIMIT_REGISTRATION_ATTEMPTS`), so raise that limit in `.env` if you run it more than three times an hour. The accounts and orders stay in the database; `docker compose down -v` clears them.
+It expects the gateway at `http://localhost:5000` and Identity at `http://localhost:5001` (`E2E_GATEWAY_URL` and `E2E_IDENTITY_URL` change that). Each run creates five accounts, and sign-up is limited to 10 per hour per address (`RATE_LIMIT_REGISTRATION_ATTEMPTS`), so raise that limit in `.env` if you run it more than twice an hour. The accounts and orders stay in the database; `docker compose down -v` clears them.
 
 The two tests that take a part of the stack away (`OutageRecoveryTests`) stop and kill containers with `docker compose` (the Compose file of the repository, so the directory you run from does not matter), and always start them again, also when the test fails. Run them only against a stack you can disturb. If the stack was started some other way, `E2E_CONTROL` names a program that is called as `<program> <stop|kill|start> <service>` instead. *Stop* is a polite SIGTERM (the service finishes what it is doing); *kill* is a SIGKILL, a crash that gives the service no chance to finish anything.
 
