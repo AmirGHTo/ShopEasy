@@ -70,6 +70,22 @@ public class PaymentMetricsTests : IDisposable
     }
 
     [Fact]
+    public async Task TheSingleTransactionLimit_StillDeclines_WhenSuccessIsForced()
+    {
+        // Compose forces success so that the random bank decline cannot fail a test run; an order above
+        // the limit is how a test provokes a decline on purpose
+        var (count, amount) = await Read("declined");
+        var succeeded = (await Read("succeeded")).Count;
+
+        await Pay(12000m, forceSuccess: true);
+
+        var after = await Read("declined");
+        after.Count.Should().Be(count + 1);
+        after.Amount.Should().BeApproximately(amount + 12000, 0.001);
+        (await Read("succeeded")).Count.Should().Be(succeeded, "it was declined, not paid");
+    }
+
+    [Fact]
     public async Task APaymentGivenBack_IsCountedOnce_AndNothingIsCountedWhenThereWasNoPayment()
     {
         var orderId = Guid.NewGuid();

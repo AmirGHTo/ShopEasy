@@ -123,12 +123,15 @@ public class ProcessPaymentConsumer(
 
     private (bool success, string? failureReason) SimulatePaymentProcessing(decimal amount)
     {
-        // Force success via config — for testing refund scenario only
-        if (config.GetValue<bool>("Testing:ForcePaymentSuccess"))
-            return (true, null);
-
+        // The limit is a rule of the provider and always applies, so a test can provoke a decline on
+        // purpose with an order above it (the random bank decline below cannot be provoked)
         if (amount > 10000)
             return (false, "Amount exceeds single transaction limit");
+
+        // Testing:ForcePaymentSuccess takes away the random bank decline, so that a test run does not
+        // fail one order in ten for no reason
+        if (config.GetValue<bool>("Testing:ForcePaymentSuccess"))
+            return (true, null);
 
         return new Random().Next(1, 11) <= 9
             ? (true, null)
