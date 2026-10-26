@@ -39,6 +39,13 @@ public class PostgresResilienceOptions
     // network path) in seconds instead of the operating system's default of hours.
     public int TcpKeepAliveSeconds { get; set; } = 30;
 
+    // A connection that sits idle in the pool is checked with a tiny round trip this often. When
+    // PostgreSQL restarts or fails over it closes every connection, but the pool only finds out
+    // when a request picks one up, and that request fails: after a restart each pooled connection
+    // costs one error (a 500 on an API call). The check finds the dead ones in the background and
+    // drops them, so the first request after the database is back gets a fresh connection.
+    public int IdleCheckSeconds { get; set; } = 10;
+
     internal void Validate()
     {
         void NotNegative(string name, int value)
@@ -52,6 +59,7 @@ public class PostgresResilienceOptions
         NotNegative(nameof(CommandTimeoutSeconds), CommandTimeoutSeconds);
         NotNegative(nameof(ConnectTimeoutSeconds), ConnectTimeoutSeconds);
         NotNegative(nameof(TcpKeepAliveSeconds), TcpKeepAliveSeconds);
+        NotNegative(nameof(IdleCheckSeconds), IdleCheckSeconds);
         if (MaxPoolSize < 1)
             throw new InvalidOperationException($"{SectionName}:{nameof(MaxPoolSize)} must be at least 1, not {MaxPoolSize}.");
     }
@@ -102,6 +110,10 @@ public static class PostgresConnection
             Default("Tcp Keepalive Time", () => builder.TcpKeepAliveTime = options.TcpKeepAliveSeconds);
             Default("Tcp Keepalive Interval", () => builder.TcpKeepAliveInterval = Math.Max(1, options.TcpKeepAliveSeconds / 3));
         }
+
+        // Npgsql calls the idle check "Keepalive" (not to be confused with the TCP one above)
+        if (options.IdleCheckSeconds > 0)
+            Default("Keepalive", () => builder.KeepAlive = options.IdleCheckSeconds);
 
         // Server-side limits travel as startup parameters ("-c name=value", milliseconds)
         var serverSettings = new List<string>();
