@@ -142,7 +142,9 @@ public static class IdentityServerConfig
             // ─────────────────────────────────────────────────────────
             // Client 3: Order Service (machine-to-machine)
             // Reads stock levels from Inventory as itself (the stock check
-            // over gRPC); it holds no other permission
+            // over gRPC) and what Payment holds for an order (the consistency
+            // check); it holds no other permission. It asks for one scope per
+            // token, so each token names a single API.
             // ─────────────────────────────────────────────────────────
             new Client
             {

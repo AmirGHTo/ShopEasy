@@ -95,7 +95,8 @@ internal sealed class TestIdentityProvider
         public static Token ForAnotherApi(string api) =>
             new(ApiAudiences.All.Where(a => a != api).Take(1), ["openid", "profile", .. ApiScopes.Web], Subject: "admin-1", ClientId: "shopeasy-gateway", Roles: [Roles.Admin]);
 
-        // what the Order service gets for itself (client credentials): Inventory only, no user
-        public static Token OrderService() => new([ApiAudiences.Inventory], [.. ApiScopes.OrderService], ClientId: "order-service");
+        // what the Order service gets for itself (client credentials), one token per API, no user
+        public static Token OrderService() => new([ApiAudiences.Inventory], [ApiScopes.InventoryRead], ClientId: "order-service");
+        public static Token OrderServiceForPayment() => new([ApiAudiences.Payment], [ApiScopes.PaymentRead], ClientId: "order-service");
     }
 }
