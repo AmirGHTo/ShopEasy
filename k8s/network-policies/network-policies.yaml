@@ -4,7 +4,7 @@
 #
 #   browser/clients -> gateway (NodePort 30000), identity (NodePort 30001: the login redirect)
 #   gateway   -> product, order, inventory, payment   (reverse proxy), identity (OIDC)
-#   order     -> inventory (HTTP 8080 + gRPC 8090), product, identity (service token)
+#   order     -> inventory (HTTP 8080 + gRPC 8090), product, payment (consistency check), identity (service token)
 #   every API -> identity (JWT signing keys, token endpoint)
 #   identity, product, inventory, payment, order -> postgres
 #   order, inventory, payment, product            -> rabbitmq
@@ -81,6 +81,23 @@ spec:
       ports:
         - { protocol: TCP, port: 8080 }
         - { protocol: TCP, port: 8090 }
+---
+# 4b. Order asks Payment what it holds for an order (the consistency check)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-order-to-payment
+  namespace: shopeasy
+spec:
+  podSelector:
+    matchLabels: { app: payment }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: order }
+      ports:
+        - { protocol: TCP, port: 8080 }
 ---
 # 5. Data stores: only the services that use them
 apiVersion: networking.k8s.io/v1
