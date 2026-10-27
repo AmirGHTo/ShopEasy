@@ -80,12 +80,12 @@ public class IdentityConfigurationTests
     }
 
     [Fact]
-    public void TheOrderService_IsAMachineClient_WithTheSingleScopeItNeeds()
+    public void TheOrderService_IsAMachineClient_WithOnlyTheScopesItNeeds()
     {
         var service = Client("order-service");
 
         service.AllowedGrantTypes.Should().BeEquivalentTo(GrantTypes.ClientCredentials);
-        service.AllowedScopes.Should().BeEquivalentTo([ApiScopes.InventoryRead]);
+        service.AllowedScopes.Should().BeEquivalentTo([ApiScopes.InventoryRead, ApiScopes.PaymentRead]);
         service.AllowOfflineAccess.Should().BeFalse();
         service.AccessTokenLifetime.Should().BeLessThanOrEqualTo(900, "service tokens are short-lived");
     }
@@ -100,8 +100,9 @@ public class IdentityConfigurationTests
     [Fact]
     public void NoClient_CanGetTheScopesOfAnApiItDoesNotUse()
     {
-        // the order service never reads or writes anything but stock levels
+        // the order service reads stock levels and what Payment holds, and nothing else
         var allScopes = typeof(ApiScopes).GetFields().Select(f => (string)f.GetRawConstantValue()!);
-        Client("order-service").AllowedScopes.Should().NotIntersectWith(allScopes.Where(s => s != ApiScopes.InventoryRead));
+        Client("order-service").AllowedScopes.Should().NotIntersectWith(
+            allScopes.Where(s => s != ApiScopes.InventoryRead && s != ApiScopes.PaymentRead));
     }
 }

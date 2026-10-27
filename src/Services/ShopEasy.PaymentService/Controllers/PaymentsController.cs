@@ -35,6 +35,26 @@ public class PaymentsController : ControllerBase
         return Ok(payment);
     }
 
+    // ── GET /api/payments/audit?orderIds=...&orderIds=... ─────────────────────
+    // For the Order service's consistency check (a token the service got for itself, not a user's):
+    // what is held for each order. Every payment row of the orders is returned, so a second payment
+    // for one order shows; an order without a payment is simply not in the answer.
+    public const int MaxAuditOrders = 100;
+
+    [HttpGet("audit")]
+    [Authorize(Policy = PolicyNames.PaymentInternal)]
+    public async Task<IActionResult> Audit([FromQuery] Guid[] orderIds)
+    {
+        if (orderIds.Length is 0 or > MaxAuditOrders)
+            return BadRequest(new { error = $"Ask for 1 to {MaxAuditOrders} orders at a time." });
+
+        var payments = await _db.Payments
+            .Where(p => orderIds.Contains(p.OrderId))
+            .Select(p => new PaymentAuditEntry(p.OrderId, p.Status.ToString(), p.Amount))
+            .ToListAsync();
+        return Ok(payments);
+    }
+
     // ── GET /api/payments ─────────────────────────────────────────────────────
     [HttpGet]
     [Authorize(Policy = PolicyNames.PaymentMonitor)]
@@ -47,3 +67,6 @@ public class PaymentsController : ControllerBase
         return Ok(payments);
     }
 }
+
+// The status is the PaymentStatus name (Pending, Succeeded, Failed, Refunded)
+public record PaymentAuditEntry(Guid OrderId, string Status, decimal Amount);

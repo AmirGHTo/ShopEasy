@@ -5,7 +5,7 @@ namespace ShopEasy.OrderService.Services;
 
 // The token the Order service uses when it calls another service as itself, without a user
 // (OAuth 2.0 client credentials). It is issued for Inventory only and carries the single scope
-// the Order service needs there (inventory.read, ApiScopes.OrderService).
+// the Order service needs there (inventory.read).
 public interface ITokenService
 {
     // A valid service token; fetched from Identity when there is none or it is about to expire.
@@ -139,7 +139,7 @@ public class TokenService : ITokenService
                 ["client_id"] = _config["ServiceAuth:ClientId"] ?? "order-service",
                 ["client_secret"] = _config["ServiceAuth:ClientSecret"]
                     ?? throw new InvalidOperationException("ServiceAuth:ClientSecret is not configured."),
-                ["scope"] = string.Join(' ', ApiScopes.OrderService)
+                ["scope"] = ApiScopes.InventoryRead
             }), ct);
 
         response.EnsureSuccessStatusCode();

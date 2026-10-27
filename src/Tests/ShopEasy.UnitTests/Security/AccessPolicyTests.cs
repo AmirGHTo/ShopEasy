@@ -134,7 +134,7 @@ public class AccessPolicyTests
     {
         ApiScopes.Web.Should().OnlyHaveUniqueItems();
         ApiScopes.Mobile.Should().BeSubsetOf(ApiScopes.Web, "the mobile app gets less than the web client, never more");
-        ApiScopes.OrderService.Should().BeEquivalentTo([ApiScopes.InventoryRead]);
+        ApiScopes.OrderService.Should().BeEquivalentTo([ApiScopes.InventoryRead, ApiScopes.PaymentRead]);
         ApiScopes.Web.Should().BeEquivalentTo(
             typeof(ApiScopes).GetFields().Select(f => (string)f.GetRawConstantValue()!),
             "the web client may ask for every scope there is");

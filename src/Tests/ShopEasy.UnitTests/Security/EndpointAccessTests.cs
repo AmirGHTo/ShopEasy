@@ -22,7 +22,7 @@ namespace ShopEasy.UnitTests.Security;
 //   noScope      a customer whose client was granted no API scope
 //   adminNoScope an administrator whose client was granted no API scope: the role alone is not enough
 //   otherApi     a perfectly good admin token, but issued for a different API
-//   service      the token the Order service gets for itself (Inventory only, no user)
+//   service      the token the Order service gets for itself for the API in question (no user)
 //
 // A new endpoint that is not in the table fails EveryEndpointIsInTheTable.
 public class EndpointAccessTests(ApiHosts hosts) : IClassFixture<ApiHosts>
@@ -75,8 +75,10 @@ public class EndpointAccessTests(ApiHosts hosts) : IClassFixture<ApiHosts>
         ],
         ["Payment"] =
         [
-            R("GET",    "api/payments/order/{orderId}",              $"api/payments/order/{Id}",                      "401  ok   ok   403  403  401  401"),
-            R("GET",    "api/payments",                              "api/payments",                                  "401  403  ok   403  403  401  401"),
+            // (a service gets past the scope here; the controller still refuses it, see PaymentsControllerTests)
+            R("GET",    "api/payments/order/{orderId}",              $"api/payments/order/{Id}",                      "401  ok   ok   403  403  401  ok"),
+            R("GET",    "api/payments",                              "api/payments",                                  "401  403  ok   403  403  401  403"),
+            R("GET",    "api/payments/audit",                        $"api/payments/audit?orderIds={Id}",             "401  403  403  403  403  401  ok"),
         ],
     };
 
@@ -88,7 +90,9 @@ public class EndpointAccessTests(ApiHosts hosts) : IClassFixture<ApiHosts>
         "noScope" => TestIdentityProvider.Principals.CustomerWithoutScopes().Issue(),
         "adminNoScope" => TestIdentityProvider.Principals.AdminWithoutScopes().Issue(),
         "otherApi" => TestIdentityProvider.Principals.ForAnotherApi(Audience(api)).Issue(),
-        "service" => TestIdentityProvider.Principals.OrderService().Issue(),
+        "service" => api == "Payment"
+            ? TestIdentityProvider.Principals.OrderServiceForPayment().Issue()
+            : TestIdentityProvider.Principals.OrderService().Issue(),
         _ => throw new ArgumentOutOfRangeException(nameof(caller)),
     };
 

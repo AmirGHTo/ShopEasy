@@ -41,8 +41,9 @@ public static class ApiScopes
         [ProductsRead, OrdersRead, OrdersWrite, InventoryRead, PaymentRead];
 
     // What the Order service may ask for as itself (client credentials): reading stock levels for
-    // the stock check. Nothing else.
-    public static IReadOnlyList<string> OrderService { get; } = [InventoryRead];
+    // the stock check, and what Payment holds for an order for the consistency check. Nothing else.
+    // It asks for one scope at a time, so each token names a single API as its audience.
+    public static IReadOnlyList<string> OrderService { get; } = [InventoryRead, PaymentRead];
 }
 
 public static class Roles

@@ -23,6 +23,7 @@ public static class PolicyNames
 
     public const string PaymentRead = "payment.read";
     public const string PaymentMonitor = "payment.read:admin";
+    public const string PaymentInternal = "payment.read:service";
 }
 
 // One authorization policy: the scope the token must carry, plus optionally the admin role (an
@@ -59,6 +60,7 @@ public static class AccessPolicies
     [
         new(PolicyNames.PaymentRead, ApiScopes.PaymentRead),
         new(PolicyNames.PaymentMonitor, ApiScopes.PaymentRead, RequireAdmin: true),
+        new(PolicyNames.PaymentInternal, ApiScopes.PaymentRead, RequireServiceToken: true),
     ];
 }
 
