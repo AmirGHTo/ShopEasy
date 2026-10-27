@@ -1205,6 +1205,8 @@ docker rm -f shopeasy-test-pg shopeasy-test-mq
 | Order budgets | A customer who sends 10 order requests in a minute gets the eleventh refused (`429`), and another customer is not affected: both the gateway and the Order service limit per user, not per client address. |
 | A declined payment | An order above the payment provider's single-transaction limit (10,000) is declined even though Compose forces the random bank decline off: the order ends `Cancelled` with the provider's reason, the payment is recorded as failed (never succeeded), and the stock reserved for it is back. |
 | A cancel while the saga runs | A customer cancels at six moments spread over the first eight seconds, before the saga was picked up, while it reserves the stock, and after the payment. Whichever step it falls on, the order ends `Cancelled`, the stock is back, and a payment that went through was refunded (never left `Succeeded`).
+| The broker is down | RabbitMQ is stopped, an order is placed and accepted anyway (its event waits in the Order database, the outbox), nothing moves for 20 seconds, and when the broker is back the order is `Confirmed`, charged once for its total, with exactly one unit off the shelf. |
+| Payment is killed with an order on its way | The Payment container is killed (a crash, not a polite stop) as soon as the order is placed. The saga reserves the stock and the payment command waits in the broker's durable queue; when Payment is back the order is `Confirmed`, charged once, one unit off the shelf. |
 
 CI runs it in the **Compose stack and end-to-end test** job, right after the containers are up, with the throw-away values of `.env.example`. Compose starts the payment provider in "always succeeds" mode (`Testing__ForcePaymentSuccess`), so a failure here means a broken system, not a random bank decline (the one decline the tests provoke is an order above the provider's 10,000 limit). To run it yourself:
 
@@ -1213,9 +1215,9 @@ docker compose up -d --build --wait postgres rabbitmq redis identity product inv
 dotnet test src/Tests/ShopEasy.EndToEndTests
 ```
 
-It expects the gateway at `http://localhost:5000` and Identity at `http://localhost:5001` (`E2E_GATEWAY_URL` and `E2E_IDENTITY_URL` change that). Each run creates three accounts, and sign-up is limited to 10 per hour per address (`RATE_LIMIT_REGISTRATION_ATTEMPTS`), so raise that limit in `.env` if you run it more than three times an hour. The accounts and orders stay in the database; `docker compose down -v` clears them.
+It expects the gateway at `http://localhost:5000` and Identity at `http://localhost:5001` (`E2E_GATEWAY_URL` and `E2E_IDENTITY_URL` change that). Each run creates five accounts, and sign-up is limited to 10 per hour per address (`RATE_LIMIT_REGISTRATION_ATTEMPTS`), so raise that limit in `.env` if you run it more than twice an hour. The accounts and orders stay in the database; `docker compose down -v` clears them.
 
-Not covered, on purpose: a declined payment and the compensation after it (the provider is forced to succeed here; the saga tests and the PostgreSQL tests cover the compensation), and cancelling an order while the saga is still running (it depends on timing, and the saga tests cover every stage).
+The two tests that take a part of the stack away (`OutageRecoveryTests`) stop and kill containers with `docker compose` (the Compose file of the repository, so the directory you run from does not matter), and always start them again, also when the test fails. Run them only against a stack you can disturb. If the stack was started some other way, `E2E_CONTROL` names a program that is called as `<program> <stop|kill|start> <service>` instead. *Stop* is a polite SIGTERM (the service finishes what it is doing); *kill* is a SIGKILL, a crash that gives the service no chance to finish anything.
 
 ## CI/CD
 
