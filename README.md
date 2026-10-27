@@ -203,7 +203,7 @@ The saga state is saved before the next command is published, every handler acts
 | **Product** database | The product catalog |
 | **Identity** database | Users, signing keys, the Data Protection key ring and issued grants, shared by every Identity replica |
 | **Redis** | Product and stock cache (a cache only: nothing depends on it for correctness) |
-| **RabbitMQ** | Durable queues per consumer; messages that keep failing land in `*_error` queues, which the operations portal lists and can requeue |
+| **RabbitMQ** | Durable queues per consumer, kept on a volume so that they and the messages in them survive a restart of the broker; messages that keep failing land in `*_error` queues, which the operations portal lists and can requeue |
 
 ### Cross-cutting qualities
 
@@ -695,7 +695,7 @@ cp .env.example .env     # Windows cmd: copy .env.example .env
 
 Generate strong random values, e.g. `openssl rand -base64 24`, or in PowerShell: `-join ((48..57)+(65..90)+(97..122) | Get-Random -Count 32 | % {[char]$_})`.
 
-**Changing `POSTGRES_PASSWORD` after the first run:** Postgres only reads it when it creates an empty data volume. Either keep the old password, or wipe local data with `docker-compose down -v` and start again.
+**Changing `POSTGRES_PASSWORD` or `RABBITMQ_USER` / `RABBITMQ_PASSWORD` after the first run:** Postgres and RabbitMQ only read them when they create an empty data volume (RabbitMQ keeps its queues on one, so that a restart of the broker loses nothing). Either keep the old values, or wipe local data with `docker-compose down -v` and start again.
 
 ### Service configuration keys
 
@@ -1212,6 +1212,7 @@ docker rm -f shopeasy-test-pg shopeasy-test-mq
 | A cancel while the saga runs | A customer cancels at six moments spread over the first eight seconds, before the saga was picked up, while it reserves the stock, and after the payment. Whichever step it falls on, the order ends `Cancelled`, the stock is back, and a payment that went through was refunded (never left `Succeeded`).
 | The broker is down | RabbitMQ is stopped, an order is placed and accepted anyway (its event waits in the Order database, the outbox), nothing moves for 20 seconds, and when the broker is back the order is `Confirmed`, charged once for its total, with exactly one unit off the shelf. |
 | Payment is killed with an order on its way | The Payment container is killed (a crash, not a polite stop) as soon as the order is placed. The saga reserves the stock and the payment command waits in the broker's durable queue; when Payment is back the order is `Confirmed`, charged once, one unit off the shelf. |
+| A command waits in the broker's queue across a broker restart | Payment is killed, an order is placed and its stock reserved, so the command to take the payment waits in Payment's queue; then RabbitMQ is restarted. When Payment is back the order is `Confirmed`, charged once, one unit off the shelf: the broker kept the queue and the message on its volume. (A broker that came back empty would lose the command and the saga would time out and cancel the order.) |
 | The database goes away mid-saga | Once the order's stock is reserved PostgreSQL is stopped for 15 seconds. No service can save anything, so they wait and retry (their patience is minutes); when the database is back the order is `Confirmed`, charged once, one unit off the shelf. |
 | A crash loop | Payment, Inventory and Order are killed in turn, twice over, and a new order is placed just before each kill, so one or two orders are always on their way when a service dies. In the end all eight are `Confirmed`, each charged once for its total, and the shelf is lower by exactly the units ordered: nothing lost, nothing done twice. |
 
@@ -1514,7 +1515,7 @@ The security headers (see [Security notes](#security-notes)) come from the gatew
 
 **`docker-compose up` fails with "Set X in .env"** — a required variable is missing from your `.env`. Compare it with `.env.example`.
 
-**Services cannot log in to Postgres after you edited `.env`** — Postgres only applies `POSTGRES_PASSWORD` when it first creates the data volume. Restore the old password, or wipe local data with `docker-compose down -v`.
+**Services cannot log in to Postgres or RabbitMQ after you edited `.env`** — Postgres only applies `POSTGRES_PASSWORD`, and RabbitMQ only `RABBITMQ_USER` / `RABBITMQ_PASSWORD`, when they first create their data volume. Restore the old values, or wipe local data with `docker-compose down -v`.
 
 **`/sagas`, `/outbox` or `/deadletters` redirect to a login page** — expected: they require a login (as an admin to see data). No account exists until you create one: set `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` in `.env` and run `docker-compose up -d --build identity` (see [How to Use It](#1-log-in)).
 
@@ -1576,7 +1577,7 @@ What has been hardened, and what is known to be missing.
 - A shipped or delivered order cannot be cancelled, and there is no return or partial-refund flow. A paid order that is cancelled before it ships is refunded in full.
 - The Order service's saga commands wait for the outbox delivery service: after the commit, a command to the other services is sent within `Outbox__QueryDelayMs` (500 ms by default) when it comes from the orchestrator, the timeout service or the cancel endpoint. The saga timeout service still re-sends commands whose answer never arrives, and every consumer is idempotent.
 - The Inventory consumers invalidate the Redis stock cache while MassTransit's transaction is still open (the commit follows immediately after the consumer returns). In that few-millisecond window a reader can re-cache the old stock level for up to its 30-second TTL. The cache is advisory — the saga's reservation is the authoritative check.
-- A message published to an exchange that has no queue bound yet is dropped by the broker, so a command sent before its consuming service has started for the first time is lost until the saga timeout re-sends it. (Docker Compose and Kubernetes start order makes this rare.)
+- A message published to an exchange that has no queue bound yet is dropped by the broker, so a command sent before its consuming service has started for the first time is lost until the saga timeout re-sends it. (Docker Compose and Kubernetes start order makes this rare.) The same happens if the broker itself comes back empty, which is why RabbitMQ keeps its data on a volume (Compose `rabbitmq-data`, Kubernetes `rabbitmq-pvc`): a restarted broker still has its queues, bindings and messages. A broker whose volume is lost starts empty, and the commands in flight are then lost the same way.
 - The MassTransit inbox only remembers a message for its 30-minute duplicate-detection window; beyond that, duplicates are caught by the business-level checks (pattern 7).
 - Inventory endpoints process one message at a time per instance (`ConcurrentMessageLimit = 1`). Correctness no longer depends on it (row locks do), so it can be raised for throughput.
 - The CI is a *gate* only if branch protection requires the `CI passed` check (a one-time repository setting, see CI/CD); otherwise it reports but does not block.

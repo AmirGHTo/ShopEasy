@@ -1,3 +1,17 @@
+# The broker's queues, bindings and messages. Without a volume a restarted container comes back empty
+# and the commands that were waiting in its queues are lost.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rabbitmq-pvc
+  namespace: shopeasy
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -5,6 +19,9 @@ metadata:
   namespace: shopeasy
 spec:
   replicas: 1
+  # One broker owns the volume: the old pod is stopped before the new one starts
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: rabbitmq
@@ -35,6 +52,9 @@ spec:
                 secretKeyRef:
                   name: shopeasy-secrets
                   key: rabbitmq-erlang-cookie
+          volumeMounts:
+            - name: rabbitmq-data
+              mountPath: /var/lib/rabbitmq
           readinessProbe:
             exec:
               command: ["rabbitmq-diagnostics", "ping"]
@@ -49,6 +69,10 @@ spec:
             periodSeconds: 30
             failureThreshold: 5
             timeoutSeconds: 10
+      volumes:
+        - name: rabbitmq-data
+          persistentVolumeClaim:
+            claimName: rabbitmq-pvc
 ---
 apiVersion: v1
 kind: Service
