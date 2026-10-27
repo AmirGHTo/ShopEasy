@@ -309,7 +309,10 @@ jobs:
 
       # .env.example holds throw-away values ("change-me-…"): fine for a runner that is discarded
       - name: Configuration
-        run: cp .env.example .env
+        run: |
+          cp .env.example .env
+          # the tests sign up a handful of customers from this one address (the limit is 10 an hour)
+          printf '\nRATE_LIMIT_REGISTRATION_ATTEMPTS=100\n' >> .env
 
       # The services of the application, and Prometheus to prove it can scrape them; the other
       # monitoring tools (Grafana, Seq, Jaeger, ...) do not affect whether the application starts.
@@ -397,9 +400,13 @@ jobs:
       - name: Swagger UI follows its setting
         run: bash .github/scripts/check-swagger.sh
 
+      # The services the failure tests disturb are read from further back, with times, so that the
+      # minute a test took something down can be found in them
       - name: Container logs (on failure)
         if: failure()
-        run: docker compose logs --no-color --tail 150
+        run: |
+          docker compose logs --no-color --timestamps --tail 150 identity product gateway postgres redis prometheus
+          docker compose logs --no-color --timestamps --tail 1500 order inventory payment rabbitmq
 
       - name: Stop
         if: always()
