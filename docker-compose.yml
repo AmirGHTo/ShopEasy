@@ -373,6 +373,12 @@ services:
       SagaOrchestrator__MaxRetryPauseSeconds: "${ORDER_SAGA_MAX_RETRY_PAUSE_SECONDS:-60}"
       # A polling pass (orchestrator, timeout service, outbox delivery, dead-letter monitor) that hangs is cancelled after this
       BackgroundLoops__PassTimeoutSeconds: "${ORDER_LOOP_PASS_TIMEOUT_SECONDS:-120}"
+      # The consistency check: settled orders against what Payment holds (README, "Consistency check")
+      ConsistencyCheck__Enabled: "${ORDER_CONSISTENCY_CHECK_ENABLED:-true}"
+      ConsistencyCheck__IntervalSeconds: "${ORDER_CONSISTENCY_CHECK_INTERVAL_SECONDS:-60}"
+      ConsistencyCheck__SettleSeconds: "${ORDER_CONSISTENCY_CHECK_SETTLE_SECONDS:-120}"
+      ConsistencyCheck__LookbackMinutes: "${ORDER_CONSISTENCY_CHECK_LOOKBACK_MINUTES:-30}"
+      ConsistencyCheck__MaxOrdersPerPass: "${ORDER_CONSISTENCY_CHECK_MAX_ORDERS:-500}"
       ASPNETCORE_URLS: http://+:8080
       Services__InventoryGrpcService: "http://inventory:8090"
       Services__ProductService:       "http://product:8080"

@@ -82,6 +82,31 @@ tests:
               description: The saga_orchestrator loop last completed a pass 5m 0s ago. It fails (see the Order service log) or hangs.
 
   - interval: 1m
+    name: a mismatch between an order and its payment raises OrderConsistencyViolated, a clean check does not
+    input_series:
+      - series: shopeasy_consistency_violations{rule="cancelled_still_charged"}
+        values: "0 0 1 1 1 1 1"
+      - series: shopeasy_consistency_violations{rule="confirmed_not_paid"}
+        values: "0x6"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: OrderConsistencyViolated
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: OrderConsistencyViolated
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              rule: cancelled_still_charged
+            exp_annotations:
+              summary: An order disagrees with what Payment holds for it (cancelled_still_charged)
+              description: >-
+                1 order(s) break the rule cancelled_still_charged (confirmed_not_paid: goods without a payment;
+                amount_differs: charged another amount; paid_twice: charged twice; cancelled_still_charged: cancelled
+                but the charge stands). Search the Order service log for "CONSISTENCY VIOLATION": each line names the
+                order and what Payment holds. Nothing was changed automatically.
+
+  - interval: 1m
     name: a failed order raises OrderFailed at once
     input_series:
       - series: shopeasy_order_outcomes_total{outcome="failed", reason="orchestrator_error"}

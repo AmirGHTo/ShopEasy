@@ -152,6 +152,7 @@ public class OrderDbContext : DbContext
             e.HasKey(o => o.Id);
             e.Property(o => o.TotalAmount).HasColumnType("decimal(18,2)");
             e.HasMany(o => o.Items).WithOne().HasForeignKey(i => i.OrderId);
+            e.HasIndex(o => o.UpdatedAt); // the consistency check reads the orders that settled since its last pass
         });
 
         modelBuilder.Entity<OrderItem>(e =>
