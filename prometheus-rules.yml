@@ -64,3 +64,45 @@ groups:
         annotations:
           summary: More than 30% of the last payments were declined
           description: The simulated provider declines about 10%. A rate this high points to a broken provider or a bad deployment.
+
+  # What a customer feels at the front door is what the gateway answers. A request that ends in a 5xx
+  # (a service that is down, a timeout, a broken upstream) counts against the shop; a 4xx, including
+  # the 429 of a rate limit, does not: that is the system doing its job.
+  - name: shopeasy-availability
+    rules:
+      - record: shopeasy:gateway_server_errors:ratio_10m
+        expr: |
+          (sum(increase(http_requests_received_total{service="Gateway",code=~"5.."}[10m])) or vector(0))
+            / sum(increase(http_requests_received_total{service="Gateway"}[10m]))
+
+      - record: shopeasy:gateway_request_duration_seconds:p95_10m
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service="Gateway"}[10m])))
+
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} cannot be scraped"
+          description: The service is down, or its metrics port ({{ $labels.instance }}) cannot be reached. Look at its health check and its log first.
+
+      - alert: ShopServerErrorsHigh
+        expr: |
+          shopeasy:gateway_server_errors:ratio_10m > 0.02
+          and sum(increase(http_requests_received_total{service="Gateway"}[10m])) >= 20
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: More than 2% of the gateway's answers in the last 10 minutes were server errors
+          description: "{{ $value | humanizePercentage }} of the answers were 5xx. The \"HTTP Error Rate\" panel of the ShopEasy Overview dashboard shows where they come from."
+
+      - alert: ShopSlow
+        expr: shopeasy:gateway_request_duration_seconds:p95_10m > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 1 request in 20 takes longer than 2 seconds
+          description: The 95th percentile of the gateway's answer time over the last 10 minutes is {{ $value | humanizeDuration }}.

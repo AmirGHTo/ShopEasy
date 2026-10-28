@@ -118,6 +118,8 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - ./prometheus-rules.yml:/etc/prometheus/prometheus-rules.yml
+      # the history (Prometheus keeps 15 days by default) survives a restart or a re-created container
+      - prometheus-data:/prometheus
     networks:
       - shopeasy-net
     depends_on:
@@ -462,6 +464,7 @@ services:
 # ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   postgres-data:
+  prometheus-data:
 
 # ── Network ───────────────────────────────────────────────────────────────────
 networks:
