@@ -86,6 +86,13 @@ data:
   # Order polling loops (orchestrator, timeout service, outbox delivery, dead-letter monitor): a pass that
   # has not finished after this many seconds (at least 10) is cancelled and counts as failed.
   BackgroundLoops__PassTimeoutSeconds: "120"
+  # Order consistency check: settled orders against what Payment holds (README, "Consistency check").
+  # The interval must stay under 120 s, the PollingLoopStalled alert's patience.
+  ConsistencyCheck__Enabled: "true"
+  ConsistencyCheck__IntervalSeconds: "60"
+  ConsistencyCheck__SettleSeconds: "120"
+  ConsistencyCheck__LookbackMinutes: "30"
+  ConsistencyCheck__MaxOrdersPerPass: "500"
   # Calls between services (README, pattern 26). Order uses Resilience__Inventory__* and the retry
   # budget; the gateway uses Resilience__Gateway__* and the retry budget.
   Resilience__Inventory__TimeoutSeconds: "3"

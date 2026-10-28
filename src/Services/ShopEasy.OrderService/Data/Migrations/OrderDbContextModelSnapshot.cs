@@ -268,6 +268,8 @@ namespace ShopEasy.OrderService.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("UpdatedAt");
+
                     b.ToTable("Orders");
                 });
 
