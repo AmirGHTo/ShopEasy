@@ -51,6 +51,24 @@ groups:
           summary: A polling loop of the Order service has completed no pass for 2 minutes
           description: The {{ $labels.loop }} loop last completed a pass {{ $value | humanizeDuration }} ago. It fails (see the Order service log) or hangs.
 
+  - name: shopeasy-consistency
+    rules:
+      # The Order service compares the orders that have settled with what Payment holds for them. A
+      # finding is counted only when two passes in a row see it, and stays counted until it is put right.
+      # Several Order replicas each run the check, so the maximum is taken.
+      - alert: OrderConsistencyViolated
+        expr: max by (rule) (shopeasy_consistency_violations) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: An order disagrees with what Payment holds for it ({{ $labels.rule }})
+          description: >-
+            {{ $value }} order(s) break the rule {{ $labels.rule }} (confirmed_not_paid: goods without a payment;
+            amount_differs: charged another amount; paid_twice: charged twice; cancelled_still_charged: cancelled
+            but the charge stands). Search the Order service log for "CONSISTENCY VIOLATION": each line names the
+            order and what Payment holds. Nothing was changed automatically.
+
   - name: shopeasy-payments
     rules:
       - alert: PaymentsDeclinedHigh

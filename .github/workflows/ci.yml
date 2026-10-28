@@ -314,6 +314,12 @@ jobs:
           # the tests sign up a handful of customers from this one address (the limit is 10 an hour)
           printf '\nRATE_LIMIT_REGISTRATION_ATTEMPTS=100\n' >> .env
 
+      # The Order service compares settled orders with what Payment holds (README, pattern 27). Here it
+      # judges an order 10 s after it settled and runs every 15 s, so the step after the end-to-end
+      # tests does not wait minutes.
+      - name: Make the consistency check quick
+        run: printf 'ORDER_CONSISTENCY_CHECK_SETTLE_SECONDS=10\nORDER_CONSISTENCY_CHECK_INTERVAL_SECONDS=15\n' >> .env
+
       # The services of the application, and Prometheus to prove it can scrape them; the other
       # monitoring tools (Grafana, Seq, Jaeger, ...) do not affect whether the application starts.
       - name: Build the images and start the services
@@ -397,6 +403,11 @@ jobs:
             TestResults/after-restore/
           if-no-files-found: ignore
           retention-days: 14
+
+      # The orders those tests placed were compared with Payment while they ran: all of them examined,
+      # none in disagreement with its payment
+      - name: The consistency check found nothing wrong
+        run: bash .github/scripts/check-consistency.sh
 
       # Data can be lost (a deleted volume, a dead disk), and then only a backup helps. This takes
       # one of every database the tests have just filled, throws the PostgreSQL container and its
