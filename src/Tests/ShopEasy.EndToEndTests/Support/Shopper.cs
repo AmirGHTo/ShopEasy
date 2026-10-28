@@ -14,10 +14,12 @@ public sealed class Shopper : IDisposable
         new("name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", RegexOptions.Compiled);
 
     private readonly HttpClient _http;
+    private readonly BrowserCookies _cookies;
 
-    private Shopper(HttpClient http, string email)
+    private Shopper((HttpClient Http, BrowserCookies Cookies) browser, string email)
     {
-        _http = http;
+        _http = browser.Http;
+        _cookies = browser.Cookies;
         Email = email;
     }
 
@@ -36,14 +38,20 @@ public sealed class Shopper : IDisposable
         return shopper;
     }
 
-    private static HttpClient NewBrowser() => new(new BrowserCookies(new HttpClientHandler
+    private static (HttpClient, BrowserCookies) NewBrowser()
     {
-        AllowAutoRedirect = false, // the redirects are followed by hand, so that each one is checked
-        UseCookies = false,        // the cookies are kept the way a browser keeps them, see BrowserCookies
-    }))
-    {
-        Timeout = TimeSpan.FromSeconds(30),
-    };
+        var cookies = new BrowserCookies(new HttpClientHandler
+        {
+            AllowAutoRedirect = false, // the redirects are followed by hand, so that each one is checked
+            UseCookies = false,        // the cookies are kept the way a browser keeps them, see BrowserCookies
+        });
+        return (new HttpClient(cookies) { Timeout = TimeSpan.FromSeconds(30) }, cookies);
+    }
+
+    // What a restart of the gateway does to a customer whose session it cannot read any more: the
+    // browser still sends the cookie, the gateway does not accept it. Dropping it here is the same
+    // for the rest of the shop, and leaves Identity's cookie, which is the one that matters next.
+    public void LoseTheShopSession() => _cookies.Forget(name => name.StartsWith("shopeasy.session", StringComparison.Ordinal));
 
     // Where the gateway's sign-in sends a browser that is already signed in
     public async Task<string?> WhereSignInLeadsAsync(string returnUrl)
@@ -104,8 +112,10 @@ public sealed class Shopper : IDisposable
     }
 
     // Identity has just signed this browser in, so the gateway's sign-in comes straight back with a
-    // session cookie. /account/me then says who the gateway thinks this is.
-    private async Task SignInToTheShopAsync()
+    // session cookie. /account/me then says who the gateway thinks this is. Also what a customer
+    // does when the gateway has lost their session: the browser still has Identity's cookie, so no
+    // password is asked for.
+    public async Task SignInToTheShopAsync()
     {
         var hops = new List<string>();
         using var landed = await BrowseAsync(new Uri(Stack.Gateway, "/account/login?returnUrl=%2F"), hops);
