@@ -17,7 +17,7 @@ namespace ShopEasy.EndToEndTests;
 // Each test restores what it broke even when it fails (await using), so the next test starts on a
 // whole stack. They run as their own customer, because the order budget of the other two is used.
 [Collection(ShopCollection.Name)]
-public class OutageRecoveryTests : IAsyncLifetime
+public class OutageRecoveryTests(ShopFixture shop) : IAsyncLifetime
 {
     // Long enough for the Order service to find the broker again (its own check runs every few seconds),
     // for the consumers to reconnect, and for the saga to run to the end
@@ -264,23 +264,31 @@ public class OutageRecoveryTests : IAsyncLifetime
         var placed = await PlaceAsync(Catalog.Chair);
         var orderId = placed.Json.Text("id");
 
-        await using (await Chaos.TakeDownAsync("gateway", crash: true))
+        try
         {
-            var refused = async () => await _customer.GetAsync("/api/v1/products");
-            await refused.Should().ThrowAsync<HttpRequestException>("nothing answers at the front door");
+            await using (await Chaos.TakeDownAsync("gateway", crash: true))
+            {
+                var refused = async () => await _customer.GetAsync("/api/v1/products");
+                await refused.Should().ThrowAsync<HttpRequestException>("nothing answers at the front door");
+            }
+
+            await Wait.UntilAnswersAsync(new Uri(Stack.Gateway, "/health"), "the gateway to answer again");
+
+            // The new gateway cannot read the old cookie (it keeps its keys in memory where it has no
+            // writable home, as in the containers), so the customer is a visitor again. Where the keys
+            // happen to survive, the cookie is dropped here, so that this is what is tested anywhere.
+            _customer.LoseTheShopSession();
+            (await _customer.GetAsync("/account/me")).Status.Should().Be(HttpStatusCode.Unauthorized);
+            await _customer.SignInToTheShopAsync();
+
+            await AssertConfirmedAndPaidAsync(orderId, placed.Json.Number("totalAmount"));
+            await AssertUnitsLeftTheShelfAsync(Catalog.Chair, before, units: 1);
         }
-
-        await Wait.UntilAnswersAsync(new Uri(Stack.Gateway, "/health"), "the gateway to answer again");
-
-        // Where the new gateway cannot read the old cookie (it keeps its keys in memory where it has
-        // no writable home, as in the containers) the customer is a visitor again; here the cookie is
-        // dropped, so that this is what is tested wherever the stack runs
-        _customer.LoseTheShopSession();
-        (await _customer.GetAsync("/account/me")).Status.Should().Be(HttpStatusCode.Unauthorized);
-        await _customer.SignInToTheShopAsync();
-
-        await AssertConfirmedAndPaidAsync(orderId, placed.Json.Number("totalAmount"));
-        await AssertUnitsLeftTheShelfAsync(Catalog.Chair, before, units: 1);
+        finally
+        {
+            // the two customers every other test shares lost their sessions with this customer's
+            await shop.SignBackInAsync();
+        }
     }
 
     private async Task<Reply> PlaceAsync(Guid productId)
