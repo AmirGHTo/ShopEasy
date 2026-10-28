@@ -161,6 +161,93 @@ public class OutageRecoveryTests : IAsyncLifetime
         await AssertUnitsLeftTheShelfAsync(Catalog.Webcam, webcams, webcamsOrdered);
     }
 
+    // Redis is only a cache of products and stock. Taking it away must cost nothing but speed: the
+    // same answers come from the databases, and an order goes through.
+    [Fact]
+    public async Task WhileRedisIsDown_TheShopStillShowsProductsAndStock_AndTakesOrders()
+    {
+        var before = await Catalog.StockAsync(_customer, Catalog.Desk);
+        var price = await Catalog.PriceAsync(_customer, Catalog.Desk);
+        string orderId;
+
+        await using (await Chaos.TakeDownAsync("redis"))
+        {
+            (await Catalog.PriceAsync(_customer, Catalog.Desk)).Should().Be(price);
+            (await Catalog.StockAsync(_customer, Catalog.Desk)).Should().Be(before);
+
+            var placed = await PlaceAsync(Catalog.Desk);
+            orderId = placed.Json.Text("id");
+
+            // finished while Redis is still away: it is not needed for the order to move
+            await AssertConfirmedAndPaidAsync(orderId, placed.Json.Number("totalAmount"));
+        }
+
+        await AssertUnitsLeftTheShelfAsync(Catalog.Desk, before, units: 1);
+    }
+
+    // Identity issues tokens and signs people in. A service that has seen its signing keys keeps
+    // checking tokens without it, the gateway holds the customer's session, and the Order service
+    // keeps the token it uses towards Inventory for its lifetime. So a customer who is signed in
+    // goes on shopping, and what is lost is signing in or up.
+    [Fact]
+    public async Task WhileIdentityIsDown_ACustomerWhoIsSignedInKeepsShopping_AndSigningUpWorksAgainOnceItIsBack()
+    {
+        // The Order service fetches its token the first time it needs one: this order does that, as
+        // any shop that has been running for a minute has done
+        var warmUp = await PlaceAsync(Catalog.Headphones);
+        await AssertConfirmedAndPaidAsync(warmUp.Json.Text("id"), warmUp.Json.Number("totalAmount"));
+        var before = await Catalog.StockAsync(_customer, Catalog.Headphones);
+        string orderId;
+
+        await using (await Chaos.TakeDownAsync("identity"))
+        {
+            (await _customer.GetAsync("/api/orders")).Status.Should().Be(HttpStatusCode.OK);
+            (await Catalog.StockAsync(_customer, Catalog.Headphones)).Should().Be(before);
+
+            var placed = await PlaceAsync(Catalog.Headphones);
+            orderId = placed.Json.Text("id");
+            await AssertConfirmedAndPaidAsync(orderId, placed.Json.Number("totalAmount"));
+        }
+
+        await AssertUnitsLeftTheShelfAsync(Catalog.Headphones, before, units: 1);
+
+        await Wait.UntilAnswersAsync(new Uri(Stack.Identity, "/health/live"), "Identity to answer again");
+        using var newcomer = await Shopper.SignUpAsync("after-identity");
+        (await newcomer.GetAsync("/api/orders")).Status.Should().Be(HttpStatusCode.OK);
+        // and the session that was open all the time is still good
+        (await _customer.GetAsync($"/api/orders/{orderId}")).Status.Should().Be(HttpStatusCode.OK);
+    }
+
+    // The gateway keeps the customer's session (the encryption keys of its cookie) in its own
+    // memory, so a crash ends every session. What is promised is that nothing else is lost: the
+    // order finishes behind it, and the customer, whose browser Identity still recognises, is signed
+    // in again by one visit to the sign-in address, with no password.
+    [Fact]
+    public async Task WhenTheGatewayIsKilled_NothingBehindItIsLost_AndTheCustomerIsSignedInAgainWithoutAPassword()
+    {
+        var before = await Catalog.StockAsync(_customer, Catalog.Chair);
+        var placed = await PlaceAsync(Catalog.Chair);
+        var orderId = placed.Json.Text("id");
+
+        await using (await Chaos.TakeDownAsync("gateway", crash: true))
+        {
+            var refused = async () => await _customer.GetAsync("/api/v1/products");
+            await refused.Should().ThrowAsync<HttpRequestException>("nothing answers at the front door");
+        }
+
+        await Wait.UntilAnswersAsync(new Uri(Stack.Gateway, "/health"), "the gateway to answer again");
+
+        // Where the new gateway cannot read the old cookie (it keeps its keys in memory where it has
+        // no writable home, as in the containers) the customer is a visitor again; here the cookie is
+        // dropped, so that this is what is tested wherever the stack runs
+        _customer.LoseTheShopSession();
+        (await _customer.GetAsync("/account/me")).Status.Should().Be(HttpStatusCode.Unauthorized);
+        await _customer.SignInToTheShopAsync();
+
+        await AssertConfirmedAndPaidAsync(orderId, placed.Json.Number("totalAmount"));
+        await AssertUnitsLeftTheShelfAsync(Catalog.Chair, before, units: 1);
+    }
+
     private async Task<Reply> PlaceAsync(Guid productId)
     {
         var placed = await _customer.PostAsync("/api/orders",
