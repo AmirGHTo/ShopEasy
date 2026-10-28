@@ -89,6 +89,41 @@ public class OutageRecoveryTests : IAsyncLifetime
         await AssertFinishedOnceAsync(orderId, total, Catalog.Webcam, before);
     }
 
+    // The broker has to keep what it holds. A command for a service that is down waits in a queue; if the
+    // broker is restarted meanwhile and comes back empty, the command is gone and the saga can only time
+    // out and cancel the order. The same loss happens in a smaller way when a restarted broker is empty
+    // for the moments before each service has declared its queue again: a command sent in those moments
+    // finds no queue and is dropped. Here the queue is durable and the broker keeps its data on a volume,
+    // so the command is still there when Payment is back.
+    [Fact]
+    public async Task ACommandWaitingInTheBrokersQueue_SurvivesARestartOfTheBroker()
+    {
+        var before = await Catalog.StockAsync(_customer, Catalog.Webcam);
+        string orderId;
+        decimal total;
+
+        await using (await Chaos.TakeDownAsync("payment", crash: true))
+        {
+            var placed = await PlaceAsync(Catalog.Webcam);
+            orderId = placed.Json.Text("id");
+            total = placed.Json.Number("totalAmount");
+
+            // The stock is reserved and the command to take the payment is in the queue of the service
+            // that is not there
+            await Wait.UntilAsync(
+                () => Catalog.StockAsync(_customer, Catalog.Webcam),
+                stock => stock.Available == before.Available - 1,
+                "the stock to be reserved while the payment service is down", TimeSpan.FromSeconds(45));
+
+            await using (await Chaos.TakeDownAsync("rabbitmq"))
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5));
+            }
+        }
+
+        await AssertFinishedOnceAsync(orderId, total, Catalog.Webcam, before);
+    }
+
     [Fact]
     public async Task WhenTheDatabaseGoesAwayInTheMiddleOfTheSaga_TheOrderIsFinishedOnceItIsBack()
     {
