@@ -2,24 +2,23 @@
 
 # ShopEasy
 
-**An event-driven e-commerce backend built on .NET 8 microservices**
+**A sample microservices project for practising reliability patterns**
 
-Reliable order processing across independently deployable services: a saga with compensation,
-transactional messaging and an idempotent API, designed to stay correct when parts of the system fail.
+A small online-shop backend split into six services. It exists to apply reliability patterns (what to do when a
+service crashes, a message arrives twice, or the database restarts) and to check, with tests that break things
+on purpose, that they work. The shop is deliberately simple and simulated.
 
 [![CI/CD](https://github.com/AmirGHTo/ShopEasy/actions/workflows/ci.yml/badge.svg)](https://github.com/AmirGHTo/ShopEasy/actions/workflows/ci.yml)
 ![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)
 ![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
 ![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.13-FF6600?logo=rabbitmq&logoColor=white)
-![Kubernetes](https://img.shields.io/badge/Kubernetes-ready-326CE5?logo=kubernetes&logoColor=white)
-![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
 [Quick start](#getting-started) ·
 [Architecture](#architecture) ·
 [Order API](#order-api) ·
 [Operations](#developer-portal--monitoring) ·
 [Kubernetes](#kubernetes-deployment) ·
-[Hardening](#production-hardening-and-known-limitations)
+[Known limitations](#hardening-and-known-limitations)
 
 </div>
 
@@ -45,27 +44,28 @@ transactional messaging and an idempotent API, designed to stay correct when par
 16. [Kubernetes Deployment](#kubernetes-deployment)
 17. [Project Structure](#project-structure)
 18. [Troubleshooting](#troubleshooting)
-19. [Production Hardening and Known Limitations](#production-hardening-and-known-limitations)
+19. [Hardening and Known Limitations](#hardening-and-known-limitations)
 
 ---
 
 ## Overview
 
-ShopEasy is the backend of an online store, split into six independently deployable services. It is built around one job and does it carefully: turn a customer's **Place order** into exactly one stock reservation, exactly one charge and one confirmed order, even when a service crashes, a message is delivered twice, the database restarts or the client retries the request.
+ShopEasy is a **learning project**: a sample microservices system (.NET 8) used to apply reliability patterns in a realistic but simplified setting, and to see what each pattern does when something goes wrong.
 
-There is no distributed-transaction coordinator and no shared database. An **orchestrated saga** drives the order through Inventory and Payment, **transactional outbox and inbox** messaging keeps every state change and the message announcing it atomic, **row-level locks** keep stock correct, and **idempotency** at every edge makes repeated delivery harmless. Every failure path has a defined compensation (release the stock, refund the payment, cancel the order) that is covered by tests.
+The shop is a toy. You browse products, place an order, pay, and get a confirmation. Payments go to a simulated provider, there is no shipping, and nothing here has served real customers. The engineering problem is real, though. An order touches three services and three databases, so there is no single transaction, and any part can crash, restart, repeat a message or slow down.
 
-| Capability | What it means here |
-|---|---|
-| **Correct order processing** | A saga coordinates Order, Inventory and Payment. A declined payment releases the stock, a late payment is refunded, and an order that stops making progress is recovered by a timeout service instead of hanging. |
-| **Safe under retries and duplicates** | Transactional outbox and inbox, idempotent consumers and an `Idempotency-Key` on the public order API: delivering or sending something twice has the effect of once. |
-| **No overselling** | Stock is reserved under row-level locks and tracked in a ledger (reserve, then commit or release), so concurrent orders on any instance cannot take the same unit twice. |
-| **Resilient** | Database and network outages are ridden out with retry policies and bounded waits. Rate limits, circuit breakers, health probes and dead-letter tooling cover the rest. The whole picture, and how it is tested, is in [Reliability](#reliability). |
-| **Secure by default** | OpenID Connect through a Backend-for-Frontend gateway (tokens never reach the browser), JWT validation in every service, no secrets in the repository, unprivileged read-only containers and default-deny network policies. |
-| **Observable** | One correlation id across HTTP and messages, structured logs, distributed traces, Prometheus metrics, Grafana dashboards, and built-in saga, outbox and dead-letter monitors. |
-| **Deployable** | Docker Compose for development and Kubernetes manifests with pinned images. GitHub Actions builds, tests against real PostgreSQL and RabbitMQ, validates the deployment files, starts the stack and publishes the images. |
+**Patterns practised here** (each is explained further down):
 
-**Scope.** ShopEasy ships the APIs, a customer storefront (a React app the gateway serves) and an operations portal, and payments go through a simulated provider. The [known limitations](#production-hardening-and-known-limitations) are listed at the end of this document.
+- a saga with compensation, so a failed order is undone instead of left half done
+- transactional outbox and inbox, so a change and its message are saved together and a repeated message is recognised
+- idempotent consumers, and an `Idempotency-Key` on the order API
+- deadlines, retries with a budget, circuit breakers and rate limits
+- dead-letter queues, a timeout service for stuck orders, and a check across services
+- failure tests (stopping and killing real containers), backup and restore, metrics and alerts
+
+Around the patterns there is supporting plumbing: a small web storefront, sign-in through a gateway, logs, traces and dashboards, Docker Compose and Kubernetes files, and CI. It is there to make the exercise realistic, not as a product.
+
+**What it is not.** It is not a template for a production shop. Many things are simplified on purpose, and the [known limitations](#hardening-and-known-limitations) say where. The [Reliability](#reliability) section is the best place to start: what can go wrong, what happens, and how each claim is tested.
 
 ---
 
@@ -808,7 +808,7 @@ Besides the alerts: error queues are listed on the Dead Letter Monitor page and 
 
 ### What is not covered
 
-The full list is in [Production Hardening and Known Limitations](#production-hardening-and-known-limitations). The ones that matter most for reliability:
+The full list is in [Hardening and Known Limitations](#hardening-and-known-limitations). The ones that matter most for reliability:
 
 - **Single instances.** PostgreSQL, RabbitMQ and Redis run as one instance each, and so does the gateway, so the loss of their node is an outage, which the services then ride out only as far as the retry windows above. RabbitMQ's queues are on a volume, not replicated. A highly available database or broker is bought (a managed service or an operator), not built here.
 - **Backups are daily-dump grade.** The scripts and the restore are tested, but nothing runs them on a schedule, copies them off the machine, or lets you restore to a given minute (that needs a managed PostgreSQL with point-in-time recovery).
@@ -1441,7 +1441,7 @@ docker rm -f shopeasy-test-pg shopeasy-test-mq
 | The database goes away mid-saga | Once the order's stock is reserved PostgreSQL is stopped for 15 seconds. No service can save anything, so they wait and retry (their patience is minutes); when the database is back the order is `Confirmed`, charged once, one unit off the shelf. |
 | A crash loop | Payment, Inventory and Order are killed in turn, twice over, and a new order is placed just before each kill, so one or two orders are always on their way when a service dies. In the end all eight are `Confirmed`, each charged once for its total, and the shelf is lower by exactly the units ordered: nothing lost, nothing done twice. |
 | Redis is down | Redis (only a cache of products and stock) is stopped; the catalog and the stock are read from the databases instead and show the same, an order is placed and ends `Confirmed` while Redis is still away, charged once, one unit off the shelf. |
-| Identity is down | Identity is stopped after the Order service has fetched its token. A customer who is signed in goes on browsing and ordering, and the order ends `Confirmed`; when Identity is back a new customer can sign up and the old session still works. (Signing in or up is what is lost while it is away, and a service that *starts* while Identity is away answers `401` until it is back, see [known limitations](#production-hardening-and-known-limitations).) |
+| Identity is down | Identity is stopped after the Order service has fetched its token. A customer who is signed in goes on browsing and ordering, and the order ends `Confirmed`; when Identity is back a new customer can sign up and the old session still works. (Signing in or up is what is lost while it is away, and a service that *starts* while Identity is away answers `401` until it is back, see [known limitations](#hardening-and-known-limitations).) |
 | The gateway is killed | The gateway container is killed after an order is placed: nothing answers at the front door; when it is back, the customer whose session it cannot use any more is signed in again with no password (Identity still recognises the browser) and finds the order `Confirmed`, charged once. A restart ends every session, so the test signs the two customers that the other tests share back in. |
 
 CI runs it in the **Compose stack and end-to-end test** job, right after the containers are up, with the throw-away values of `.env.example` and a higher sign-up limit (the tests create several accounts from one address). Compose starts the payment provider in "always succeeds" mode (`Testing__ForcePaymentSuccess`), so a failure here means a broken system, not a random bank decline (the one decline the tests provoke is an order above the provider's 10,000 limit). To run it yourself:
@@ -1525,7 +1525,7 @@ Every service but the gateway can run several copies, and the Kubernetes manifes
 | Identity | 2 | Signing keys, key ring and grants are in PostgreSQL, so every copy issues and accepts the same tokens. Copies that start together take turns under a lock (migrations, roles, first administrator). |
 | **Gateway** | **1** | It keeps the login cookie's encryption keys in its own memory, so a second copy could not read the first one's cookies. A shared key store would be a new dependency of the front door, which is more risk than one pod restarting in seconds. A restart signs the customers out; they sign in again. |
 
-The data stores are one instance each ([known limitations](#production-hardening-and-known-limitations)). Under Compose, Order is the service set up for `--scale` (it publishes no host port):
+The data stores are one instance each ([known limitations](#hardening-and-known-limitations)). Under Compose, Order is the service set up for `--scale` (it publishes no host port):
 
 ```bash
 # Scale to 3 instances
@@ -1548,7 +1548,7 @@ docker-compose logs order | findstr "acquired lock"
 
 ## Kubernetes Deployment
 
-Full manifests live in `k8s/`. They deploy the images the CI/CD workflow publishes to GHCR with production orchestration: auto-scaling, self-healing, rolling updates, resource limits, containers that run unprivileged, and network policies.
+Full manifests live in `k8s/`. They deploy the images the CI/CD workflow publishes to GHCR with the orchestration Kubernetes provides: auto-scaling, self-healing, rolling updates, resource limits, containers that run unprivileged, and network policies.
 
 | Path | What |
 |---|---|
@@ -1794,7 +1794,7 @@ The security headers (see [Security notes](#security-notes)) come from the gatew
 
 ---
 
-## Production Hardening and Known Limitations
+## Hardening and Known Limitations
 
 What has been hardened, and what is known to be missing.
 
@@ -1865,9 +1865,3 @@ The script checks that all five files are there and readable before it changes a
 **The rehearsal.** A backup nobody has restored is a hope. CI's Compose job, after the end-to-end tests have filled every database, stops the services, counts the rows of every table, backs up, **removes the PostgreSQL container and its volume**, starts a new empty PostgreSQL, restores, and fails unless every table holds the same number of rows again; then it starts the services on the restored data and places an order (`.github/scripts/restore-drill.sh`).
 
 What is *not* here, on purpose: a schedule, a copy kept somewhere else, and encryption. A backup that sits on the disk it protects is lost with it, so copy `backups/` to storage that is not the same machine (and encrypt it there), and run the script from cron or a Kubernetes `CronJob`, for example `0 2 * * * cd /srv/shopeasy && bash ops/backup.sh`. Anything finer than a daily dump (losing minutes, not hours) needs continuous archiving of PostgreSQL's write-ahead log, which a managed PostgreSQL service provides as point-in-time recovery; it is what to use in production instead of these scripts.
-
----
-
-## License
-
-MIT
