@@ -1240,7 +1240,7 @@ Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new p
 | **Storefront (lint, types, tests, build)** | `src/Web/ShopEasy.Web` with Node 22: `npm ci` (exactly what `package-lock.json` says), ESLint, `tsc`, the Vitest tests with their coverage floor, the production build, and a **Trivy** scan of `package-lock.json` (development tools included; HIGH or CRITICAL with a fix fails the job; `npm audit` is not used because on a runner it waits five minutes for npm's advisory service and then fails). Needs no other service. |
 | **Build and test** | `dotnet restore/build` (Release) and all 1008 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 86 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
 | **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, they take the shared ConfigMap (so a setting changed there reaches every service), third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
-| **Compose stack and end-to-end test** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. Last, it runs the [end-to-end test](#end-to-end-test) against those containers: a customer signs up, signs in, buys something and the order is confirmed, which no unit test can show because it needs every service, the broker and the databases working together. After that it opens the storefront in a real browser ([Browser tests](#storefront)). |
+| **Compose stack and end-to-end test** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. Last, it runs the [end-to-end test](#end-to-end-test) against those containers: a customer signs up, signs in, buys something and the order is confirmed, which no unit test can show because it needs every service, the broker and the databases working together. After that it opens the storefront in a real browser ([Browser tests](#storefront)), and rehearses a disaster: it backs the databases up, throws the PostgreSQL container and its volume away, restores into a new empty one, checks that every table holds the same number of rows and places an order on the restored data ([Backups and disaster recovery](#backups-and-disaster-recovery)). |
 | **Image scan** (one job per service) | Builds the service image and scans it with **Trivy**, run from its official image, pinned to a version (bump it by hand): the operating-system packages and the .NET runtime of the base image as well as the application. A vulnerability that is **HIGH or CRITICAL and has a fix fails the job**; one without a fix yet does not. The Dockerfiles run `apt-get upgrade`, so an image has Debian's security fixes even when Microsoft has not rebuilt the base image yet. The scan and the publish step build without the layer cache, so an image always has the fixes Debian has published, not those of the day a cached layer was made. A finding that has to be accepted goes into `.trivyignore` with the reason and a date to look at it again. A new CVE with a fix can turn this red without any change in the code: re-run the job (the base image tag is rebuilt when Microsoft releases a fix) or accept the finding. |
 | **CI passed** | One aggregate status for the jobs above (a skipped job counts as passed) — the check to require in branch protection. |
 
@@ -1417,9 +1417,10 @@ ShopEasy/
 ├── .github/
 │   ├── workflows/ci.yml           # CI (change detection, build, tests, deployment-file checks, build and start the stack) + CD (publish to GHCR)
 │   ├── workflows/codeql.yml       # CodeQL code scanning (C#)
-│   ├── scripts/                   # Dockerfile / Kubernetes / running-container rules the CI enforces
+│   ├── scripts/                   # Dockerfile / Kubernetes / running-container rules the CI enforces, and the restore rehearsal
 │   └── dependabot.yml
 ├── postgres-init.sql              # creates the 5 databases
+├── ops/                           # backup.sh and restore.sh (see "Backups and disaster recovery")
 ├── prometheus.yml
 ├── prometheus-rules.yml           # alert rules (+ prometheus-rules.test.yml: their tests)
 ├── grafana/provisioning/          # auto-provisioned dashboards
@@ -1593,6 +1594,37 @@ What has been hardened, and what is known to be missing.
 - The Swagger UIs and the metrics are unauthenticated, so they are kept out of reach instead. `Swagger__Enabled` is `false` in the code and in Kubernetes, and only the local Compose stack turns it on. The metrics are served on their own port (`9091`), which Compose does not publish; in Kubernetes the default-deny network policy closes it until you allow your Prometheus to reach it. The metrics include sales figures.
 - Traffic between the services is plain HTTP inside the network, so bearer tokens (a user's lasts one hour, a service's 15 minutes) cross it in the clear. Network policies limit who can reach whom; TLS on every service or a mesh with mutual TLS is needed to protect the tokens in transit.
 - The gateway forwards one access token that names every API in its audience, so a service that receives it could replay it against another API. Scopes and roles still limit what it can do there, but only separate tokens per API (token exchange) would close that.
+
+
+### Backups and disaster recovery
+
+What is lost if a disk dies or a volume is deleted, and how to get it back. Two scripts do it, and CI runs them on every change.
+
+| Data | Where | Backed up? | If it is lost |
+|---|---|---|---|
+| Orders, payments, stock, products, customers, and Identity's signing keys | the five PostgreSQL databases | **yes**, `ops/backup.sh` | restore the last backup (below) |
+| Messages in flight | RabbitMQ | no | nothing to restore: a command that was lost is sent again once the 2-minute saga timeout passes, and every consumer ignores a repeat |
+| Cached products and stock | Redis | no | nothing: it fills again from the databases |
+| History of metrics, logs and traces | Prometheus (a volume), Seq, Jaeger | no | the history is gone, no business data is |
+| Settings and secrets | `.env`, the Kubernetes Secret | kept by you, never in the repository | create them again from `.env.example` and your secret store |
+
+**Take a backup.** `bash ops/backup.sh` writes one compressed `pg_dump` file per database into `backups/<date and time>/` (git-ignored: it holds customers' data). The services can keep running: `pg_dump` reads a consistent snapshot of each database. Each file is read back before it is accepted, so a dump that stopped half way is never kept. The databases are dumped one after the other, **Orders first**, so Inventory and Payment (which the saga writes after Order) are never older than Order: a restore can leave an order a step behind, which its saga timeout then settles like any lost message, but never ahead of the payment it waits for. On Kubernetes: `PG_EXEC="kubectl -n shopeasy exec -i deploy/postgres --" bash ops/backup.sh`.
+
+**Restore.** Stop the services, restore, start the services:
+
+```bash
+docker compose stop identity product inventory payment order gateway
+bash ops/restore.sh backups/20261028T020000Z          # asks you to type "restore"; --yes skips the question
+docker compose up -d identity product inventory payment order gateway
+```
+
+The script checks that all five files are there and readable before it changes anything, and restores each database in one transaction, so a failing restore leaves that database as it was. If the PostgreSQL volume itself is gone, start PostgreSQL first (`docker compose up -d postgres`: its init script creates the empty databases), then restore.
+
+**What it costs.** *Recovery point* (how much work can be lost) is the age of the last backup: a nightly backup loses up to a day of orders. *Recovery time* (how long until the shop is back) is the restore plus the start of the services: the rehearsal prints the restore time (seconds for the test data; it grows with the size of the databases).
+
+**The rehearsal.** A backup nobody has restored is a hope. CI's Compose job, after the end-to-end tests have filled every database, stops the services, counts the rows of every table, backs up, **removes the PostgreSQL container and its volume**, starts a new empty PostgreSQL, restores, and fails unless every table holds the same number of rows again; then it starts the services on the restored data and places an order (`.github/scripts/restore-drill.sh`).
+
+What is *not* here, on purpose: a schedule, a copy kept somewhere else, and encryption. A backup that sits on the disk it protects is lost with it, so copy `backups/` to storage that is not the same machine (and encrypt it there), and run the script from cron or a Kubernetes `CronJob`, for example `0 2 * * * cd /srv/shopeasy && bash ops/backup.sh`. Anything finer than a daily dump (losing minutes, not hours) needs continuous archiving of PostgreSQL's write-ahead log, which a managed PostgreSQL service provides as point-in-time recovery; it is what to use in production instead of these scripts.
 
 ---
 

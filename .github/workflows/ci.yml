@@ -392,9 +392,28 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: end-to-end-results
-          path: TestResults/end-to-end/
+          path: |
+            TestResults/end-to-end/
+            TestResults/after-restore/
           if-no-files-found: ignore
           retention-days: 14
+
+      # Data can be lost (a deleted volume, a dead disk), and then only a backup helps. This takes
+      # one of every database the tests have just filled, throws the PostgreSQL container and its
+      # volume away, restores into a new empty one and compares every table row count; the order
+      # below is then placed on the restored data. See "Backups and disaster recovery" in the README.
+      - name: Disaster rehearsal (back up, lose the databases, restore, compare)
+        run: bash .github/scripts/restore-drill.sh
+
+      - name: End-to-end test on the restored data (a customer signs up and buys)
+        run: |
+          dotnet test src/Tests/ShopEasy.EndToEndTests \
+            --configuration Release --no-build \
+            --filter "FullyQualifiedName~OrderJourneyTests" \
+            --logger "trx;LogFileName=after-restore.trx" \
+            --results-directory TestResults/after-restore
+          # a filter that matches nothing would pass without running anything
+          grep -q 'UnitTestResult' TestResults/after-restore/after-restore.trx
 
       # Last, because it recreates the Product container with Swagger switched off
       - name: Swagger UI follows its setting

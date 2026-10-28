@@ -33,3 +33,6 @@ coverage/
 # OS
 .DS_Store
 Thumbs.db
+
+# Database backups (ops/backup.sh): they hold customers' data, so they are never committed
+backups/
