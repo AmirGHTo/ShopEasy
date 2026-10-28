@@ -148,3 +148,117 @@ tests:
       - eval_time: 25m
         alertname: PaymentsDeclinedHigh
         exp_alerts: []
+
+  - interval: 1m
+    name: a service that cannot be scraped raises ServiceDown, one that can does not
+    input_series:
+      - series: up{job="shopeasy-payment", instance="payment:9091"}
+        values: "1 1 1 0 0 0 0 0 0 0"
+      - series: up{job="shopeasy-order", instance="order:9091"}
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: shopeasy-payment
+              instance: payment:9091
+            exp_annotations:
+              summary: shopeasy-payment cannot be scraped
+              description: The service is down, or its metrics port (payment:9091) cannot be reached. Look at its health check and its log first.
+
+  - interval: 1m
+    name: many server errors at the gateway raise ShopServerErrorsHigh
+    input_series:
+      - series: http_requests_received_total{service="Gateway", code="200"}
+        values: "0+60x30"
+      - series: http_requests_received_total{service="Gateway", code="500"}
+        values: "0+10x30"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ShopServerErrorsHigh
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ShopServerErrorsHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: More than 2% of the gateway's answers in the last 10 minutes were server errors
+              description: '14.29% of the answers were 5xx. The "HTTP Error Rate" panel of the ShopEasy Overview dashboard shows where they come from.'
+
+  - interval: 1m
+    name: a few server errors, client errors and a quiet gateway raise nothing
+    input_series:
+      # 1 error in 101 answers; a rate limit (429) is not an error of the shop
+      - series: http_requests_received_total{service="Gateway", code="200"}
+        values: "0+100x30"
+      - series: http_requests_received_total{service="Gateway", code="500"}
+        values: "0+1x30"
+      - series: http_requests_received_total{service="Gateway", code="429"}
+        values: "0+50x30"
+      # another service's errors are not the gateway's
+      - series: http_requests_received_total{service="Order", code="500"}
+        values: "0+100x30"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ShopServerErrorsHigh
+        exp_alerts: []
+
+  - interval: 1m
+    name: a gateway with only a handful of requests, all failing, raises nothing
+    input_series:
+      - series: http_requests_received_total{service="Gateway", code="200"}
+        values: "0x30"
+      - series: http_requests_received_total{service="Gateway", code="500"}
+        values: "0x18 5x12"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ShopServerErrorsHigh
+        exp_alerts: []
+
+  - interval: 1m
+    name: slow answers raise ShopSlow, fast ones do not
+    input_series:
+      # every minute 100 requests, none faster than 2 s: the 95th percentile is in the 2-4 s bucket
+      - series: http_request_duration_seconds_bucket{service="Gateway", le="0.5"}
+        values: "0x30"
+      - series: http_request_duration_seconds_bucket{service="Gateway", le="2"}
+        values: "0x30"
+      - series: http_request_duration_seconds_bucket{service="Gateway", le="4"}
+        values: "0+100x30"
+      - series: http_request_duration_seconds_bucket{service="Gateway", le="+Inf"}
+        values: "0+100x30"
+      # the same kind of series for a service that is fast
+      - series: http_request_duration_seconds_bucket{service="Order", le="0.5"}
+        values: "0+100x30"
+      - series: http_request_duration_seconds_bucket{service="Order", le="+Inf"}
+        values: "0+100x30"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ShopSlow
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ShopSlow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: 1 request in 20 takes longer than 2 seconds
+              description: The 95th percentile of the gateway's answer time over the last 10 minutes is 3.9s.
+
+  - interval: 1m
+    name: fast answers raise nothing
+    input_series:
+      - series: http_request_duration_seconds_bucket{service="Gateway", le="0.5"}
+        values: "0+100x30"
+      - series: http_request_duration_seconds_bucket{service="Gateway", le="+Inf"}
+        values: "0+100x30"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ShopSlow
+        exp_alerts: []
