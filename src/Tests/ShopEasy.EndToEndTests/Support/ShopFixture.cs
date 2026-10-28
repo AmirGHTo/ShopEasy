@@ -19,6 +19,25 @@ public sealed class ShopFixture : IAsyncLifetime
         Neighbour = await Shopper.SignUpAsync("neighbour");
     }
 
+    // The gateway keeps its sessions in memory, so when it is restarted every customer is signed out,
+    // these two as well. They sign in again the way a browser does (Identity still knows them), so that
+    // a test that restarts the gateway does not leave the tests after it without a session. Best effort:
+    // the test that did it reports its own failure.
+    public async Task SignBackInAsync()
+    {
+        foreach (var shopper in new[] { Customer, Neighbour })
+        {
+            try
+            {
+                await shopper.SignInToTheShopAsync();
+            }
+            catch (Exception)
+            {
+                // reported by the tests that find themselves without a session
+            }
+        }
+    }
+
     public Task DisposeAsync()
     {
         Customer?.Dispose();
