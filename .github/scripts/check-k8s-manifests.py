@@ -11,6 +11,8 @@ kubeconform only checks that the YAML is *valid*; these are the deployment rules
     no Linux capabilities;
   * they take the shared ConfigMap (`envFrom`), because the settings an operator is told to change
     there (cookie security, forwarded headers, sign-up, ...) only reach a pod that reads it;
+  * a service that runs more than one replica has a PodDisruptionBudget (a node drain may not take
+    all of them at once) and is spread over the nodes there are;
   * third-party images carry an explicit version tag (not `latest`);
   * the namespace denies ingress by default.
 
@@ -27,6 +29,9 @@ PINNED = re.compile(r"ghcr\.io/[a-z0-9._-]+/shopeasy-[a-z]+:sha-[0-9a-f]{7,40}")
 errors: list[str] = []
 seen_apps: set[str] = set()
 default_deny = False
+replicated: dict[str, tuple[dict, dict]] = {}   # service -> (pod labels, pod spec), when it runs more than one replica
+autoscaled: set[str] = set()                     # Deployments an autoscaler may grow
+budgets: list[dict] = []                         # the selector of every PodDisruptionBudget
 
 for doc in yaml.safe_load_all(sys.stdin):
     if not doc:
@@ -37,10 +42,17 @@ for doc in yaml.safe_load_all(sys.stdin):
         spec = doc["spec"]
         default_deny = spec.get("podSelector") == {} and "Ingress" in spec.get("policyTypes", [])
 
+    if kind == "HorizontalPodAutoscaler":
+        autoscaled.add(doc["spec"]["scaleTargetRef"]["name"])
+    if kind == "PodDisruptionBudget":
+        budgets.append(doc["spec"].get("selector", {}).get("matchLabels", {}))
+
     if kind != "Deployment":
         continue
 
     pod = doc["spec"]["template"]["spec"]
+    if name in APPS and doc["spec"].get("replicas", 1) > 1:
+        replicated[name] = (doc["spec"]["template"]["metadata"]["labels"], pod)
     for container in pod["containers"]:
         where = f"{name}/{container['name']}"
         image = container["image"]
@@ -69,6 +81,13 @@ for doc in yaml.safe_load_all(sys.stdin):
         elif ":" not in image.rsplit("/", 1)[-1] or image.endswith(":latest"):
             errors.append(f"{where}: third-party image '{image}' needs an explicit version tag")
 
+for name in sorted(set(replicated) | (autoscaled & APPS)):
+    labels, pod = replicated.get(name, ({"app": name}, {}))
+    if not any(selector and selector.items() <= labels.items() for selector in budgets):
+        errors.append(f"{name}: runs several replicas, so it needs a PodDisruptionBudget that selects its pods")
+    if name in replicated and not pod.get("topologySpreadConstraints"):
+        errors.append(f"{name}: runs several replicas, so it needs topologySpreadConstraints (spread over the nodes)")
+
 for missing in sorted(APPS - seen_apps):
     errors.append(f"no Deployment for service '{missing}' in the rendered manifests")
 if not default_deny:
@@ -79,4 +98,5 @@ if errors:
         print(f"::error::{message}")
     sys.exit(1)
 
-print(f"OK: {len(seen_apps)} service Deployments pinned, non-root, read-only, on the shared ConfigMap; ingress denied by default")
+print(f"OK: {len(seen_apps)} service Deployments pinned, non-root, read-only, on the shared ConfigMap; "
+      f"{len(replicated)} replicated ones with a disruption budget and spread; ingress denied by default")
