@@ -17,7 +17,7 @@ namespace ShopEasy.EndToEndTests;
 // Each test restores what it broke even when it fails (await using), so the next test starts on a
 // whole stack. They run as their own customer, because the order budget of the other two is used.
 [Collection(ShopCollection.Name)]
-public class OutageRecoveryTests : IAsyncLifetime
+public class OutageRecoveryTests(ShopFixture shop) : IAsyncLifetime
 {
     // Long enough for the Order service to find the broker again (its own check runs every few seconds),
     // for the consumers to reconnect, and for the saga to run to the end
@@ -84,6 +84,41 @@ public class OutageRecoveryTests : IAsyncLifetime
                 "the stock to be reserved while the payment service is down", TimeSpan.FromSeconds(45));
             var waiting = await _customer.GetAsync($"/api/orders/{orderId}");
             waiting.Json.Text("statusName").Should().Be("Pending", "it cannot be confirmed without a payment: {0}", waiting);
+        }
+
+        await AssertFinishedOnceAsync(orderId, total, Catalog.Webcam, before);
+    }
+
+    // The broker has to keep what it holds. A command for a service that is down waits in a queue; if the
+    // broker is restarted meanwhile and comes back empty, the command is gone and the saga can only time
+    // out and cancel the order. The same loss happens in a smaller way when a restarted broker is empty
+    // for the moments before each service has declared its queue again: a command sent in those moments
+    // finds no queue and is dropped. Here the queue is durable and the broker keeps its data on a volume,
+    // so the command is still there when Payment is back.
+    [Fact]
+    public async Task ACommandWaitingInTheBrokersQueue_SurvivesARestartOfTheBroker()
+    {
+        var before = await Catalog.StockAsync(_customer, Catalog.Webcam);
+        string orderId;
+        decimal total;
+
+        await using (await Chaos.TakeDownAsync("payment", crash: true))
+        {
+            var placed = await PlaceAsync(Catalog.Webcam);
+            orderId = placed.Json.Text("id");
+            total = placed.Json.Number("totalAmount");
+
+            // The stock is reserved and the command to take the payment is in the queue of the service
+            // that is not there
+            await Wait.UntilAsync(
+                () => Catalog.StockAsync(_customer, Catalog.Webcam),
+                stock => stock.Available == before.Available - 1,
+                "the stock to be reserved while the payment service is down", TimeSpan.FromSeconds(45));
+
+            await using (await Chaos.TakeDownAsync("rabbitmq"))
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5));
+            }
         }
 
         await AssertFinishedOnceAsync(orderId, total, Catalog.Webcam, before);
@@ -159,6 +194,101 @@ public class OutageRecoveryTests : IAsyncLifetime
             await AssertConfirmedAndPaidAsync(id, total);
         await AssertUnitsLeftTheShelfAsync(Catalog.Keyboard, keyboards, keyboardsOrdered);
         await AssertUnitsLeftTheShelfAsync(Catalog.Webcam, webcams, webcamsOrdered);
+    }
+
+    // Redis is only a cache of products and stock. Taking it away must cost nothing but speed: the
+    // same answers come from the databases, and an order goes through.
+    [Fact]
+    public async Task WhileRedisIsDown_TheShopStillShowsProductsAndStock_AndTakesOrders()
+    {
+        var before = await Catalog.StockAsync(_customer, Catalog.Desk);
+        var price = await Catalog.PriceAsync(_customer, Catalog.Desk);
+        string orderId;
+
+        await using (await Chaos.TakeDownAsync("redis"))
+        {
+            (await Catalog.PriceAsync(_customer, Catalog.Desk)).Should().Be(price);
+            (await Catalog.StockAsync(_customer, Catalog.Desk)).Should().Be(before);
+
+            var placed = await PlaceAsync(Catalog.Desk);
+            orderId = placed.Json.Text("id");
+
+            // finished while Redis is still away: it is not needed for the order to move
+            await AssertConfirmedAndPaidAsync(orderId, placed.Json.Number("totalAmount"));
+        }
+
+        await AssertUnitsLeftTheShelfAsync(Catalog.Desk, before, units: 1);
+    }
+
+    // Identity issues tokens and signs people in. A service that has seen its signing keys keeps
+    // checking tokens without it, the gateway holds the customer's session, and the Order service
+    // keeps the token it uses towards Inventory for its lifetime. So a customer who is signed in
+    // goes on shopping, and what is lost is signing in or up.
+    [Fact]
+    public async Task WhileIdentityIsDown_ACustomerWhoIsSignedInKeepsShopping_AndSigningUpWorksAgainOnceItIsBack()
+    {
+        // The Order service fetches its token the first time it needs one: this order does that, as
+        // any shop that has been running for a minute has done
+        var warmUp = await PlaceAsync(Catalog.Headphones);
+        await AssertConfirmedAndPaidAsync(warmUp.Json.Text("id"), warmUp.Json.Number("totalAmount"));
+        var before = await Catalog.StockAsync(_customer, Catalog.Headphones);
+        string orderId;
+
+        await using (await Chaos.TakeDownAsync("identity"))
+        {
+            (await _customer.GetAsync("/api/orders")).Status.Should().Be(HttpStatusCode.OK);
+            (await Catalog.StockAsync(_customer, Catalog.Headphones)).Should().Be(before);
+
+            var placed = await PlaceAsync(Catalog.Headphones);
+            orderId = placed.Json.Text("id");
+            await AssertConfirmedAndPaidAsync(orderId, placed.Json.Number("totalAmount"));
+        }
+
+        await AssertUnitsLeftTheShelfAsync(Catalog.Headphones, before, units: 1);
+
+        await Wait.UntilAnswersAsync(new Uri(Stack.Identity, "/health/live"), "Identity to answer again");
+        using var newcomer = await Shopper.SignUpAsync("after-identity");
+        (await newcomer.GetAsync("/api/orders")).Status.Should().Be(HttpStatusCode.OK);
+        // and the session that was open all the time is still good
+        (await _customer.GetAsync($"/api/orders/{orderId}")).Status.Should().Be(HttpStatusCode.OK);
+    }
+
+    // The gateway keeps the customer's session (the encryption keys of its cookie) in its own
+    // memory, so a crash ends every session. What is promised is that nothing else is lost: the
+    // order finishes behind it, and the customer, whose browser Identity still recognises, is signed
+    // in again by one visit to the sign-in address, with no password.
+    [Fact]
+    public async Task WhenTheGatewayIsKilled_NothingBehindItIsLost_AndTheCustomerIsSignedInAgainWithoutAPassword()
+    {
+        var before = await Catalog.StockAsync(_customer, Catalog.Chair);
+        var placed = await PlaceAsync(Catalog.Chair);
+        var orderId = placed.Json.Text("id");
+
+        try
+        {
+            await using (await Chaos.TakeDownAsync("gateway", crash: true))
+            {
+                var refused = async () => await _customer.GetAsync("/api/v1/products");
+                await refused.Should().ThrowAsync<HttpRequestException>("nothing answers at the front door");
+            }
+
+            await Wait.UntilAnswersAsync(new Uri(Stack.Gateway, "/health"), "the gateway to answer again");
+
+            // The new gateway cannot read the old cookie (it keeps its keys in memory where it has no
+            // writable home, as in the containers), so the customer is a visitor again. Where the keys
+            // happen to survive, the cookie is dropped here, so that this is what is tested anywhere.
+            _customer.LoseTheShopSession();
+            (await _customer.GetAsync("/account/me")).Status.Should().Be(HttpStatusCode.Unauthorized);
+            await _customer.SignInToTheShopAsync();
+
+            await AssertConfirmedAndPaidAsync(orderId, placed.Json.Number("totalAmount"));
+            await AssertUnitsLeftTheShelfAsync(Catalog.Chair, before, units: 1);
+        }
+        finally
+        {
+            // the two customers every other test shares lost their sessions with this customer's
+            await shop.SignBackInAsync();
+        }
     }
 
     private async Task<Reply> PlaceAsync(Guid productId)

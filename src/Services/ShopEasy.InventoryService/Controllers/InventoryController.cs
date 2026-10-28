@@ -4,7 +4,6 @@ using Microsoft.EntityFrameworkCore;
 using ShopEasy.InventoryService.Data;
 using ShopEasy.InventoryService.Metrics;
 using ShopEasy.Shared.Services;
-using StackExchange.Redis;
 using ShopEasy.Shared.Security;
 
 namespace ShopEasy.InventoryService.Controllers;
@@ -17,20 +16,17 @@ public class InventoryController : ControllerBase
     private readonly InventoryDbContext _db;
     private readonly IInventoryLocking _locking;
     private readonly CacheService _cache;
-    private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<InventoryController> _logger;
 
     public InventoryController(
         InventoryDbContext db,
         IInventoryLocking locking,
         CacheService cache,
-        IConnectionMultiplexer redis,
         ILogger<InventoryController> logger)
     {
         _db = db;
         _locking = locking;
         _cache = cache;
-        _redis = redis;
         _logger = logger;
     }
 

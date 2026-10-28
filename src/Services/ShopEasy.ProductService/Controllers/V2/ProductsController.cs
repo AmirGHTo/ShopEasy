@@ -11,12 +11,9 @@ namespace ShopEasy.ProductService.Controllers.V2;
 [ApiVersion("2.0")]
 [Route("api/v{version:apiVersion}/products")]
 [AllowAnonymous] // the public catalog, read-only
-public class ProductsController(
-    ProductDbContext db,
-    ILogger<ProductsController> logger) : ControllerBase
+public class ProductsController(ProductDbContext db) : ControllerBase
 {
     private readonly ProductDbContext _db = db;
-    private readonly ILogger<ProductsController> _logger = logger;
 
     [HttpGet]
     public async Task<IActionResult> GetAll()

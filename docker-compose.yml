@@ -118,6 +118,8 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - ./prometheus-rules.yml:/etc/prometheus/prometheus-rules.yml
+      # the history (Prometheus keeps 15 days by default) survives a restart or a re-created container
+      - prometheus-data:/prometheus
     networks:
       - shopeasy-net
     depends_on:
@@ -173,8 +175,12 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?Set RABBITMQ_USER in .env}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
       RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?Set RABBITMQ_ERLANG_COOKIE in .env}
-    tmpfs:
-      - /var/lib/rabbitmq
+    # The broker's queues, bindings and messages live here. They have to outlive the container: on a
+    # tmpfs a restarted broker comes back empty, and a command that was waiting in a queue (or sent
+    # before its consumer has declared the queue again) is gone. RABBITMQ_DEFAULT_USER/PASS are read
+    # only when this volume is empty (README, "Changing RABBITMQ_PASSWORD").
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
@@ -468,6 +474,8 @@ services:
 # ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   postgres-data:
+  rabbitmq-data:
+  prometheus-data:
 
 # ── Network ───────────────────────────────────────────────────────────────────
 networks:

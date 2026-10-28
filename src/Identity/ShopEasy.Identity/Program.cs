@@ -150,17 +150,18 @@ try
         try
         {
             logger.LogInformation("Applying database migrations...");
-            // Replicas starting together take turns: the first migrates, the others wait for it
+            // Replicas starting together take turns: the first migrates and creates the roles and the
+            // first administrator, the others wait for it and find them there
             await MigrationLock.RunAsync(db.Database.GetConnectionString()!, nameof(ApplicationDbContext), async () =>
             {
                 await db.Database.MigrateAsync();
                 // Demo users are opt-in (Seed:Enabled=true) — never seed known credentials in production
                 if (app.Configuration.GetValue<bool>("Seed:Enabled"))
                     await DatabaseSeeder.SeedUsersAsync(scope.ServiceProvider);
-            }, logger);
 
-            // The roles, and the first administrator when one is configured and none exists yet
-            await AdminBootstrap.RunAsync(scope.ServiceProvider);
+                // The roles, and the first administrator when one is configured and none exists yet
+                await AdminBootstrap.RunAsync(scope.ServiceProvider);
+            }, logger);
             logger.LogInformation("Database migrations applied.");
         }
         catch (Exception ex)

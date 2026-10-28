@@ -25,6 +25,8 @@ public sealed class BrowserCookies(HttpMessageHandler inner) : DelegatingHandler
         return response;
     }
 
+    public void Forget(Func<string, bool> named) => _jar.RemoveAll(c => named(c.Name));
+
     private void Remember(string setCookie, string requestPath)
     {
         var parts = setCookie.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);

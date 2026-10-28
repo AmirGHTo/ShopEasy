@@ -4,7 +4,7 @@ metadata:
   name: inventory
   namespace: shopeasy
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: inventory
@@ -14,6 +14,14 @@ spec:
         app: inventory
     spec:
       automountServiceAccountToken: false
+      # replicas on one node would be lost together with it: spread them over the nodes there are
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: inventory
       imagePullSecrets:
         # Only needed while the GHCR packages are private (see the README); harmless when public
         - name: ghcr-pull
@@ -97,3 +105,15 @@ spec:
     - name: grpc
       port: 8090
       targetPort: 8090
+---
+# A node drain (an upgrade, a repair) may take down one replica at a time, never the last one
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: inventory-pdb
+  namespace: shopeasy
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: inventory

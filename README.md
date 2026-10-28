@@ -32,19 +32,20 @@ transactional messaging and an idempotent API, designed to stay correct when par
 3. [The Services](#the-services)
 4. [Technology Stack](#technology-stack)
 5. [Patterns & Mechanisms Explained](#patterns--mechanisms-explained)
-6. [Getting Started](#getting-started)
-7. [Configuration & Secrets](#configuration--secrets)
-8. [How to Use It](#how-to-use-it)
-9. [Order API](#order-api)
-10. [Inventory Stock Model](#inventory-stock-model)
-11. [Developer Portal & Monitoring](#developer-portal--monitoring)
-12. [Testing](#testing)
-13. [CI/CD](#cicd)
-14. [Horizontal Scaling](#horizontal-scaling)
-15. [Kubernetes Deployment](#kubernetes-deployment)
-16. [Project Structure](#project-structure)
-17. [Troubleshooting](#troubleshooting)
-18. [Production Hardening and Known Limitations](#production-hardening-and-known-limitations)
+6. [Reliability](#reliability)
+7. [Getting Started](#getting-started)
+8. [Configuration & Secrets](#configuration--secrets)
+9. [How to Use It](#how-to-use-it)
+10. [Order API](#order-api)
+11. [Inventory Stock Model](#inventory-stock-model)
+12. [Developer Portal & Monitoring](#developer-portal--monitoring)
+13. [Testing](#testing)
+14. [CI/CD](#cicd)
+15. [Horizontal Scaling](#horizontal-scaling)
+16. [Kubernetes Deployment](#kubernetes-deployment)
+17. [Project Structure](#project-structure)
+18. [Troubleshooting](#troubleshooting)
+19. [Production Hardening and Known Limitations](#production-hardening-and-known-limitations)
 
 ---
 
@@ -59,7 +60,7 @@ There is no distributed-transaction coordinator and no shared database. An **orc
 | **Correct order processing** | A saga coordinates Order, Inventory and Payment. A declined payment releases the stock, a late payment is refunded, and an order that stops making progress is recovered by a timeout service instead of hanging. |
 | **Safe under retries and duplicates** | Transactional outbox and inbox, idempotent consumers and an `Idempotency-Key` on the public order API: delivering or sending something twice has the effect of once. |
 | **No overselling** | Stock is reserved under row-level locks and tracked in a ledger (reserve, then commit or release), so concurrent orders on any instance cannot take the same unit twice. |
-| **Resilient** | Database and network outages are ridden out with retry policies and bounded waits. Rate limits, circuit breakers, health probes and dead-letter tooling cover the rest. |
+| **Resilient** | Database and network outages are ridden out with retry policies and bounded waits. Rate limits, circuit breakers, health probes and dead-letter tooling cover the rest. The whole picture, and how it is tested, is in [Reliability](#reliability). |
 | **Secure by default** | OpenID Connect through a Backend-for-Frontend gateway (tokens never reach the browser), JWT validation in every service, no secrets in the repository, unprivileged read-only containers and default-deny network policies. |
 | **Observable** | One correlation id across HTTP and messages, structured logs, distributed traces, Prometheus metrics, Grafana dashboards, and built-in saga, outbox and dead-letter monitors. |
 | **Deployable** | Docker Compose for development and Kubernetes manifests with pinned images. GitHub Actions builds, tests against real PostgreSQL and RabbitMQ, validates the deployment files, starts the stack and publishes the images. |
@@ -203,16 +204,16 @@ The saga state is saved before the next command is published, every handler acts
 | **Product** database | The product catalog |
 | **Identity** database | Users, signing keys, the Data Protection key ring and issued grants, shared by every Identity replica |
 | **Redis** | Product and stock cache (a cache only: nothing depends on it for correctness) |
-| **RabbitMQ** | Durable queues per consumer; messages that keep failing land in `*_error` queues, which the operations portal lists and can requeue |
+| **RabbitMQ** | Durable queues per consumer, kept on a volume so that they and the messages in them survive a restart of the broker; messages that keep failing land in `*_error` queues, which the operations portal lists and can requeue |
 
 ### Cross-cutting qualities
 
 | Quality | How it is achieved |
 |---|---|
 | **Consistency** | Saga with compensation, transactional outbox and inbox, row-level locking, idempotent consumers and an idempotent order API ([patterns 4 to 8](#4-saga-pattern-orchestration-based), [25](#25-idempotent-order-placement)) |
-| **Reliability** | Patient retries for outages, bounded database waits, deadlines, budgeted retries and circuit breakers on calls between services, dead-letter queues with requeue, liveness and readiness probes ([13](#13-resilience-polly), [24](#24-surviving-database-and-network-outages), [26](#26-resilient-calls-between-services)) |
+| **Reliability** | (the map: [Reliability](#reliability)) Patient retries for outages, bounded database waits, deadlines, budgeted retries and circuit breakers on calls between services, dead-letter queues with requeue, liveness and readiness probes ([13](#13-resilience-polly), [24](#24-surviving-database-and-network-outages), [26](#26-resilient-calls-between-services)) |
 | **Security** | OIDC with a BFF gateway, JWT validation per service, secrets only in `.env` or Kubernetes Secrets, non-root read-only containers, network policies ([Configuration & Secrets](#configuration--secrets)) |
-| **Scalability** | Order is stateless and scales horizontally (`--scale order=N`, or an autoscaler from 2 to 10 pods on Kubernetes); outbox rows are claimed with `SELECT … FOR UPDATE SKIP LOCKED`; Identity keeps its state in PostgreSQL ([Horizontal Scaling](#horizontal-scaling)) |
+| **Scalability** | Every service but the gateway runs as two or more copies on Kubernetes (Order from 2 to 10 and Product from 2 to 6 on an autoscaler; `--scale order=N` under Compose); outbox rows are claimed with `SELECT … FOR UPDATE SKIP LOCKED`; Identity keeps its state in PostgreSQL ([Horizontal Scaling](#horizontal-scaling)) |
 | **Observability** | Correlation id on every log line, trace and message; Seq, Jaeger, Prometheus and Grafana; saga, outbox and dead-letter monitors ([Developer Portal & Monitoring](#developer-portal--monitoring)) |
 | **Delivery** | CI gates every change; images are published to GHCR and pinned by commit; deployment files are validated against schema and security rules ([CI/CD](#cicd)) |
 
@@ -222,7 +223,7 @@ The saga state is saved before the next command is published, every handler acts
 |---|---|---|
 | **Use** | Local development and a single host | A cluster |
 | **What runs** | The six services plus PostgreSQL, RabbitMQ, Redis, Seq, Jaeger, Prometheus, Grafana, pgAdmin and Redis Insight | The six services plus PostgreSQL, RabbitMQ and Redis |
-| **Hardening** | Read-only root file system, no capabilities, non-root user, health-gated start order | The same, plus pinned `sha-<commit>` images, default-deny network policies and an autoscaler for Order |
+| **Hardening** | Read-only root file system, no capabilities, non-root user, health-gated start order | The same, plus pinned `sha-<commit>` images, default-deny network policies, two replicas of every service but the gateway (spread over the nodes, with disruption budgets) and autoscalers for Order and Product |
 | **Data stores** | Containers with a volume | Single-replica Deployments: use a managed service or an operator for production data |
 
 ---
@@ -469,7 +470,8 @@ Every service exposes `/health`, `/health/ready`, and `/health/live`. Used by Do
   - **Saga commands waiting for the broker:** `shopeasy_saga_commands_pending` is the number of saga commands saved in the Order database (the `OutboxMessage` table) that RabbitMQ has not taken yet, and `shopeasy_saga_command_oldest_pending_age_seconds` the age of the oldest (0 when there is none). Read by the timeout service every 30 seconds, like the gauges above. Normally a command waits well under a second; an age that keeps rising means the broker is unreachable (or the Order delivery service is stuck).
   - **Polling loops:** `shopeasy_background_loop_failed_passes_total{loop}` counts the passes of the saga orchestrator, saga timeout service, outbox delivery and dead-letter monitor (`loop` is `saga_orchestrator`, `saga_timeout_service`, `outbox_delivery_service` or `dead_letter_monitor`) that failed or were cancelled for taking too long. `shopeasy_background_loop_last_success_timestamp_seconds{loop}` is when each loop last completed a pass (it is set when the loop starts, too), so `time()` minus it is how long the loop has made no progress.
   - **Consistency:** `shopeasy_consistency_violations{rule}` is the number of settled orders that disagree with what Payment holds, by rule (pattern 27); it should be 0. `shopeasy_consistency_orders_checked_total` counts the orders compared.
-  - **Alert rules:** `prometheus-rules.yml` raises `OrderStuck`, `OrderFailed`, `StockMayHaveLeaked`, `OutboxBacklog`, `SagaCommandsNotSent` (a saga command has waited in the outbox for more than 2 minutes), `PollingLoopStalled` (a loop has completed no pass for 2 minutes), `OrderConsistencyViolated` (an order disagrees with its payment) and `PaymentsDeclinedHigh`; firing alerts are listed at http://localhost:9090/alerts. Sending them anywhere needs an Alertmanager, which is not part of this stack. `prometheus-rules.test.yml` checks each rule against made-up series (`promtool test rules prometheus-rules.test.yml`), and CI runs it.
+  - **The front door:** what a customer feels is what the gateway answers. `http_requests_received_total{service="Gateway"}` and `http_request_duration_seconds` give two measures, recorded by `prometheus-rules.yml` as `shopeasy:gateway_server_errors:ratio_10m` (the share of answers that were a 5xx in the last 10 minutes; a 4xx, the 429 of a rate limit included, is the system doing its job and does not count) and `shopeasy:gateway_request_duration_seconds:p95_10m` (the time within which 19 answers in 20 came). `ShopServerErrorsHigh` fires when the first is above 2% for 5 minutes (with at least 20 answers in the window, so a few failed requests on a quiet night say nothing) and `ShopSlow` when the second is above 2 seconds for 10 minutes. Prometheus keeps its history (15 days) in the `prometheus-data` volume, so a restart does not erase the evidence of what happened.
+  - **Alert rules:** `prometheus-rules.yml` raises `OrderStuck`, `OrderFailed`, `StockMayHaveLeaked`, `OutboxBacklog`, `SagaCommandsNotSent` (a saga command has waited in the outbox for more than 2 minutes), `PollingLoopStalled` (a loop has completed no pass for 2 minutes), `OrderConsistencyViolated` (an order disagrees with its payment), `PaymentsDeclinedHigh`, `ServiceDown` (Prometheus cannot scrape a service for a minute), `ShopServerErrorsHigh` and `ShopSlow` (see *The front door* above); firing alerts are listed at http://localhost:9090/alerts. Sending them anywhere needs an Alertmanager, which is not part of this stack. `prometheus-rules.test.yml` checks each rule against made-up series (`promtool test rules prometheus-rules.test.yml`), and CI runs it.
 
 ### 20. Server-Side Pricing & Request Validation
 
@@ -630,6 +632,192 @@ Each order is checked once, soon after it settled (a watermark moves forward; af
 | `LookbackMinutes` | 30 | The furthest back a pass goes; longer than settle plus interval |
 | `MaxOrdersPerPass` | 500 | Orders examined in one pass (1 to 5000); the rest follow at the next ones |
 
+
+## Reliability
+
+The aim: an order the shop has accepted is **never lost and never done twice**, money and stock always agree, a failure is either survived or undone safely, and whatever the system cannot put right by itself is noticed by a person. This section is the map of how the system gets there, checked against the Azure Well-Architected reliability guidance. It does not repeat the details: each row links to the pattern that explains it, and the last parts say how the claims are tested and what is not covered.
+
+### Words used here
+
+| Term | Meaning |
+|---|---|
+| **At-least-once delivery** | RabbitMQ would rather deliver a message twice than lose it, so every consumer has to expect copies. |
+| **Idempotent** | Doing it twice has the same effect as doing it once. A payment command handled twice charges once. |
+| **Outbox / inbox** | The *outbox* saves the message to send in the same database transaction as the change that caused it, and sends it afterwards: the change and its message exist together or not at all. The *inbox* records the messages a service has handled, so a copy is recognised and skipped. |
+| **Saga and compensation** | An order touches three services and three databases, so there is no single transaction. A *saga* walks through the steps; when one fails, *compensation* undoes the earlier ones (release the stock, refund the payment). |
+| **Transient failure** | One that goes away by itself: a database restarting, a timeout, a lock held for a moment. It is retried patiently. A failure that is not transient (a bug, a rule that cannot be met) is retried a few times and then parked for a person. |
+| **Deadline, retry budget, circuit breaker** | A *deadline* is how long a call may take. A *retry budget* limits how many extra requests retries may add. A *circuit breaker* stops calling a service that keeps failing, for a while. Together they stop one sick service from taking its callers down with it. |
+| **Back-pressure** | A consumer that is retrying one message takes no new ones, so a struggling dependency is not flooded. |
+| **Dead-letter (error) queue** | Where a message goes when it cannot be processed, so it waits for a person instead of being lost or blocking the queue. |
+| **Consistency check** | A job that compares what two services each believe and reports differences (banks call it reconciliation). |
+| **Chaos test** | A test that breaks something on purpose while the system works. *Stop* is a polite shutdown; *kill* is a crash that gives the service no chance to clean up. Kill is the one that finds bugs. |
+
+### Principles
+
+1. **Save first, send later.** Nothing is sent that was not saved, and nothing is saved without its message (the outboxes).
+2. **Assume every message arrives twice, late, or out of order.** Every consumer checks what it has already done and what state the order is in before it acts.
+3. **Every wait has a limit and every retry has a budget.** A slow dependency must cost a request a bounded time, not an unbounded one.
+4. **Tell a temporary failure from a permanent one.** Wait for the first; park the second.
+5. **Undo, never guess.** When an order cannot be finished it is compensated; a step that involves money is never abandoned on a guess, it is re-sent until it is confirmed.
+6. **Check the result, not only the work.** The services verify each step (the saga waits for the stock commit to be confirmed before it calls an order done), and the outcome is compared across services.
+7. **Make it visible, then prove it by breaking it.** Every unusual event is counted and the important ones raise an alert; the failure behaviour is tested against real PostgreSQL and real containers, not only mocks.
+
+### Checked against the Azure Well-Architected reliability guidance
+
+Microsoft's Azure Well-Architected Framework describes the reliability of a workload with [ten recommendations, RE:01 to RE:10](https://learn.microsoft.com/en-us/azure/well-architected/reliability/checklist), and [five design principles](https://learn.microsoft.com/en-us/azure/well-architected/reliability/principles). Little in it is specific to Azure, so it is used here as the audit of this system. The tables paraphrase each recommendation in a line (the linked pages have the exact text) and say how it is applied here and what is left. **Applied** means done and tested. **Applied, with limits** means done, and the limits are stated.
+
+| | The recommendation, in short | How it is applied here | Status |
+|---|---|---|---|
+| **RE:01** | Keep the design as simple and efficient as the goals allow; add nothing that is not needed. | No distributed-transaction coordinator and no shared database. Every mechanism is tied to a failure it handles ([What can go wrong](#what-can-go-wrong-and-what-happens)). What nothing uses was searched for with the compiler's analyzers and removed; what works but may cost more than it earns is listed in [the complexity ledger](#the-complexity-ledger). | Applied, with limits: four candidates for removal are open |
+| **RE:02** | Identify the user and system flows and rate them by criticality. | [Seven flows, three ratings](#flows-and-how-critical-they-are), each with the alerts that watch it. | Applied |
+| **RE:03** | Analyse how each component can fail, and what the effect is. | [One table, part by part](#what-happens-when-a-part-fails): what the customer sees, what detects it, what recovers it, and whether a chaos test takes that part away. | Applied |
+| **RE:04** | Set reliability and recovery targets. | [Targets](#reliability-targets): the measures are recorded by Prometheus (`shopeasy:gateway_server_errors:ratio_10m`, `shopeasy:gateway_request_duration_seconds:p95_10m`), alerts fire on the thresholds, recovery point and time are defined and the recovery time is measured by a rehearsal. | Applied, with limits: the target values are proposals, and no report adds up the error budget over a month |
+| **RE:05** | Build in redundancy at several levels, most for the critical flows. | Kubernetes runs two copies of every service but the gateway, spread over nodes, with disruption budgets, so a crash, a rollout or a node drain leaves a copy running ([Horizontal Scaling](#horizontal-scaling)). Queues and the databases are on volumes. | Applied, with limits: the gateway and the three data stores are single instances (see the failure table) |
+| **RE:06** | Scale in time, at the application, data and infrastructure level. | A CPU-based autoscaler for Order (2 to 10) and Product (2 to 6); capped connection pools, so more copies cannot exhaust PostgreSQL; rate limits, so a surge is refused instead of queued without end. | Applied, with limits: no load test, so the thresholds follow convention and are not measured |
+| **RE:07** | Protect the workload under stress (self-preservation) and let it repair itself (self-healing). | Preservation: deadlines, retry budgets, circuit breakers, back-pressure, rate limits, bounded pools, bounded database waits ([24](#24-surviving-database-and-network-outages), [26](#26-resilient-calls-between-services)). Healing: probes and restarts in Kubernetes, reconnecting clients, guarded polling loops, the saga timeout and the orchestrator's retries, idempotent redelivery. | Applied. Compose has no restart policy on purpose (below) |
+| **RE:08** | Test resiliency by injecting failures (chaos engineering). | Eight scenarios in real containers (broker down, broker restarted with a command waiting in a queue, Payment killed, PostgreSQL stopped mid-saga, a crash loop of three services, Redis down, Identity down, gateway killed), failure injection against real PostgreSQL with a control for every limit, and tests of the alert rules ([How it is proved](#how-it-is-proved)). They found real defects, each now covered by a test that fails without its fix. | Applied, with limits: no scheduled game day and no load test |
+| **RE:09** | Have a tested, documented disaster-recovery plan that matches the targets. | [Backups and disaster recovery](#backups-and-disaster-recovery): what is backed up and what is not, two scripts, the restore steps, and a **rehearsal in CI** that deletes the PostgreSQL container and its volume, restores, and compares every table. | Applied, with limits: daily-dump grade (the recovery point is the age of the last backup); no schedule and no off-site copy shipped |
+| **RE:10** | Measure health indicators across components and flows, and keep the measurements. | Metrics from every service, [eleven alerts](#what-to-watch), a dashboard, structured logs and traces with one correlation id across HTTP and messages; Prometheus keeps its 15 days of history in a volume. | Applied, with limits: alerts are shown in Prometheus but delivered nowhere (e-mail, chat or a pager needs an Alertmanager and a receiver, which is a deployment choice) |
+
+The five **design principles** of the same pillar, and where each shows:
+
+| Principle | Where it shows here |
+|---|---|
+| **Design for business requirements** | Reliability is defined per flow, not as one uptime figure: the money flow may be slow, never lost and never wrong ([flows](#flows-and-how-critical-they-are), [targets](#reliability-targets)). |
+| **Design for resilience** | Every part is expected to fail ([part by part](#what-happens-when-a-part-fails)). The path that accepts an order needs only Order, Product, Inventory (or its cached stock) and PostgreSQL; paying, stocking and confirming happen after it, through queues, so the broker or Payment being away delays an order and does not refuse it. Redis is optional. |
+| **Design for recovery** | Compensation for every saga state, timeouts that re-send safe commands, a check across services, backups with a rehearsal. |
+| **Design for operations** | Metrics, alerts, correlation ids and traces; a CI that starts the real containers and breaks them; each defect a failure test found (the stale pooled connections after a database restart, the RabbitMQ data that lived in memory) became a test that fails without the fix. |
+| **Keep it simple** | [The ledger](#the-complexity-ledger): what each mechanism costs and what it handles, and what could go. |
+
+### Flows and how critical they are
+
+| Flow | Rating | Path | Why | Watched by |
+|---|---|---|---|---|
+| **Place an order** (the request is accepted) | Critical | gateway, Order, Product (the price), Inventory or its cached stock, PostgreSQL | Revenue starts here. Refused with `503` and `Retry-After` when the catalog cannot answer. | `ShopServerErrorsHigh`, `ShopSlow` |
+| **Finish the order** (reserve stock, take the payment, confirm) | Critical | Order, RabbitMQ, Inventory, Payment, their databases | Money and stock. May take minutes; must never be lost, repeated or wrong. | `OrderStuck`, `OrderFailed`, `SagaCommandsNotSent`, `OutboxBacklog`, `StockMayHaveLeaked`, `OrderConsistencyViolated`, `PaymentsDeclinedHigh` |
+| **Cancel and refund** | Critical | the same | The customer's money back. | the same |
+| **Sign in, sign up** | Important | gateway, Identity, PostgreSQL | Needed to buy; sessions already open go on without it. | `ServiceDown` |
+| **Browse and search** | Important | gateway, Product, Redis (optional), PostgreSQL | Where customers come from. | `ShopServerErrorsHigh`, `ShopSlow` |
+| **See my orders** | Important | gateway, Order, PostgreSQL | Customers check on their money. | `ShopServerErrorsHigh`, `ShopSlow` |
+| **Operate** (dashboards, dead letters, admin pages) | Supporting | the monitoring stack, the admin pages | No customer notices when it is away. | `PollingLoopStalled`, `ServiceDown` |
+
+### Reliability targets
+
+The measures exist (they are recorded by Prometheus and checked by the alerts). **The target values are my proposal for a shop of this kind, not measurements of real traffic; change them to what the business needs.** They only mean something once somebody holds the shop to them.
+
+| Measure | Target | Raised by | Notes |
+|---|---|---|---|
+| Gateway answers that are not a server error (5xx) | 99.5 % over 30 days (about 3.6 hours of failure) | `ShopServerErrorsHigh` at 2 % over 10 minutes | A 4xx, the `429` of a rate limit included, is not a failure of the shop. |
+| Gateway answer time, 95th percentile | under 2 seconds | `ShopSlow` | |
+| Accepted orders that reach a final state (`Confirmed` or `Cancelled`) | within 10 minutes, every one | `OrderStuck`, `OrderFailed` | An order that cannot finish is cancelled and compensated, never left open. |
+| Orders and payments that disagree, stock that leaked | none | `OrderConsistencyViolated`, `StockMayHaveLeaked` | Zero tolerance: any is an alert. |
+| **Recovery point** (RPO): how much work may be lost if the databases are lost | the age of the last backup; one day with a nightly backup | | Minutes need point-in-time recovery of a managed PostgreSQL. |
+| **Recovery time** (RTO) of one service | until its readiness probe passes (the probes first look after 20 to 30 seconds); with two copies the other keeps serving | `ServiceDown` | |
+| **Recovery time** after the loss of all data | one hour | | The rehearsal restores in seconds on the test data; measure on data of the real size. |
+
+### What happens when a part fails
+
+The part, what the customer sees, what detects it, what puts it right, and whether a test takes that part away. [What can go wrong](#what-can-go-wrong-and-what-happens) is the same analysis seen from the failure instead of the part.
+
+| Part | If it fails | Detected by | Recovers by | Taken away in a test |
+|---|---|---|---|---|
+| **Gateway** (one copy) | The front door is closed and every session ends. The orders behind it carry on. | `ServiceDown`, `ShopServerErrorsHigh` | Restart; customers sign in again, with no password while Identity remembers the browser. | Killed |
+| **Identity** (two copies) | Nobody can sign in or up. Customers who are signed in keep shopping. A service that *starts* meanwhile answers `401` until it is back. | `ServiceDown` | The other copy; a restart | Stopped |
+| **Product** (two to six) | Browsing fails; an order cannot be priced and is refused with `503`. | `ServiceDown`, `ShopServerErrorsHigh` | The other copies | Not tested |
+| **Order** (two to ten) | Orders cannot be placed or read through that copy; sagas it was driving pause and are picked up by the other copy. | `ServiceDown`, `OrderStuck`, `PollingLoopStalled` | The other copies; row locks and the outbox make a takeover safe | Killed (crash loop) |
+| **Inventory** (two) | Stock checks use the stale cached level; reservations wait in the queue. | `ServiceDown`, `OrderStuck` | The other copy; commands wait in a durable queue | Killed (crash loop) |
+| **Payment** (two) | Orders wait at the payment step. | `ServiceDown`, `OrderStuck` | The other copy; the command waits in the queue | Killed |
+| **PostgreSQL** (one) | Nothing can be saved. Orders cannot be placed; consumers retry for about 7 minutes. | `ServiceDown`, `OutboxBacklog`, `PollingLoopStalled` | Restart (clients drop dead connections themselves); after data loss, the restore | Stopped mid-saga; lost and restored in the CI rehearsal |
+| **RabbitMQ** (one) | Orders are still accepted and wait; nothing moves on. | `SagaCommandsNotSent`, `OutboxBacklog` | Restart: queues and messages are on a volume, services reconnect | Stopped; restarted with a command in a queue |
+| **Redis** (one) | Slower answers; nothing is refused. | `ShopSlow` | Restart; the cache fills again | Stopped |
+| **Prometheus, Grafana, Seq, Jaeger** | No dashboards, no alerts, no traces. The shop is not affected. | (nothing can say so) | Restart; Prometheus keeps its history | Not tested |
+| **A bad release** | A pod that never becomes ready does not replace a working one. | the readiness probes, `ServiceDown` | Roll back to the previous image tag | Not tested |
+
+Compose has no `restart:` policy, on purpose: it is the local stack, a crashed container should stay down where you can see it, and the failure tests need to decide when a container comes back. On a single host in production, add `restart: unless-stopped`; Kubernetes restarts containers by itself.
+
+### The complexity ledger
+
+Every part costs something: lines to read, settings to get right, one more way to fail. The search for **dead** code (`IDE0051`, `IDE0052`, `IDE0060`, `CS0169`, `CS0414`) found almost none, and what it found is gone. What is left is code that works; this is what it costs and what it buys.
+
+| Part | Cost | What it handles | Needed? |
+|---|---|---|---|
+| The saga with its compensations | Order is 5,600 of the system's 13,800 lines of code | An order spans three services and three databases, so there is no single transaction | Yes: the cancel, decline and crash tests fail without it |
+| Transactional outbox and inbox | tables in three databases and the loops that send | No lost and no repeated event | Yes: the crash-loop test and the PostgreSQL tests |
+| Database limits (lock, idle, command, pool) | 7 settings | A hung or restarted database | Yes: every limit has a test that fails without it |
+| The consistency check | a polling loop, an endpoint on Payment, 5 settings | A fault nobody thought of that leaves money and orders disagreeing | Yes: it is the only thing that would notice |
+| **A second outbox in Order**: its own `OutboxEntries` next to MassTransit's | about 850 lines with tests, a loop, a metric, an alert | Only the "order placed" event; MassTransit's does the same job for all other messages | **Candidate**: the one real duplication |
+| **Redis** | a container, about 400 lines (connection, cache, stampede protection), 5 settings, a known window in which old stock can be re-cached | Speed; nothing measures that it is needed at this size | **Candidate**; the Redis test shows the shop works without it |
+| **REST and gRPC to Inventory** | a second protocol and port, its own authentication and resilience pipeline, about 400 lines | A faster, typed stock check | **Candidate** |
+| **Order states nothing sets**: `PaymentFailed`, `Shipped`, `Delivered` | three enum values, a guard in cancellation, branches in the consistency rules | Room for a shipping flow that does not exist | **Candidate** |
+
+### What can go wrong, and what happens
+
+| When | What the system does | Explained in |
+|---|---|---|
+| A service **crashes in the middle of a message** | The message was not acknowledged, so RabbitMQ delivers it again. Each message is handled in one database transaction together with the events it publishes, so the half-done work is rolled back or, if it was committed, the copy is recognised and only the missing event is sent. | [7](#7-idempotent-consumers), [22](#22-transactional-inboxoutbox-payment-inventory--order) |
+| The **same message arrives twice**, or a late or out-of-order one | The inbox recognises the copy; the business checks (a ledger row per order and step, the saga's current state) catch a *different* message about the same order. A message from a saga that has already given up is turned into a refund or release (the zombie guard). Saga changes are serialised with a row lock. | [7](#7-idempotent-consumers), [8](#8-zombie-message-guard), [21](#21-saga-row-locking) |
+| **RabbitMQ is down** | An order is still accepted: the event that starts its saga waits in the Order database and is sent when the bus is ready; saga commands wait in the outbox next to the saga state. Services reconnect by themselves. RabbitMQ keeps its queues and messages on a volume, so a restarted broker still holds a command that was waiting. | [5](#5-outbox-pattern), [22](#22-transactional-inboxoutbox-payment-inventory--order), [23](#23-broker-readiness-no-management-api) |
+| **PostgreSQL is down or restarts** | Consumers retry patiently (12 retries over about 7 minutes, with jitter), taking no new messages meanwhile. The polling loops survive a failed pass. Connections the server closed are found and dropped in the background (every 10 s), so the requests after the restart do not fail on them. | [24](#24-surviving-database-and-network-outages) |
+| A **database call hangs** or a pod dies holding locks | Lock waits give up after 10 s, a session idle inside a transaction is ended after 60 s (which releases its locks), a command is cancelled after 30 s, the pool is capped so waiters cannot exhaust the server. | [24](#24-surviving-database-and-network-outages) |
+| A **dependency is slow or down** (Inventory, Product, a service behind the gateway) | Every call has a deadline; a retry is made only where repeating is safe and is limited by a shared budget; a circuit breaker stops calling a service that keeps failing; a stale stock level is used instead of an error; the gateway answers `504` for a silent service. | [26](#26-resilient-calls-between-services), [11](#11-eventual-vs-strong-consistency-hybrid-inventory-check) |
+| A **saga gets stuck** (a reply is lost, a service is gone) | After 2 minutes the timeout service compensates according to the saga's state and re-sends the commit, refund and restock commands, which are safe to repeat. The orchestrator retries an order's first step with growing pauses (about 3.5 minutes) and then cancels the order. | [4](#4-saga-pattern-orchestration-based), [9](#9-saga-timeout-handling) |
+| **Payment is declined, or the customer cancels** at any moment | Every state has a defined recovery: release the stock, refund a late payment, or refund then restock a paid order. | [4](#4-saga-pattern-orchestration-based) |
+| A client **repeats a request** (double click, retry after a timeout) | `POST /api/orders` takes an `Idempotency-Key`: the same key returns the original order instead of placing a second one. | [25](#25-idempotent-order-placement) |
+| A message **cannot be processed** | It lands in an error queue; a monitor logs it every 30 s; an admin requeues it once the cause is fixed. A requeue can duplicate a message but never lose one. | [14](#14-dead-letter-queues) |
+| A **polling loop** fails or hangs | Each pass is guarded: a failure is logged once with its exception and the next interval tries again; a pass that hangs is cancelled after 120 s; an alert fires if a loop completes no pass for 2 minutes. | [24](#24-surviving-database-and-network-outages) |
+| **Too much traffic** | Tiered rate limits at the gateway and a second limit on order placement answer `429` with `Retry-After`; retry budgets and capped pools keep a struggling dependency from being flooded. | [15](#15-rate-limiting), [26](#26-resilient-calls-between-services) |
+| **Redis** is slow or missing | It is only a cache: commands fail fast (500 ms) and the service reads the database. | [16](#16-redis-caching) |
+| Something goes wrong that **nobody anticipated** | The Order service compares every settled order with what Payment holds and raises an alert for goods without a payment, a wrong amount, a double charge or a charge kept on a cancelled order. | [27](#27-checking-the-result-across-services) |
+| A **deployment** starts in the wrong order or a pod stops answering | Compose starts services in health order; Kubernetes uses readiness and liveness probes, resource limits, rolling updates (a pod that never becomes ready does not replace a working one), two copies of every service but the gateway spread over nodes with disruption budgets, network policies, and autoscalers for Order and Product. | [18](#18-health-checks), [Kubernetes Deployment](#kubernetes-deployment) |
+
+Every number above is a setting with its default written out in `appsettings.json`, Compose, `.env.example` and the Kubernetes ConfigMap, and tests fail when a copy differs from the code, so a documented value is the value in effect. Values that make no sense stop the service at start instead of at the next outage.
+
+### How it is proved
+
+| Level | What it shows | Where |
+|---|---|---|
+| **Unit and harness tests** | Duplicate, late and reordered messages; saga races against timeouts and cancels; which failures count as transient; the retry, budget and breaker behaviour; the consistency rules and when a mismatch counts. | [Testing](#testing) |
+| **Failure injection against real PostgreSQL** | A lock held by someone else, a session left open in a transaction, a runaway query, an exhausted pool, a connection the server closed while idle: each limit does what it says, and each has a control that fails without it. A payment saved and its event delivered in one transaction, also when the service is killed between the two. | `Infrastructure/PostgresResilienceTests`, `PaymentPostgresTests`, [Testing](#testing) |
+| **Chaos tests in real containers** | Against the Compose stack: RabbitMQ stopped while an order is placed, and restarted while a command waits in a queue; Payment killed with an order on its way; PostgreSQL stopped in the middle of a saga; Payment, Inventory and Order killed in turn while orders flow; Redis stopped; Identity stopped; the gateway killed. Each ends with every order `Confirmed`, charged once, and the stock down by exactly the units ordered (or, for Identity and the gateway, with the customer back in the shop). Also a declined payment, and a cancel at six moments of the saga. | [End-to-end test](#end-to-end-test) |
+| **The check across services, in CI** | While the end-to-end and browser tests place their orders, the consistency check compares them with Payment; a CI step asks Prometheus that it examined all of them and found none that disagrees. | [27](#27-checking-the-result-across-services), [CI/CD](#cicd) |
+| **Alert rules** | Each alert is run against made-up series with `promtool`, so a rule that never fires, or fires on the normal rate, fails the build. | `prometheus-rules.test.yml` |
+| **Disaster rehearsal, in CI** | The databases are backed up, the PostgreSQL container and its volume are deleted, the backup is restored into a new empty one, every table must hold the same number of rows, and an order is placed on the restored data. | [Backups and disaster recovery](#backups-and-disaster-recovery) |
+| **Deployment rules, in CI** | The rendered Kubernetes manifests are checked: pinned images, no root, and a service with several copies has a disruption budget and is spread over nodes. | [CI/CD](#cicd) |
+
+The chaos tests found real defects: a database restart answered the next HTTP requests with `500` (each pooled connection failed once), which is why the idle check exists, and the failure tests record a timeline of what they did to the stack so that a CI failure can be read against the service logs.
+
+### What to watch
+
+`prometheus-rules.yml` raises these alerts (firing ones are listed at http://localhost:9090/alerts; sending them anywhere needs an Alertmanager, which is not part of this stack):
+
+| Alert | It means |
+|---|---|
+| `OrderStuck` | An order has been in progress for more than 10 minutes; the timeout service should have settled it. |
+| `OrderFailed` | The orchestrator gave up on an order; a person has to look at it. |
+| `StockMayHaveLeaked` | An order was cancelled but the release of its stock was never confirmed. |
+| `OutboxBacklog` | More than 50 events have waited in the Order outbox for 5 minutes. |
+| `SagaCommandsNotSent` | A saga command has waited more than 2 minutes for the broker. |
+| `PollingLoopStalled` | A background loop has completed no pass for 2 minutes. |
+| `OrderConsistencyViolated` | An order disagrees with what Payment holds for it. |
+| `PaymentsDeclinedHigh` | More than 30 % of recent payments were declined. |
+| `ServiceDown` | Prometheus cannot scrape a service for a minute: it is down, or its metrics port is unreachable. |
+| `ShopServerErrorsHigh` | More than 2 % of the gateway's answers in 10 minutes were server errors (with at least 20 answers). |
+| `ShopSlow` | The gateway's 95th-percentile answer time has been above 2 seconds for 10 minutes. |
+
+Besides the alerts: error queues are listed on the Dead Letter Monitor page and logged as `DEAD LETTER ALERT`, every log line and trace carries the correlation id of the request, and the **ShopEasy Overview** dashboard shows the order outcomes, stuck orders and the outbox and payment figures ([pattern 19](#19-observability--the-three-pillars)).
+
+### What is not covered
+
+The full list is in [Production Hardening and Known Limitations](#production-hardening-and-known-limitations). The ones that matter most for reliability:
+
+- **Single instances.** PostgreSQL, RabbitMQ and Redis run as one instance each, and so does the gateway, so the loss of their node is an outage, which the services then ride out only as far as the retry windows above. RabbitMQ's queues are on a volume, not replicated. A highly available database or broker is bought (a managed service or an operator), not built here.
+- **Backups are daily-dump grade.** The scripts and the restore are tested, but nothing runs them on a schedule, copies them off the machine, or lets you restore to a given minute (that needs a managed PostgreSQL with point-in-time recovery).
+- **A long outage.** A database down for longer than about 7 minutes sends the messages in flight to the error queues, to be requeued by hand. An order whose reply arrives after the 2-minute saga timeout is cancelled and compensated, which is safe but not what the customer hoped for.
+- **The consistency check** compares payments only, judges what Payment holds when it asks, and keeps its findings in memory.
+- **No load or capacity testing**, so the autoscaler thresholds and the targets above are conventions, not measurements; and no scheduled game day, the failure tests run only when CI runs.
+- **Alerts are not delivered.** They are shown in Prometheus; sending them to e-mail, chat or a pager needs an Alertmanager and a receiver, which depends on where the system runs.
+- **A service that starts while Identity is down** answers `401` until Identity is back (the copies already running are not affected).
+
 ---
 
 ## Getting Started
@@ -728,7 +916,7 @@ cp .env.example .env     # Windows cmd: copy .env.example .env
 
 Generate strong random values, e.g. `openssl rand -base64 24`, or in PowerShell: `-join ((48..57)+(65..90)+(97..122) | Get-Random -Count 32 | % {[char]$_})`.
 
-**Changing `POSTGRES_PASSWORD` after the first run:** Postgres only reads it when it creates an empty data volume. Either keep the old password, or wipe local data with `docker-compose down -v` and start again.
+**Changing `POSTGRES_PASSWORD` or `RABBITMQ_USER` / `RABBITMQ_PASSWORD` after the first run:** Postgres and RabbitMQ only read them when they create an empty data volume (RabbitMQ keeps its queues on one, so that a restart of the broker loses nothing). Either keep the old values, or wipe local data with `docker-compose down -v` and start again.
 
 ### Service configuration keys
 
@@ -1249,8 +1437,12 @@ docker rm -f shopeasy-test-pg shopeasy-test-mq
 | A cancel while the saga runs | A customer cancels at six moments spread over the first eight seconds, before the saga was picked up, while it reserves the stock, and after the payment. Whichever step it falls on, the order ends `Cancelled`, the stock is back, and a payment that went through was refunded (never left `Succeeded`).
 | The broker is down | RabbitMQ is stopped, an order is placed and accepted anyway (its event waits in the Order database, the outbox), nothing moves for 20 seconds, and when the broker is back the order is `Confirmed`, charged once for its total, with exactly one unit off the shelf. |
 | Payment is killed with an order on its way | The Payment container is killed (a crash, not a polite stop) as soon as the order is placed. The saga reserves the stock and the payment command waits in the broker's durable queue; when Payment is back the order is `Confirmed`, charged once, one unit off the shelf. |
+| A command waits in the broker's queue across a broker restart | Payment is killed, an order is placed and its stock reserved, so the command to take the payment waits in Payment's queue; then RabbitMQ is restarted. When Payment is back the order is `Confirmed`, charged once, one unit off the shelf: the broker kept the queue and the message on its volume. (A broker that came back empty would lose the command and the saga would time out and cancel the order.) |
 | The database goes away mid-saga | Once the order's stock is reserved PostgreSQL is stopped for 15 seconds. No service can save anything, so they wait and retry (their patience is minutes); when the database is back the order is `Confirmed`, charged once, one unit off the shelf. |
 | A crash loop | Payment, Inventory and Order are killed in turn, twice over, and a new order is placed just before each kill, so one or two orders are always on their way when a service dies. In the end all eight are `Confirmed`, each charged once for its total, and the shelf is lower by exactly the units ordered: nothing lost, nothing done twice. |
+| Redis is down | Redis (only a cache of products and stock) is stopped; the catalog and the stock are read from the databases instead and show the same, an order is placed and ends `Confirmed` while Redis is still away, charged once, one unit off the shelf. |
+| Identity is down | Identity is stopped after the Order service has fetched its token. A customer who is signed in goes on browsing and ordering, and the order ends `Confirmed`; when Identity is back a new customer can sign up and the old session still works. (Signing in or up is what is lost while it is away, and a service that *starts* while Identity is away answers `401` until it is back, see [known limitations](#production-hardening-and-known-limitations).) |
+| The gateway is killed | The gateway container is killed after an order is placed: nothing answers at the front door; when it is back, the customer whose session it cannot use any more is signed in again with no password (Identity still recognises the browser) and finds the order `Confirmed`, charged once. A restart ends every session, so the test signs the two customers that the other tests share back in. |
 
 CI runs it in the **Compose stack and end-to-end test** job, right after the containers are up, with the throw-away values of `.env.example` and a higher sign-up limit (the tests create several accounts from one address). Compose starts the payment provider in "always succeeds" mode (`Testing__ForcePaymentSuccess`), so a failure here means a broken system, not a random bank decline (the one decline the tests provoke is an order above the provider's 10,000 limit). To run it yourself:
 
@@ -1259,7 +1451,7 @@ docker compose up -d --build --wait postgres rabbitmq redis identity product inv
 dotnet test src/Tests/ShopEasy.EndToEndTests
 ```
 
-It expects the gateway at `http://localhost:5000` and Identity at `http://localhost:5001` (`E2E_GATEWAY_URL` and `E2E_IDENTITY_URL` change that). Each run creates seven accounts, and sign-up is limited to 10 per hour per address (`RATE_LIMIT_REGISTRATION_ATTEMPTS`), so raise that limit in `.env` if you run it more than once an hour. The accounts and orders stay in the database; `docker compose down -v` clears them.
+It expects the gateway at `http://localhost:5000` and Identity at `http://localhost:5001` (`E2E_GATEWAY_URL` and `E2E_IDENTITY_URL` change that). Each run creates eleven accounts, and sign-up is limited to 10 per hour per address (`RATE_LIMIT_REGISTRATION_ATTEMPTS`), so raise that limit in `.env` if you run it more than once an hour. The accounts and orders stay in the database; `docker compose down -v` clears them.
 
 The tests that take a part of the stack away (`OutageRecoveryTests`) stop and kill containers with `docker compose` (the Compose file of the repository, so the directory you run from does not matter), and always start them again, also when the test fails. Run them only against a stack you can disturb. If the stack was started some other way, `E2E_CONTROL` names a program that is called as `<program> <stop|kill|start> <service>` instead. *Stop* is a polite SIGTERM (the service finishes what it is doing); *kill* is a SIGKILL, a crash that gives the service no chance to finish anything.
 
@@ -1276,8 +1468,8 @@ Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new p
 | **Detect changes** | Decides whether the pull request touches anything that is built, tested or deployed (plain `git diff`, no third-party action). Skipped jobs count as passed in **CI passed**, so the check can stay required for documentation-only changes. |
 | **Storefront (lint, types, tests, build)** | `src/Web/ShopEasy.Web` with Node 22: `npm ci` (exactly what `package-lock.json` says), ESLint, `tsc`, the Vitest tests with their coverage floor, the production build, and a **Trivy** scan of `package-lock.json` (development tools included; HIGH or CRITICAL with a fix fails the job; `npm audit` is not used because on a runner it waits five minutes for npm's advisory service and then fails). Needs no other service. |
 | **Build and test** | `dotnet restore/build` (Release) and all 1052 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 86 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
-| **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, they take the shared ConfigMap (so a setting changed there reaches every service), third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
-| **Compose stack and end-to-end test** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. Last, it runs the [end-to-end test](#end-to-end-test) against those containers: a customer signs up, signs in, buys something and the order is confirmed, which no unit test can show because it needs every service, the broker and the databases working together. After that it opens the storefront in a real browser ([Browser tests](#storefront)), and finally asks Prometheus whether the Order service's [consistency check](#27-checking-the-result-across-services), which ran while the tests placed their orders, examined every one of them and found none that disagrees with its payment. |
+| **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, they take the shared ConfigMap (so a setting changed there reaches every service), a service that runs several replicas has a PodDisruptionBudget and is spread over the nodes, third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
+| **Compose stack and end-to-end test** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. Last, it runs the [end-to-end test](#end-to-end-test) against those containers: a customer signs up, signs in, buys something and the order is confirmed, which no unit test can show because it needs every service, the broker and the databases working together. After that it opens the storefront in a real browser ([Browser tests](#storefront)), asks Prometheus whether the Order service's [consistency check](#27-checking-the-result-across-services), which ran while the tests placed their orders, examined every one of them and found none that disagrees with its payment, and finally and rehearses a disaster: it backs the databases up, throws the PostgreSQL container and its volume away, restores into a new empty one, checks that every table holds the same number of rows and places an order on the restored data ([Backups and disaster recovery](#backups-and-disaster-recovery)). |
 | **Image scan** (one job per service) | Builds the service image and scans it with **Trivy**, run from its official image, pinned to a version (bump it by hand): the operating-system packages and the .NET runtime of the base image as well as the application. A vulnerability that is **HIGH or CRITICAL and has a fix fails the job**; one without a fix yet does not. The Dockerfiles run `apt-get upgrade`, so an image has Debian's security fixes even when Microsoft has not rebuilt the base image yet. The scan and the publish step build without the layer cache, so an image always has the fixes Debian has published, not those of the day a cached layer was made. A finding that has to be accepted goes into `.trivyignore` with the reason and a date to look at it again. A new CVE with a fix can turn this red without any change in the code: re-run the job (the base image tag is rebuilt when Microsoft releases a fix) or accept the finding. |
 | **CI passed** | One aggregate status for the jobs above (a skipped job counts as passed) — the check to require in branch protection. |
 
@@ -1322,7 +1514,18 @@ These cannot be done from a workflow file; they are GitHub settings:
 
 ## Horizontal Scaling
 
-The Order service is stateless and built to scale. The distributed outbox lock means duplicate instances never double-process messages.
+Every service but the gateway can run several copies, and the Kubernetes manifests start two of each (Order and Product are also autoscaled). Running more than one copy is what keeps the shop up while one of them crashes, is rolled out or sits on a node that is drained.
+
+| Service | Copies | Why it is safe, or why not |
+|---|---|---|
+| Order | 2 to 10 (autoscaled) | Stateless. Outbox rows are claimed with `FOR UPDATE SKIP LOCKED`, every saga step runs under a row lock, and the copies take commands from the same queue. |
+| Product | 2 to 6 (autoscaled) | Stateless; the cache is in Redis. |
+| Inventory | 2 | Stock changes under row locks and are recorded in a ledger with a unique key, so two copies cannot take the same unit (`ConcurrentReservations_NeverReserveMoreThanTheStock` runs it against PostgreSQL). The copies share one queue and the inbox makes a redelivery harmless. |
+| Payment | 2 | The inbox row and the order's processed-event key are written in the same transaction as the payment, so a command is processed once whichever copy gets it. Two copies were run against the same database and queue through the order tests. |
+| Identity | 2 | Signing keys, key ring and grants are in PostgreSQL, so every copy issues and accepts the same tokens. Copies that start together take turns under a lock (migrations, roles, first administrator). |
+| **Gateway** | **1** | It keeps the login cookie's encryption keys in its own memory, so a second copy could not read the first one's cookies. A shared key store would be a new dependency of the front door, which is more risk than one pod restarting in seconds. A restart signs the customers out; they sign in again. |
+
+The data stores are one instance each ([known limitations](#production-hardening-and-known-limitations)). Under Compose, Order is the service set up for `--scale` (it publishes no host port):
 
 ```bash
 # Scale to 3 instances
@@ -1414,8 +1617,6 @@ shred -u keyring.key keyring.crt key-ring.pfx    # keep the PFX and password in 
 
 Without that Secret the Identity pod stays in `ContainerCreating` (*secret "identity-dataprotection" not found*) — on purpose, rather than silently storing the keys unprotected. **Losing the certificate means losing the key ring**: Identity then creates new signing keys and every user signs in again. To rotate the certificate, mount the old one too and set `DataProtection__PreviousCertificatePath` (it must use the same password), roll out, and remove the old one later.
 
-**Scaling Identity.** Deploy with one replica (it applies its database migrations at start-up), then `kubectl -n shopeasy scale deployment identity --replicas=2`.
-
 **Upgrading from the file-based keys.** Earlier versions kept the signing key in a volume (`identity-keys` in Compose, a PVC in Kubernetes). After the upgrade Identity creates a new key in the database, so tokens signed by the old key stop validating and users sign in once more. Remove the old volume: `docker volume rm shopeasy_identity-keys` / `kubectl -n shopeasy delete pvc identity-keys-pvc`.
 
 ### Network policies
@@ -1429,7 +1630,8 @@ Without that Secret the Identity pod stays in `ContainerCreating` (*secret "iden
 | Docker Compose | Kubernetes |
 |---|---|
 | Manual restart | Self-healing (auto-restart crashed pods) |
-| Manual `--scale` | HorizontalPodAutoscaler (CPU-based, 2–10 pods) |
+| Manual `--scale` | HorizontalPodAutoscaler (CPU-based): Order 2–10 pods, Product 2–6 |
+| One container per service | Two replicas of every service but the gateway, spread over the nodes; a **PodDisruptionBudget** keeps one running while a node is drained for an upgrade |
 | Single machine | Multi-node |
 | Restart = downtime | Zero-downtime rolling updates |
 | No resource caps | Enforced CPU/memory requests & limits |
@@ -1454,9 +1656,10 @@ ShopEasy/
 ├── .github/
 │   ├── workflows/ci.yml           # CI (change detection, build, tests, deployment-file checks, build and start the stack) + CD (publish to GHCR)
 │   ├── workflows/codeql.yml       # CodeQL code scanning (C#)
-│   ├── scripts/                   # Dockerfile / Kubernetes / running-container rules the CI enforces
+│   ├── scripts/                   # Dockerfile / Kubernetes / running-container rules the CI enforces, and the restore rehearsal
 │   └── dependabot.yml
 ├── postgres-init.sql              # creates the 5 databases
+├── ops/                           # backup.sh and restore.sh (see "Backups and disaster recovery")
 ├── prometheus.yml
 ├── prometheus-rules.yml           # alert rules (+ prometheus-rules.test.yml: their tests)
 ├── grafana/provisioning/          # auto-provisioned dashboards
@@ -1551,7 +1754,7 @@ The security headers (see [Security notes](#security-notes)) come from the gatew
 
 **`docker-compose up` fails with "Set X in .env"** — a required variable is missing from your `.env`. Compare it with `.env.example`.
 
-**Services cannot log in to Postgres after you edited `.env`** — Postgres only applies `POSTGRES_PASSWORD` when it first creates the data volume. Restore the old password, or wipe local data with `docker-compose down -v`.
+**Services cannot log in to Postgres or RabbitMQ after you edited `.env`** — Postgres only applies `POSTGRES_PASSWORD`, and RabbitMQ only `RABBITMQ_USER` / `RABBITMQ_PASSWORD`, when they first create their data volume. Restore the old values, or wipe local data with `docker-compose down -v`.
 
 **`/sagas`, `/outbox` or `/deadletters` redirect to a login page** — expected: they require a login (as an admin to see data). No account exists until you create one: set `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` in `.env` and run `docker-compose up -d --build identity` (see [How to Use It](#1-log-in)).
 
@@ -1613,7 +1816,7 @@ What has been hardened, and what is known to be missing.
 - A shipped or delivered order cannot be cancelled, and there is no return or partial-refund flow. A paid order that is cancelled before it ships is refunded in full.
 - The Order service's saga commands wait for the outbox delivery service: after the commit, a command to the other services is sent within `Outbox__QueryDelayMs` (500 ms by default) when it comes from the orchestrator, the timeout service or the cancel endpoint. The saga timeout service still re-sends commands whose answer never arrives, and every consumer is idempotent.
 - The Inventory consumers invalidate the Redis stock cache while MassTransit's transaction is still open (the commit follows immediately after the consumer returns). In that few-millisecond window a reader can re-cache the old stock level for up to its 30-second TTL. The cache is advisory — the saga's reservation is the authoritative check.
-- A message published to an exchange that has no queue bound yet is dropped by the broker, so a command sent before its consuming service has started for the first time is lost until the saga timeout re-sends it. (Docker Compose and Kubernetes start order makes this rare.)
+- A message published to an exchange that has no queue bound yet is dropped by the broker, so a command sent before its consuming service has started for the first time is lost until the saga timeout re-sends it. (Docker Compose and Kubernetes start order makes this rare.) The same happens if the broker itself comes back empty, which is why RabbitMQ keeps its data on a volume (Compose `rabbitmq-data`, Kubernetes `rabbitmq-pvc`): a restarted broker still has its queues, bindings and messages. A broker whose volume is lost starts empty, and the commands in flight are then lost the same way.
 - The MassTransit inbox only remembers a message for its 30-minute duplicate-detection window; beyond that, duplicates are caught by the business-level checks (pattern 7).
 - Inventory endpoints process one message at a time per instance (`ConcurrentMessageLimit = 1`). Correctness no longer depends on it (row locks do), so it can be raised for throughput.
 - The CI is a *gate* only if branch protection requires the `CI passed` check (a one-time repository setting, see CI/CD); otherwise it reports but does not block.
@@ -1626,10 +1829,42 @@ What has been hardened, and what is known to be missing.
 - After an outage of the database or of the Order service, a saga that waits for a reply (`ReservingInventory` and later) can still be timed out one interval after the service is back, if the reply is in a consumer's retry pause (up to 60 s by default). The compensation is safe (stock released, order cancelled); only a saga in `Started`, where nothing has been done yet, is fully protected.
 - A database outage longer than the patient-retry window (about 7 minutes by default) sends the messages that were in flight to the `*_error` queues; requeue them once the database is back (pattern 14). While it lasts, every consumer slot retries in parallel (bounded by the pool size and the consumers' concurrency); there is no circuit breaker that pauses consumption.
 - The gateway has no circuit breaker or passive health check: each cluster has a single destination, so there is nothing to fail over to (pattern 26). The retry budget and the timeouts bound the damage, but a dead service is still attempted on every request and answered with `502` after the connection fails. The Order service's `InventoryClient` (REST) has older, fixed Polly settings; it is registered but not used for the stock check.
+- While Identity is down, customers who are signed in keep shopping (the services keep the signing keys they have already fetched and the Order service keeps its own token), but a service that **starts** in that time, by a restart or as a new replica, cannot fetch the keys and answers `401` to every request until Identity is back; the copies that were already running are not affected. Readiness lists Identity but counts it as degraded, not failed, so that Identity blinking does not take every healthy copy out of service. The end-to-end scenario *Identity is down* shows the part that works.
 - Identity has no self-service "forgot password" reset (it needs an e-mail service, which the project does not have) and no e-mail verification: customers can sign up and change a password they know, administrators can manage roles, disable accounts and hand out a one-time temporary password, but a user cannot recover a forgotten password on their own, and a temporary password does not expire by itself. The first administrator comes from the configuration.
 - The Swagger UIs and the metrics are unauthenticated, so they are kept out of reach instead. `Swagger__Enabled` is `false` in the code and in Kubernetes, and only the local Compose stack turns it on. The metrics are served on their own port (`9091`), which Compose does not publish; in Kubernetes the default-deny network policy closes it until you allow your Prometheus to reach it. The metrics include sales figures.
 - Traffic between the services is plain HTTP inside the network, so bearer tokens (a user's lasts one hour, a service's 15 minutes) cross it in the clear. Network policies limit who can reach whom; TLS on every service or a mesh with mutual TLS is needed to protect the tokens in transit.
 - The gateway forwards one access token that names every API in its audience, so a service that receives it could replay it against another API. Scopes and roles still limit what it can do there, but only separate tokens per API (token exchange) would close that.
+
+
+### Backups and disaster recovery
+
+What is lost if a disk dies or a volume is deleted, and how to get it back. Two scripts do it, and CI runs them on every change.
+
+| Data | Where | Backed up? | If it is lost |
+|---|---|---|---|
+| Orders, payments, stock, products, customers, and Identity's signing keys | the five PostgreSQL databases | **yes**, `ops/backup.sh` | restore the last backup (below) |
+| Messages in flight | RabbitMQ | no | nothing to restore: a command that was lost is sent again once the 2-minute saga timeout passes, and every consumer ignores a repeat |
+| Cached products and stock | Redis | no | nothing: it fills again from the databases |
+| History of metrics, logs and traces | Prometheus (a volume), Seq, Jaeger | no | the history is gone, no business data is |
+| Settings and secrets | `.env`, the Kubernetes Secret | kept by you, never in the repository | create them again from `.env.example` and your secret store |
+
+**Take a backup.** `bash ops/backup.sh` writes one compressed `pg_dump` file per database into `backups/<date and time>/` (git-ignored: it holds customers' data). The services can keep running: `pg_dump` reads a consistent snapshot of each database. Each file is read back before it is accepted, so a dump that stopped half way is never kept. The databases are dumped one after the other, **Orders first**, so Inventory and Payment (which the saga writes after Order) are never older than Order: a restore can leave an order a step behind, which its saga timeout then settles like any lost message, but never ahead of the payment it waits for. On Kubernetes: `PG_EXEC="kubectl -n shopeasy exec -i deploy/postgres --" bash ops/backup.sh`.
+
+**Restore.** Stop the services, restore, start the services:
+
+```bash
+docker compose stop identity product inventory payment order gateway
+bash ops/restore.sh backups/20261028T020000Z          # asks you to type "restore"; --yes skips the question
+docker compose up -d identity product inventory payment order gateway
+```
+
+The script checks that all five files are there and readable before it changes anything, and restores each database in one transaction, so a failing restore leaves that database as it was. If the PostgreSQL volume itself is gone, start PostgreSQL first (`docker compose up -d postgres`: its init script creates the empty databases), then restore.
+
+**What it costs.** *Recovery point* (how much work can be lost) is the age of the last backup: a nightly backup loses up to a day of orders. *Recovery time* (how long until the shop is back) is the restore plus the start of the services: the rehearsal prints the restore time (seconds for the test data; it grows with the size of the databases).
+
+**The rehearsal.** A backup nobody has restored is a hope. CI's Compose job, after the end-to-end tests have filled every database, stops the services, counts the rows of every table, backs up, **removes the PostgreSQL container and its volume**, starts a new empty PostgreSQL, restores, and fails unless every table holds the same number of rows again; then it starts the services on the restored data and places an order (`.github/scripts/restore-drill.sh`).
+
+What is *not* here, on purpose: a schedule, a copy kept somewhere else, and encryption. A backup that sits on the disk it protects is lost with it, so copy `backups/` to storage that is not the same machine (and encrypt it there), and run the script from cron or a Kubernetes `CronJob`, for example `0 2 * * * cd /srv/shopeasy && bash ops/backup.sh`. Anything finer than a daily dump (losing minutes, not hours) needs continuous archiving of PostgreSQL's write-ahead log, which a managed PostgreSQL service provides as point-in-time recovery; it is what to use in production instead of these scripts.
 
 ---
 
