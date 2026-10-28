@@ -28,7 +28,7 @@ public static class DatabaseSeeder
         }
 
         // Seed Alice — admin user
-        await EnsureUser(userManager, roleManager,
+        await EnsureUser(userManager,
             email:     "alice@shopeasy.com",
             password:  adminPassword,
             firstName: "Alice",
@@ -36,7 +36,7 @@ public static class DatabaseSeeder
             role:      "admin");
 
         // Seed Bob — regular customer
-        await EnsureUser(userManager, roleManager,
+        await EnsureUser(userManager,
             email:     "bob@shopeasy.com",
             password:  customerPassword,
             firstName: "Bob",
@@ -46,7 +46,6 @@ public static class DatabaseSeeder
 
     private static async Task EnsureUser(
         UserManager<ApplicationUser> userManager,
-        RoleManager<IdentityRole> roleManager,
         string email, string password,
         string firstName, string lastName, string role)
     {
