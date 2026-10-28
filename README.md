@@ -212,7 +212,7 @@ The saga state is saved before the next command is published, every handler acts
 | **Consistency** | Saga with compensation, transactional outbox and inbox, row-level locking, idempotent consumers and an idempotent order API ([patterns 4 to 8](#4-saga-pattern-orchestration-based), [25](#25-idempotent-order-placement)) |
 | **Reliability** | Patient retries for outages, bounded database waits, deadlines, budgeted retries and circuit breakers on calls between services, dead-letter queues with requeue, liveness and readiness probes ([13](#13-resilience-polly), [24](#24-surviving-database-and-network-outages), [26](#26-resilient-calls-between-services)) |
 | **Security** | OIDC with a BFF gateway, JWT validation per service, secrets only in `.env` or Kubernetes Secrets, non-root read-only containers, network policies ([Configuration & Secrets](#configuration--secrets)) |
-| **Scalability** | Order is stateless and scales horizontally (`--scale order=N`, or an autoscaler from 2 to 10 pods on Kubernetes); outbox rows are claimed with `SELECT … FOR UPDATE SKIP LOCKED`; Identity keeps its state in PostgreSQL ([Horizontal Scaling](#horizontal-scaling)) |
+| **Scalability** | Every service but the gateway runs as two or more copies on Kubernetes (Order from 2 to 10 and Product from 2 to 6 on an autoscaler; `--scale order=N` under Compose); outbox rows are claimed with `SELECT … FOR UPDATE SKIP LOCKED`; Identity keeps its state in PostgreSQL ([Horizontal Scaling](#horizontal-scaling)) |
 | **Observability** | Correlation id on every log line, trace and message; Seq, Jaeger, Prometheus and Grafana; saga, outbox and dead-letter monitors ([Developer Portal & Monitoring](#developer-portal--monitoring)) |
 | **Delivery** | CI gates every change; images are published to GHCR and pinned by commit; deployment files are validated against schema and security rules ([CI/CD](#cicd)) |
 
@@ -222,7 +222,7 @@ The saga state is saved before the next command is published, every handler acts
 |---|---|---|
 | **Use** | Local development and a single host | A cluster |
 | **What runs** | The six services plus PostgreSQL, RabbitMQ, Redis, Seq, Jaeger, Prometheus, Grafana, pgAdmin and Redis Insight | The six services plus PostgreSQL, RabbitMQ and Redis |
-| **Hardening** | Read-only root file system, no capabilities, non-root user, health-gated start order | The same, plus pinned `sha-<commit>` images, default-deny network policies and an autoscaler for Order |
+| **Hardening** | Read-only root file system, no capabilities, non-root user, health-gated start order | The same, plus pinned `sha-<commit>` images, default-deny network policies, two replicas of every service but the gateway (spread over the nodes, with disruption budgets) and autoscalers for Order and Product |
 | **Data stores** | Containers with a volume | Single-replica Deployments: use a managed service or an operator for production data |
 
 ---
@@ -1239,7 +1239,7 @@ Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new p
 | **Detect changes** | Decides whether the pull request touches anything that is built, tested or deployed (plain `git diff`, no third-party action). Skipped jobs count as passed in **CI passed**, so the check can stay required for documentation-only changes. |
 | **Storefront (lint, types, tests, build)** | `src/Web/ShopEasy.Web` with Node 22: `npm ci` (exactly what `package-lock.json` says), ESLint, `tsc`, the Vitest tests with their coverage floor, the production build, and a **Trivy** scan of `package-lock.json` (development tools included; HIGH or CRITICAL with a fix fails the job; `npm audit` is not used because on a runner it waits five minutes for npm's advisory service and then fails). Needs no other service. |
 | **Build and test** | `dotnet restore/build` (Release) and all 1008 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 86 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
-| **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, they take the shared ConfigMap (so a setting changed there reaches every service), third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
+| **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, they take the shared ConfigMap (so a setting changed there reaches every service), a service that runs several replicas has a PodDisruptionBudget and is spread over the nodes, third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
 | **Compose stack and end-to-end test** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. Last, it runs the [end-to-end test](#end-to-end-test) against those containers: a customer signs up, signs in, buys something and the order is confirmed, which no unit test can show because it needs every service, the broker and the databases working together. After that it opens the storefront in a real browser ([Browser tests](#storefront)). |
 | **Image scan** (one job per service) | Builds the service image and scans it with **Trivy**, run from its official image, pinned to a version (bump it by hand): the operating-system packages and the .NET runtime of the base image as well as the application. A vulnerability that is **HIGH or CRITICAL and has a fix fails the job**; one without a fix yet does not. The Dockerfiles run `apt-get upgrade`, so an image has Debian's security fixes even when Microsoft has not rebuilt the base image yet. The scan and the publish step build without the layer cache, so an image always has the fixes Debian has published, not those of the day a cached layer was made. A finding that has to be accepted goes into `.trivyignore` with the reason and a date to look at it again. A new CVE with a fix can turn this red without any change in the code: re-run the job (the base image tag is rebuilt when Microsoft releases a fix) or accept the finding. |
 | **CI passed** | One aggregate status for the jobs above (a skipped job counts as passed) — the check to require in branch protection. |
@@ -1285,7 +1285,18 @@ These cannot be done from a workflow file; they are GitHub settings:
 
 ## Horizontal Scaling
 
-The Order service is stateless and built to scale. The distributed outbox lock means duplicate instances never double-process messages.
+Every service but the gateway can run several copies, and the Kubernetes manifests start two of each (Order and Product are also autoscaled). Running more than one copy is what keeps the shop up while one of them crashes, is rolled out or sits on a node that is drained.
+
+| Service | Copies | Why it is safe, or why not |
+|---|---|---|
+| Order | 2 to 10 (autoscaled) | Stateless. Outbox rows are claimed with `FOR UPDATE SKIP LOCKED`, every saga step runs under a row lock, and the copies take commands from the same queue. |
+| Product | 2 to 6 (autoscaled) | Stateless; the cache is in Redis. |
+| Inventory | 2 | Stock changes under row locks and are recorded in a ledger with a unique key, so two copies cannot take the same unit (`ConcurrentReservations_NeverReserveMoreThanTheStock` runs it against PostgreSQL). The copies share one queue and the inbox makes a redelivery harmless. |
+| Payment | 2 | The inbox row and the order's processed-event key are written in the same transaction as the payment, so a command is processed once whichever copy gets it. Two copies were run against the same database and queue through the order tests. |
+| Identity | 2 | Signing keys, key ring and grants are in PostgreSQL, so every copy issues and accepts the same tokens. Copies that start together take turns under a lock (migrations, roles, first administrator). |
+| **Gateway** | **1** | It keeps the login cookie's encryption keys in its own memory, so a second copy could not read the first one's cookies. A shared key store would be a new dependency of the front door, which is more risk than one pod restarting in seconds. A restart signs the customers out; they sign in again. |
+
+The data stores are one instance each ([known limitations](#production-hardening-and-known-limitations)). Under Compose, Order is the service set up for `--scale` (it publishes no host port):
 
 ```bash
 # Scale to 3 instances
@@ -1377,8 +1388,6 @@ shred -u keyring.key keyring.crt key-ring.pfx    # keep the PFX and password in 
 
 Without that Secret the Identity pod stays in `ContainerCreating` (*secret "identity-dataprotection" not found*) — on purpose, rather than silently storing the keys unprotected. **Losing the certificate means losing the key ring**: Identity then creates new signing keys and every user signs in again. To rotate the certificate, mount the old one too and set `DataProtection__PreviousCertificatePath` (it must use the same password), roll out, and remove the old one later.
 
-**Scaling Identity.** Deploy with one replica (it applies its database migrations at start-up), then `kubectl -n shopeasy scale deployment identity --replicas=2`.
-
 **Upgrading from the file-based keys.** Earlier versions kept the signing key in a volume (`identity-keys` in Compose, a PVC in Kubernetes). After the upgrade Identity creates a new key in the database, so tokens signed by the old key stop validating and users sign in once more. Remove the old volume: `docker volume rm shopeasy_identity-keys` / `kubectl -n shopeasy delete pvc identity-keys-pvc`.
 
 ### Network policies
@@ -1392,7 +1401,8 @@ Without that Secret the Identity pod stays in `ContainerCreating` (*secret "iden
 | Docker Compose | Kubernetes |
 |---|---|
 | Manual restart | Self-healing (auto-restart crashed pods) |
-| Manual `--scale` | HorizontalPodAutoscaler (CPU-based, 2–10 pods) |
+| Manual `--scale` | HorizontalPodAutoscaler (CPU-based): Order 2–10 pods, Product 2–6 |
+| One container per service | Two replicas of every service but the gateway, spread over the nodes; a **PodDisruptionBudget** keeps one running while a node is drained for an upgrade |
 | Single machine | Multi-node |
 | Restart = downtime | Zero-downtime rolling updates |
 | No resource caps | Enforced CPU/memory requests & limits |

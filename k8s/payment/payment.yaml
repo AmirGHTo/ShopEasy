@@ -4,7 +4,7 @@ metadata:
   name: payment
   namespace: shopeasy
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: payment
@@ -14,6 +14,14 @@ spec:
         app: payment
     spec:
       automountServiceAccountToken: false
+      # replicas on one node would be lost together with it: spread them over the nodes there are
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: payment
       imagePullSecrets:
         # Only needed while the GHCR packages are private (see the README); harmless when public
         - name: ghcr-pull
@@ -92,3 +100,15 @@ spec:
   ports:
     - port: 8080
       targetPort: 8080
+---
+# A node drain (an upgrade, a repair) may take down one replica at a time, never the last one
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: payment-pdb
+  namespace: shopeasy
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: payment
