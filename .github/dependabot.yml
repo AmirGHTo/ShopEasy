@@ -92,6 +92,14 @@ updates:
       npm-minor-and-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    ignore:
+      # TypeScript 7 is the native (Go) compiler and its npm package only exports an "unstable" API,
+      # not the compiler API that typescript-eslint is built on. typescript-eslint (8.72, its canary
+      # too) accepts TypeScript below 6.1 only, so `npm ci` fails with ERESOLVE (seen in a
+      # Dependabot pull request). Stay on 6.x until typescript-eslint supports 7; forcing the install
+      # with --legacy-peer-deps would only hide the conflict.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   # The actions used by the workflows above
   - package-ecosystem: github-actions
