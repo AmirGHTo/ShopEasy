@@ -9,12 +9,12 @@
   </ItemGroup>
   <ItemGroup>
     <!-- authentication and authorization setup shared by the APIs (token validation, scope policies) -->
-    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.32" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.33" />
     <!-- Patched versions of transitive packages with known vulnerabilities. They flow to every project that references Shared. -->
     <PackageReference Include="System.Text.Json" Version="8.0.6" />
     <PackageReference Include="System.Text.Encodings.Web" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Caching.Abstractions" Version="8.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="8.0.32" />
+    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="8.0.33" />
     <PackageReference Include="StackExchange.Redis" Version="2.13.17" />
 	  <PackageReference Include="Serilog.Sinks.Seq" Version="9.1.0" />
 	  <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
