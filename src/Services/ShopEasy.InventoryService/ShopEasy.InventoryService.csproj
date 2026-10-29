@@ -5,8 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
-	  <PackageReference Include="Grpc.AspNetCore" Version="2.84.0" />
-	  <PackageReference Include="Grpc.AspNetCore.HealthChecks" Version="2.84.0" />
+	  <PackageReference Include="Grpc.AspNetCore" Version="2.85.0" />
+	  <PackageReference Include="Grpc.AspNetCore.HealthChecks" Version="2.85.0" />
 	  <PackageReference Include="Grpc.Tools" Version="2.85.0">
 	    <PrivateAssets>all</PrivateAssets>
 	    <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
