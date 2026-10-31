@@ -682,6 +682,12 @@ setInterval(load,5000);
   .tl-pending{background:#f1f5f9;color:#94a3b8}
   .tl-fail{background:#fee2e2;color:#b91c1c}
   .tl-arrow{color:#cbd5e1;font-size:10px}
+  .order-link{cursor:pointer;text-decoration:underline dotted}
+  .detail{margin-top:20px;background:white;border:0.5px solid #e2e8f0;border-radius:10px;padding:16px 18px}
+  .detail-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px}
+  .detail h2{font-size:14px;font-weight:500;color:#0f172a}
+  .detail-sub{font-size:12px;color:#64748b;font-family:monospace;margin-top:3px}
+  .detail table{border:none;border-radius:0}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 </style>
 </head>
@@ -713,6 +719,7 @@ setInterval(load,5000);
 </div>
 
 <div id="content"><div class="empty">Loading…</div></div>
+<div id="detail"></div>
 
 <script>
 const STATUS = {
@@ -723,7 +730,9 @@ const STATUS = {
   4:'Completed',
   5:'ReleasingInventory',
   6:'Cancelled',
-  7:'Failed'
+  7:'Failed',
+  8:'RefundingPayment',
+  9:'RestockingInventory'
 };
 
 const PAYMENT_STATUS = {
@@ -791,6 +800,66 @@ function fmtAge(seconds){
 
 function shortId(id){
   return id ? id.toString().substring(0,8)+'…' : '—';
+}
+
+function esc(text){
+  return String(text ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// The history of one order: every status its saga has been in (SagaTransitions)
+let openOrder = null;
+
+function showTimeline(orderId){
+  openOrder = orderId;
+  renderTimeline();
+}
+
+function closeTimeline(){
+  openOrder = null;
+  document.getElementById('detail').innerHTML = '';
+}
+
+async function renderTimeline(){
+  const el = document.getElementById('detail');
+  if(!openOrder){ el.innerHTML=''; return; }
+  try{
+    const res = await fetch(`/api/outbox/sagas/${encodeURIComponent(openOrder)}/timeline`);
+    if(!res.ok){
+      el.innerHTML = `<div class="warn-box" style="margin-top:20px">No timeline for order ${esc(openOrder)} (${res.status})
+        <button class="btn" onclick="closeTimeline()">Close</button></div>`;
+      return;
+    }
+    const t = await res.json();
+    const rows = (t.transitions||[]).map(x => {
+      const from = x.from ? `<span class="status-pill s-${esc(x.from)}">${esc(x.from)}</span>` : '<span class="mono">start</span>';
+      const after = x.secondsInPreviousStatus == null ? '—' : fmtDuration(Math.round(x.secondsInPreviousStatus*1000));
+      return `<tr>
+        <td class="mono">${esc(new Date(x.at).toISOString().substring(11,23))}</td>
+        <td>${from} <span class="tl-arrow">→</span> <span class="status-pill s-${esc(x.to)}">${esc(x.to)}</span></td>
+        <td><span class="duration">${esc(after)}</span></td>
+        <td><span style="font-size:12px;color:#b91c1c">${esc(x.reason||'')}</span></td>
+        <td class="mono">${esc(x.correlationId||'')}</td>
+      </tr>`;
+    }).join('');
+    const total = t.totalSeconds == null ? '' : ` · ${fmtDuration(Math.round(t.totalSeconds*1000))} in total`;
+    el.innerHTML = `<div class="detail">
+      <div class="detail-head">
+        <div>
+          <h2>Timeline of order ${esc(t.orderId)}</h2>
+          <div class="detail-sub">${esc(t.status||'')}${total}</div>
+        </div>
+        <button class="btn" onclick="closeTimeline()">Close</button>
+      </div>
+      ${rows ? `<table>
+        <thead><tr><th style="width:110px">Time (UTC)</th><th>Status change</th>
+          <th style="width:110px">Time in previous status</th><th>Reason</th><th>Correlation id</th></tr></thead>
+        <tbody>${rows}</tbody></table>`
+        : '<div class="empty">No transitions recorded: this saga is older than the history</div>'}
+    </div>`;
+  }catch(e){
+    el.innerHTML = `<div class="warn-box" style="margin-top:20px">Failed to load the timeline: ${esc(e.message)}</div>`;
+  }
 }
 
 async function load(){
@@ -886,7 +955,7 @@ async function load(){
             : '<span style="color:#cbd5e1;font-size:11px">unavailable</span>';
 
         return `<tr style="${s.isTimedOut?'background:#fef2f2':''}">
-          <td><span class="order-id" title="${s.orderId}">${shortId(s.orderId)}</span></td>
+          <td><span class="order-id order-link" title="${s.orderId} — click for its timeline" onclick="showTimeline('${s.orderId}')">${shortId(s.orderId)}</span></td>
           <td>
             <span class="status-pill s-${name}">
               <span class="dot ${dotClass(name)}"></span>${name}
@@ -907,7 +976,7 @@ async function load(){
 }
 
 load();
-setInterval(load, 3000);
+setInterval(() => { load(); renderTimeline(); }, 3000);
 </script>
 </body>
 </html>

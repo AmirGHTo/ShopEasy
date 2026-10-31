@@ -118,6 +118,46 @@ public class OutboxController(
         }));
     }
 
+    // ── GET /api/outbox/sagas/{orderId}/timeline ──────────────────────────────
+    // Every status the order's saga has been in, in order: when it entered it, how long it had
+    // stayed in the one before, and why (a decline, a timeout, a give-up). Kept for
+    // SagaHistory:RetentionDays. Same policy as the rest of the monitor (the controller's).
+    //   200 the timeline (empty "transitions" for a saga older than the history) · 404 no such saga
+    [HttpGet("sagas/{orderId:guid}/timeline")]
+    public async Task<IActionResult> GetSagaTimeline(Guid orderId, CancellationToken ct)
+    {
+        var saga = await _db.SagaStates.AsNoTracking().FirstOrDefaultAsync(s => s.OrderId == orderId, ct);
+        var rows = await _db.SagaTransitions.AsNoTracking()
+            .Where(t => t.OrderId == orderId)
+            .OrderBy(t => t.At).ThenBy(t => t.Id)
+            .ToListAsync(ct);
+
+        if (saga is null && rows.Count == 0)
+            return NotFound(new { message = $"No saga for order {orderId}" });
+
+        return Ok(new
+        {
+            OrderId = orderId,
+            Status = saga?.Status.ToString(),
+            saga?.CorrelationId,
+            // first entry to last entry, or, for a saga that is still going, until now
+            TotalSeconds = rows.Count == 0
+                ? (double?)null
+                : ((saga is { Status: SagaStatus.Completed or SagaStatus.Cancelled or SagaStatus.Failed }
+                        ? rows[^1].At
+                        : DateTime.UtcNow) - rows[0].At).TotalSeconds,
+            Transitions = rows.Select(t => new
+            {
+                t.At,
+                From = t.FromStatus?.ToString(),
+                To = t.ToStatus.ToString(),
+                t.SecondsInPreviousStatus,
+                t.Reason,
+                t.CorrelationId
+            })
+        });
+    }
+
     #endregion
 
     #region deadletter monitor

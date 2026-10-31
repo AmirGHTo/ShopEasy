@@ -147,6 +147,18 @@ public static class OrderMetrics
                 Buckets = new[] { .1, .5, 1, 2, 5, 10, 30 }
             });
 
+    private static readonly Histogram SagaStepDuration = Prometheus.Metrics
+        .CreateHistogram(
+            "shopeasy_saga_step_duration_seconds",
+            "How long a saga stayed in a status before it moved on, by the status it left and the one it entered " +
+            "(recorded when the change is saved). A slow Payment step and a slow Inventory step are different series.",
+            new HistogramConfiguration
+            {
+                LabelNames = new[] { "from", "to" }, // SagaStatus names, e.g. ProcessingPayment -> Completing
+                // up to the saga timeout (2 minutes) and a little beyond it
+                Buckets = new[] { .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300 }
+            });
+
     private static readonly Histogram OrderAmount = Prometheus.Metrics
         .CreateHistogram(
             "shopeasy_order_amount_dollars",
@@ -245,6 +257,9 @@ public static class OrderMetrics
 
     public static void RecordSagaFailed()
         => SagaDuration.WithLabels("failed").Observe(0);
+
+    public static void RecordSagaStep(string from, string to, double seconds)
+        => SagaStepDuration.WithLabels(from, to).Observe(seconds);
 }
 
 // The values of the "reason" label of shopeasy_order_outcomes_total for a cancelled order
