@@ -2,11 +2,11 @@
 
 # ShopEasy
 
-**A sample microservices project for practising reliability patterns**
+**A microservices project built as a sandbox for practicing reliability patterns.**
 
-A small online-shop backend split into six services. It exists to apply reliability patterns (what to do when a
+An online-shop backend split into six services. It exists to apply reliability patterns (what to do when a
 service crashes, a message arrives twice, or the database restarts) and to check, with tests that break things
-on purpose, that they work. The shop is deliberately simple and simulated.
+on purpose, that they work.
 
 [![CI/CD](https://github.com/AmirGHTo/ShopEasy/actions/workflows/ci.yml/badge.svg)](https://github.com/AmirGHTo/ShopEasy/actions/workflows/ci.yml)
 ![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)
@@ -50,9 +50,9 @@ on purpose, that they work. The shop is deliberately simple and simulated.
 
 ## Overview
 
-ShopEasy is a **learning project**: a sample microservices system (.NET 8) used to apply reliability patterns in a realistic but simplified setting, and to see what each pattern does when something goes wrong.
+a sample microservices system (.NET 8) used to apply reliability patterns in a realistic but simplified setting, and to see what each pattern does when something goes wrong.
 
-The shop is a toy. You browse products, place an order, pay, and get a confirmation. Payments go to a simulated provider, there is no shipping, and nothing here has served real customers. The engineering problem is real, though. An order touches three services and three databases, so there is no single transaction, and any part can crash, restart, repeat a message or slow down.
+You browse products, place an order, pay, and get a confirmation. Payments go to a simulated provider, there is no shipping, and nothing here has served real customers. The engineering problem is real, though. An order touches three services and three databases, so there is no single transaction, and any part can crash, restart, repeat a message or slow down.
 
 **Patterns practised here** (each is explained further down):
 
