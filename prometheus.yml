@@ -6,6 +6,12 @@ global:
 rule_files:
   - prometheus-rules.yml
 
+# Where firing alerts go: Alertmanager groups them and mails them (alertmanager.yml)
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
 # Every process serves its metrics on a port of its own (Metrics__Port, default 9091), not on the port
 # of its API: the API ports are the ones that are published to the host or reachable from outside, and
 # Compose does not publish 9091. The metrics are not authenticated, so that port must stay internal.
