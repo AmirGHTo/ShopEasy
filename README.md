@@ -214,7 +214,7 @@ The saga state is saved before the next command is published, every handler acts
 | **Reliability** | (the map: [Reliability](#reliability)) Patient retries for outages, bounded database waits, deadlines, budgeted retries and circuit breakers on calls between services, dead-letter queues with requeue, liveness and readiness probes ([13](#13-resilience-polly), [24](#24-surviving-database-and-network-outages), [26](#26-resilient-calls-between-services)) |
 | **Security** | OIDC with a BFF gateway, JWT validation per service, secrets only in `.env` or Kubernetes Secrets, non-root read-only containers, network policies ([Configuration & Secrets](#configuration--secrets)) |
 | **Scalability** | Every service but the gateway runs as two or more copies on Kubernetes (Order from 2 to 10 and Product from 2 to 6 on an autoscaler; `--scale order=N` under Compose); outbox rows are claimed with `SELECT … FOR UPDATE SKIP LOCKED`; Identity keeps its state in PostgreSQL ([Horizontal Scaling](#horizontal-scaling)) |
-| **Observability** | Correlation id and trace id on every log line (JSON in a cluster), correlation id on every trace and message; Seq, Jaeger, Prometheus and Grafana; saga, outbox and dead-letter monitors ([Developer Portal & Monitoring](#developer-portal--monitoring)) |
+| **Observability** | Correlation id and trace id on every log line (JSON in a cluster), correlation id on every trace and message; Seq, Jaeger, Prometheus, Alertmanager and Grafana; saga, outbox and dead-letter monitors ([Developer Portal & Monitoring](#developer-portal--monitoring)) |
 | **Delivery** | CI gates every change; images are published to GHCR and pinned by commit; deployment files are validated against schema and security rules ([CI/CD](#cicd)) |
 
 ### Deployment
@@ -222,7 +222,7 @@ The saga state is saved before the next command is published, every handler acts
 | | Docker Compose | Kubernetes |
 |---|---|---|
 | **Use** | Local development and a single host | A cluster |
-| **What runs** | The six services plus PostgreSQL, RabbitMQ, Redis, Seq, Jaeger, Prometheus, Grafana, pgAdmin and Redis Insight | The six services plus PostgreSQL, RabbitMQ and Redis |
+| **What runs** | The six services plus PostgreSQL, RabbitMQ, Redis, Seq, Jaeger, Prometheus, Alertmanager, Mailpit, Grafana, pgAdmin and Redis Insight | The six services plus PostgreSQL, RabbitMQ and Redis |
 | **Hardening** | Read-only root file system, no capabilities, non-root user, health-gated start order | The same, plus pinned `sha-<commit>` images, default-deny network policies, two replicas of every service but the gateway (spread over the nodes, with disruption budgets) and autoscalers for Order and Product |
 | **Data stores** | Containers with a volume | Single-replica Deployments: use a managed service or an operator for production data |
 
@@ -239,7 +239,7 @@ The saga state is saved before the next command is published, every handler acts
 | **Inventory** | Stock levels, reservation, commit and release under row-level locks. | Stock and ledger | REST, gRPC, RabbitMQ | 5103 (REST), 8090 (gRPC, internal) |
 | **Payment** | Payment processing and refunds (simulated provider). | Payments | REST, RabbitMQ | 5104 |
 
-**Infrastructure containers (Compose):** PostgreSQL, RabbitMQ, Redis, Seq, Jaeger, Prometheus, Grafana, pgAdmin and Redis Insight.
+**Infrastructure containers (Compose):** PostgreSQL, RabbitMQ, Redis, Seq, Jaeger, Prometheus, Alertmanager, Mailpit, Grafana, pgAdmin and Redis Insight.
 
 ---
 
@@ -252,7 +252,7 @@ The saga state is saved before the next command is published, every handler acts
 | **Messaging** | RabbitMQ 3.13 through MassTransit, with transactional inbox and outbox |
 | **Communication** | YARP reverse proxy, gRPC (`inventory.proto`), HTTP with Polly resilience (retries, circuit breakers, timeouts) |
 | **Identity and security** | Duende IdentityServer (OAuth 2.0 / OIDC), JWT bearer authentication, Backend-for-Frontend pattern |
-| **Observability** | Serilog and Seq, OpenTelemetry and Jaeger, prometheus-net, Prometheus and Grafana |
+| **Observability** | Serilog and Seq, OpenTelemetry and Jaeger, prometheus-net, Prometheus, Alertmanager and Grafana |
 | **Testing** | xUnit, FluentAssertions, NSubstitute; tests that run against real PostgreSQL and RabbitMQ |
 | **Delivery** | Docker and Docker Compose, Kubernetes (kustomize), GitHub Actions, GitHub Container Registry |
 
@@ -471,7 +471,7 @@ Every service exposes `/health`, `/health/ready`, and `/health/live`. Used by Do
   - **Polling loops:** `shopeasy_background_loop_failed_passes_total{loop}` counts the passes of the saga orchestrator, saga timeout service, outbox delivery and dead-letter monitor (`loop` is `saga_orchestrator`, `saga_timeout_service`, `outbox_delivery_service` or `dead_letter_monitor`) that failed or were cancelled for taking too long. `shopeasy_background_loop_last_success_timestamp_seconds{loop}` is when each loop last completed a pass (it is set when the loop starts, too), so `time()` minus it is how long the loop has made no progress.
   - **Consistency:** `shopeasy_consistency_violations{rule}` is the number of settled orders that disagree with what Payment holds, by rule (pattern 27); it should be 0. `shopeasy_consistency_orders_checked_total` counts the orders compared.
   - **The front door:** what a customer feels is what the gateway answers. `http_requests_received_total{service="Gateway"}` and `http_request_duration_seconds` give two measures, recorded by `prometheus-rules.yml` as `shopeasy:gateway_server_errors:ratio_10m` (the share of answers that were a 5xx in the last 10 minutes; a 4xx, the 429 of a rate limit included, is the system doing its job and does not count) and `shopeasy:gateway_request_duration_seconds:p95_10m` (the time within which 19 answers in 20 came). `ShopServerErrorsHigh` fires when the first is above 2% for 5 minutes (with at least 20 answers in the window, so a few failed requests on a quiet night say nothing) and `ShopSlow` when the second is above 2 seconds for 10 minutes. Prometheus keeps its history (15 days) in the `prometheus-data` volume, so a restart does not erase the evidence of what happened.
-  - **Alert rules:** `prometheus-rules.yml` raises `OrderStuck`, `OrderFailed`, `StockMayHaveLeaked`, `OutboxBacklog`, `SagaCommandsNotSent` (a saga command has waited in the outbox for more than 2 minutes), `PollingLoopStalled` (a loop has completed no pass for 2 minutes), `OrderConsistencyViolated` (an order disagrees with its payment), `PaymentsDeclinedHigh`, `ServiceDown` (Prometheus cannot scrape a service for a minute), `ShopServerErrorsHigh` and `ShopSlow` (see *The front door* above); firing alerts are listed at http://localhost:9090/alerts. Sending them anywhere needs an Alertmanager, which is not part of this stack. `prometheus-rules.test.yml` checks each rule against made-up series (`promtool test rules prometheus-rules.test.yml`), and CI runs it.
+  - **Alert rules:** `prometheus-rules.yml` raises `OrderStuck`, `OrderFailed`, `StockMayHaveLeaked`, `OutboxBacklog`, `SagaCommandsNotSent` (a saga command has waited in the outbox for more than 2 minutes), `PollingLoopStalled` (a loop has completed no pass for 2 minutes), `OrderConsistencyViolated` (an order disagrees with its payment), `PaymentsDeclinedHigh`, `ServiceDown` (Prometheus cannot scrape a service for a minute), `ShopServerErrorsHigh` and `ShopSlow` (see *The front door* above); firing alerts are listed at http://localhost:9090/alerts and mailed by Alertmanager to a local mailbox (Mailpit, http://localhost:8025; [How alerts reach you](#how-alerts-reach-you)), each with a link to its [runbook](#runbooks); `Watchdog` always fires, to prove the chain works. `prometheus-rules.test.yml` checks each rule against made-up series (`promtool test rules prometheus-rules.test.yml`), and CI runs it.
 
 ### 20. Server-Side Pricing & Request Validation
 
@@ -677,7 +677,7 @@ Microsoft's Azure Well-Architected Framework describes the reliability of a work
 | **RE:07** | Protect the workload under stress (self-preservation) and let it repair itself (self-healing). | Preservation: deadlines, retry budgets, circuit breakers, back-pressure, rate limits, bounded pools, bounded database waits ([24](#24-surviving-database-and-network-outages), [26](#26-resilient-calls-between-services)). Healing: probes and restarts in Kubernetes, reconnecting clients, guarded polling loops, the saga timeout and the orchestrator's retries, idempotent redelivery. | Applied. Compose has no restart policy on purpose (below) |
 | **RE:08** | Test resiliency by injecting failures (chaos engineering). | Eight scenarios in real containers (broker down, broker restarted with a command waiting in a queue, Payment killed, PostgreSQL stopped mid-saga, a crash loop of three services, Redis down, Identity down, gateway killed), failure injection against real PostgreSQL with a control for every limit, and tests of the alert rules ([How it is proved](#how-it-is-proved)). They found real defects, each now covered by a test that fails without its fix. | Applied, with limits: no scheduled game day and no load test |
 | **RE:09** | Have a tested, documented disaster-recovery plan that matches the targets. | [Backups and disaster recovery](#backups-and-disaster-recovery): what is backed up and what is not, two scripts, the restore steps, and a **rehearsal in CI** that deletes the PostgreSQL container and its volume, restores, and compares every table. | Applied, with limits: daily-dump grade (the recovery point is the age of the last backup); no schedule and no off-site copy shipped |
-| **RE:10** | Measure health indicators across components and flows, and keep the measurements. | Metrics from every service, [eleven alerts](#what-to-watch), a dashboard, structured logs and traces with one correlation id across HTTP and messages; Prometheus keeps its 15 days of history in a volume. | Applied, with limits: alerts are shown in Prometheus but delivered nowhere (e-mail, chat or a pager needs an Alertmanager and a receiver, which is a deployment choice) |
+| **RE:10** | Measure health indicators across components and flows, and keep the measurements. | Metrics from every service, [eleven alerts and a watchdog, each with a runbook](#what-to-watch), a dashboard, structured logs and traces with one correlation id across HTTP and messages; Prometheus keeps its 15 days of history in a volume. | Applied, with limits: alerts go through Alertmanager to a local mailbox; a real receiver (e-mail, chat or a pager) is a deployment choice and is documented, not configured |
 
 The five **design principles** of the same pillar, and where each shows:
 
@@ -788,7 +788,7 @@ The chaos tests found real defects: a database restart answered the next HTTP re
 
 ### What to watch
 
-`prometheus-rules.yml` raises these alerts (firing ones are listed at http://localhost:9090/alerts; sending them anywhere needs an Alertmanager, which is not part of this stack):
+`prometheus-rules.yml` raises these alerts. Firing ones are listed at http://localhost:9090/alerts and mailed by Alertmanager to Mailpit (http://localhost:8025); each mail links to its [runbook](#runbooks):
 
 | Alert | It means |
 |---|---|
@@ -803,6 +803,7 @@ The chaos tests found real defects: a database restart answered the next HTTP re
 | `ServiceDown` | Prometheus cannot scrape a service for a minute: it is down, or its metrics port is unreachable. |
 | `ShopServerErrorsHigh` | More than 2 % of the gateway's answers in 10 minutes were server errors (with at least 20 answers). |
 | `ShopSlow` | The gateway's 95th-percentile answer time has been above 2 seconds for 10 minutes. |
+| `Watchdog` | Always fires, on purpose: its mail proves that alerting works. If it stops arriving, alerts are not being delivered. |
 
 Besides the alerts: error queues are listed on the Dead Letter Monitor page and logged as `DEAD LETTER ALERT`, every log line and trace carries the correlation id of the request, and the **ShopEasy Overview** dashboard shows the order outcomes, stuck orders and the outbox and payment figures ([pattern 19](#19-observability--the-three-pillars)).
 
@@ -815,7 +816,7 @@ The full list is in [Hardening and Known Limitations](#hardening-and-known-limit
 - **A long outage.** A database down for longer than about 7 minutes sends the messages in flight to the error queues, to be requeued by hand. An order whose reply arrives after the 2-minute saga timeout is cancelled and compensated, which is safe but not what the customer hoped for.
 - **The consistency check** compares payments only, judges what Payment holds when it asks, and keeps its findings in memory.
 - **No load or capacity testing**, so the autoscaler thresholds and the targets above are conventions, not measurements; and no scheduled game day, the failure tests run only when CI runs.
-- **Alerts are not delivered.** They are shown in Prometheus; sending them to e-mail, chat or a pager needs an Alertmanager and a receiver, which depends on where the system runs.
+- **Alerts go to a local mailbox only.** Alertmanager delivers them to Mailpit; sending them to a real e-mail address, chat or a pager needs a receiver in `alertmanager.yml` (with credentials from outside the repository), which depends on where the system runs.
 - **A service that starts while Identity is down** answers `401` until Identity is back (the copies already running are not affected).
 
 ---
@@ -1285,6 +1286,8 @@ All reachable from the developer portal at `http://localhost:5000/portal` (the s
 | RabbitMQ Management | http://localhost:15672 | `RABBITMQ_USER` / `RABBITMQ_PASSWORD` from `.env` |
 | Jaeger (tracing) | http://localhost:16686 | — |
 | Prometheus | http://localhost:9090 (Status → Targets shows the six services it scrapes on port `9091`) | — |
+| Alertmanager (alerts: groups, silences) | http://localhost:9093 (see [How alerts reach you](#how-alerts-reach-you)) | — |
+| Mailpit (the mailbox the alert mails land in) | http://localhost:8025 | — |
 | Grafana (dashboards) | http://localhost:3000 | `admin` / `GRAFANA_ADMIN_PASSWORD` from `.env` |
 | Seq (logs) | http://localhost:5341 | — |
 | Redis Insight | http://localhost:5540 | — |
@@ -1339,6 +1342,90 @@ docker-compose start payment
 ```
 
 To reliably get a successful payment for the refund test, set `Testing__ForcePaymentSuccess: "true"` on the payment service in `docker-compose.yml` (Compose already does). To get a declined one on purpose, order more than 10,000 worth: the provider's single-transaction limit declines it even then.
+
+
+### How alerts reach you
+
+Prometheus evaluates `prometheus-rules.yml` every 15 seconds. An alert that stays true for its `for:` time **fires** and Prometheus hands it to **Alertmanager** (http://localhost:9093), which does what Prometheus does not: it **groups** alerts of one kind into one message, **de-duplicates** them, lets you **silence** one (Silences in its UI) and **inhibits** symptoms of a known cause. The message is an e-mail to **Mailpit** (http://localhost:8025), a catch-all mailbox that keeps everything on the machine. The rules are in `alertmanager.yml`: critical alerts go out within seconds and repeat hourly, warnings are grouped and repeat every four hours, and while `ServiceDown` fires the alerts it explains (errors, slowness, stuck orders, a backlog) are not mailed. To send alerts somewhere real, add a receiver (e-mail, Slack, a pager service) to that file; credentials do not belong in it.
+
+**`Watchdog`** always fires on purpose. Its mail, sent every 12 hours, is the proof that the chain Prometheus → Alertmanager → mailbox works; if it stops arriving, nothing else could tell you that alerts are lost.
+
+Try it: `docker compose stop payment`, wait a few minutes, and open Mailpit: a `ServiceDown` mail for `shopeasy-payment` arrives with a link to its runbook below; start Payment again and the resolved mail follows.
+
+### Runbooks
+
+Each alert mail links to its heading here: what it means, where to look first, what to do. The monitors are in the developer portal ([Developer Portal & Monitoring](#developer-portal--monitoring)); logs are in Seq (`OrderId = '<guid>'` or `CorrelationId = '<id>'` finds one order), traces in Jaeger, the numbers in Grafana.
+
+#### Watchdog
+
+- **Means:** nothing is wrong. This alert always fires, to prove that alerting works.
+- **If it stops arriving:** alerting is broken. Look at Prometheus → Status → Alertmanagers (is `alertmanager:9093` listed and up?), at `docker compose ps alertmanager mailpit` and at the Alertmanager log.
+
+#### ServiceDown
+
+- **Means:** Prometheus has not been able to scrape a service's metrics port for a minute (`job` in the mail says which): the service is down, or stuck, or its metrics port is unreachable.
+- **Look at:** `docker compose ps`, `docker compose logs <service>` (a crash loop usually names a missing or invalid setting at start-up), the service's `/health/ready` and Prometheus → Status → Targets.
+- **Do:** fix the cause and restart it. While it fires, the alerts it causes are held back; check them after it resolves.
+
+#### ShopServerErrorsHigh
+
+- **Means:** more than 2% of the gateway's answers in the last 10 minutes were server errors (5xx), with at least 20 answers.
+- **Look at:** the **HTTP Error Rate** panel (which service the errors come from), then Seq: `@Level = 'Error'` for that `Service`, and Jaeger traces with errors for it.
+- **Do:** usually a dependency is down or failing (compare `ServiceDown`, `OutboxBacklog`); fix that. If the errors are in one endpoint after a release, roll the release back.
+
+#### ShopSlow
+
+- **Means:** the 95th-percentile answer time of the gateway has been above 2 seconds for 10 minutes.
+- **Look at:** the **HTTP Response Time (p95)** panel by service; in Jaeger sort the slowest traces and see which span is long (a database command, a call to another service); `shopeasy_downstream_retries_total` and `shopeasy_downstream_circuit_transitions_total` for a struggling dependency.
+- **Do:** relieve or restart the slow part. A slow database shows as long database spans; look for locks in pgAdmin.
+
+#### OrderStuck
+
+- **Means:** the oldest order still in progress is more than 10 minutes old. The timeout service should have settled it after 2 minutes.
+- **Look at:** the **Saga Monitor** (`/sagas`) for the order and its state; Seq with `OrderId = '<guid>'`; `PollingLoopStalled` (a stopped timeout service), `/deadletters` (a message that failed), the Order service log.
+- **Do:** fix what stops the loop or the message (requeue the dead letter once the cause is fixed). The timeout service re-sends the safe commands by itself, so a persistent stuck order means a loop is down or a message is poisoned.
+
+#### OrderFailed
+
+- **Means:** the orchestrator gave up on an order after its retries (a service or the broker was unreachable for too long). The order was cancelled and compensated; a person has to look.
+- **Look at:** the Saga Monitor for the order and its failure reason; Seq with `OrderId`; was the stock reserved before it failed (`StockMayHaveLeaked`)?
+- **Do:** fix the cause. The customer has to place the order again.
+
+#### StockMayHaveLeaked
+
+- **Means:** an order was cancelled but the release of its reserved stock was never confirmed, so Inventory may still hold units for a cancelled order (reason `release_not_confirmed`).
+- **Look at:** the Saga Monitor for the order; the Inventory ledger for that order in pgAdmin (`shopeasy_inventory`); `/deadletters` for a failed release message.
+- **Do:** requeue the dead letter once Inventory works. If no message is left to requeue, the reservation has to be corrected by hand in the Inventory database (the ledger row of the order and `ReservedQty`), with care and a note of the order.
+
+#### OutboxBacklog
+
+- **Means:** more than 50 events have waited in the Order outbox for 5 minutes, which almost always means the broker is unreachable.
+- **Look at:** RabbitMQ (`docker compose ps rabbitmq`, http://localhost:15672), the Outbox Monitor (`/outbox`), the Order log (`Outbox: message bus is not ready — delivery paused`).
+- **Do:** bring RabbitMQ back. The backlog drains by itself; do not delete outbox rows.
+
+#### SagaCommandsNotSent
+
+- **Means:** a saga command has waited in the Order outbox for more than 2 minutes: the broker is unreachable, or the outbox delivery service fails.
+- **Look at:** the same as `OutboxBacklog`, plus `shopeasy_saga_command_oldest_pending_age_seconds` and the Order log for delivery failures.
+- **Do:** restore the broker or fix the delivery error. Orders wait meanwhile and are not lost.
+
+#### PollingLoopStalled
+
+- **Means:** one of the Order service's background loops (`loop` in the mail names it: saga orchestrator, saga timeout service, outbox delivery, dead-letter monitor, consistency check) has completed no pass for 2 minutes.
+- **Look at:** the Order log: a failing loop logs its exception once and, when it works again, a line `… recovered after N failed pass(es)`; usually the database, the broker or (for the consistency check) Payment is unreachable.
+- **Do:** fix that dependency. A pass that hangs is cancelled after 120 seconds; if the loop never recovers, restart the Order service.
+
+#### OrderConsistencyViolated
+
+- **Means:** a settled order disagrees with what Payment holds for it (`rule` in the mail: goods without a payment, a different amount, a double charge, a cancelled order still charged). Nothing is changed automatically.
+- **Look at:** Seq, `CONSISTENCY VIOLATION`: each line names the order, its status and total and what Payment holds; then the order's timeline in the Saga Monitor and its payment in pgAdmin (`shopeasy_payments`).
+- **Do:** decide what is right (refund, cancel, correct the record) and make it so; the alert clears when the two agree.
+
+#### PaymentsDeclinedHigh
+
+- **Means:** more than 30% of the recent payments were declined. The simulated provider declines about 10%, so this points to a broken provider or a bad release.
+- **Look at:** the **Payments (5m)** panel and the Payment log; the `Testing__ForcePaymentSuccess` and provider settings of the running configuration.
+- **Do:** roll back a release that changed the payment path; otherwise fix the provider settings.
 
 ---
 
@@ -1472,8 +1559,8 @@ Runs on every pull request, every push to `main` and every `v*.*.*` tag. A new p
 | **Detect changes** | Decides whether the pull request touches anything that is built, tested or deployed (plain `git diff`, no third-party action). Skipped jobs count as passed in **CI passed**, so the check can stay required for documentation-only changes. |
 | **Storefront (lint, types, tests, build)** | `src/Web/ShopEasy.Web` with Node 22: `npm ci` (exactly what `package-lock.json` says), ESLint, `tsc`, the Vitest tests with their coverage floor, the production build, and a **Trivy** scan of `package-lock.json` (development tools included; HIGH or CRITICAL with a fix fails the job; `npm audit` is not used because on a runner it waits five minutes for npm's advisory service and then fails). Needs no other service. |
 | **Build and test** | `dotnet restore/build` (Release) and all 1084 tests against **PostgreSQL 16 and RabbitMQ 3.13 service containers** (RabbitMQ without the management plugin on purpose). A guard step **fails the job if any test was skipped**, so a mis-wired service container cannot turn the 86 infrastructure tests into silent no-ops. `CI=true` also turns the NuGet vulnerability audit into errors (below). A test that hangs is aborted after 5 minutes and named in the output instead of holding the job until its 25-minute limit. Test results are uploaded as an artifact; the counters appear in the job summary. |
-| **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, they take the shared ConfigMap (so a setting changed there reaches every service), a service that runs several replicas has a PodDisruptionBudget and is spread over the nodes, third-party images have a version tag, and the namespace denies ingress by default; and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
-| **Compose stack and end-to-end test** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. Last, it runs the [end-to-end test](#end-to-end-test) against those containers: a customer signs up, signs in, buys something and the order is confirmed, which no unit test can show because it needs every service, the broker and the databases working together. After that it opens the storefront in a real browser ([Browser tests](#storefront)), asks Prometheus whether the Order service's [consistency check](#27-checking-the-result-across-services), which ran while the tests placed their orders, examined every one of them and found none that disagrees with its payment, and finally and rehearses a disaster: it backs the databases up, throws the PostgreSQL container and its volume away, restores into a new empty one, checks that every table holds the same number of rows and places an order on the restored data ([Backups and disaster recovery](#backups-and-disaster-recovery)). |
+| **Validate Compose and Kubernetes files** | `docker compose config` with `.env.example` (catches a new required variable that is missing from the example); `kubectl kustomize k8s` validated with `kubeconform -strict`; **deployment rules** on the rendered manifests (`.github/scripts/check-k8s-manifests.py`): the six service images come from GHCR and are pinned to a `sha-<commit>` tag (never `latest`, never `imagePullPolicy: Never`), their containers run as non-root with a read-only root file system, no privilege escalation, no capabilities and resource limits, they take the shared ConfigMap (so a setting changed there reaches every service), a service that runs several replicas has a PodDisruptionBudget and is spread over the nodes, third-party images have a version tag, and the namespace denies ingress by default; the Prometheus and Alertmanager configuration (`promtool`, `amtool`), the alert rules against made-up series, a check that every alert has a severity and a [runbook](#runbooks) heading in the README (`.github/scripts/check-alert-rules.py`), and a check that every Dockerfile's .NET base image matches the projects' target framework (an image *build* succeeds with a wrong version, but a `net8.0` app cannot start on a .NET 10 runtime — so a base-image bump must show up as a red check). |
+| **Compose stack and end-to-end test** | Builds all six service images from their Dockerfiles (so a Dockerfile that no longer builds fails here; nothing is pushed from a pull request) and **starts the real containers** (PostgreSQL, RabbitMQ, Redis and the six services), hardened as in production — non-root, read-only root file system, no capabilities — and waits for every health check. Then it proves each application container runs as a non-root user, that the metrics are scraped from the internal port only, that the Watchdog alert travels Prometheus → Alertmanager → mailbox, that Identity serves a signing key it generated into PostgreSQL, and that the gateway answers. An image that builds but cannot start (the failure mode of the .NET 10 base-image bump) fails here. Last, it runs the [end-to-end test](#end-to-end-test) against those containers: a customer signs up, signs in, buys something and the order is confirmed, which no unit test can show because it needs every service, the broker and the databases working together. After that it opens the storefront in a real browser ([Browser tests](#storefront)), asks Prometheus whether the Order service's [consistency check](#27-checking-the-result-across-services), which ran while the tests placed their orders, examined every one of them and found none that disagrees with its payment, and finally and rehearses a disaster: it backs the databases up, throws the PostgreSQL container and its volume away, restores into a new empty one, checks that every table holds the same number of rows and places an order on the restored data ([Backups and disaster recovery](#backups-and-disaster-recovery)). |
 | **Image scan** (one job per service) | Builds the service image and scans it with **Trivy**, run from its official image, pinned to a version (bump it by hand): the operating-system packages and the .NET runtime of the base image as well as the application. A vulnerability that is **HIGH or CRITICAL and has a fix fails the job**; one without a fix yet does not. The Dockerfiles run `apt-get upgrade`, so an image has Debian's security fixes even when Microsoft has not rebuilt the base image yet. The scan and the publish step build without the layer cache, so an image always has the fixes Debian has published, not those of the day a cached layer was made. A finding that has to be accepted goes into `.trivyignore` with the reason and a date to look at it again. A new CVE with a fix can turn this red without any change in the code: re-run the job (the base image tag is rebuilt when Microsoft releases a fix) or accept the finding. |
 | **CI passed** | One aggregate status for the jobs above (a skipped job counts as passed) — the check to require in branch protection. |
 
@@ -1666,6 +1753,7 @@ ShopEasy/
 ├── ops/                           # backup.sh and restore.sh (see "Backups and disaster recovery")
 ├── prometheus.yml
 ├── prometheus-rules.yml           # alert rules (+ prometheus-rules.test.yml: their tests)
+├── alertmanager.yml               # where the alerts go: grouping, routing, inhibition, the local mailbox
 ├── grafana/provisioning/          # auto-provisioned dashboards
 ├── k8s/                           # Kubernetes manifests (kubectl apply -k k8s)
 │   ├── kustomization.yaml         # which images (pinned sha-<commit> tags) and resources
