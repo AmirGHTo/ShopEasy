@@ -537,7 +537,9 @@ jobs:
       # Registry paths must be lowercase; the GitHub owner name may not be
       - name: Image name
         id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/shopeasy-${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/shopeasy-${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+          echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v4
 
@@ -566,5 +568,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # the commit, shown as ServiceVersion on every log line of the service
+          build-args: SERVICE_VERSION=${{ steps.image.outputs.version }}
           # No layer cache, so that what is published has the Debian fixes of today and not those of
           # the day a cached layer was made (see the image scan)

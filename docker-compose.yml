@@ -10,6 +10,16 @@ x-hardened: &hardened
   cap_drop:
     - ALL
 
+# Logging (see the README, "Logs"). The console shows readable text here; set LOG_FORMAT=json in .env to
+# see what a cluster prints (one JSON object per line). Every line also goes to Seq. Merged into the
+# environment of all six services. The version in the lines is the commit the image was built from:
+# build with SERVICE_VERSION=$(git rev-parse --short HEAD) docker compose up --build, or leave it as "dev".
+x-logging: &logging
+  Logging__ConsoleFormat: "${LOG_FORMAT:-text}"
+
+x-build-args: &build-args
+  SERVICE_VERSION: "${SERVICE_VERSION:-dev}"
+
 # Resilience settings (see the README, pattern 24). The values are the defaults of the code and of
 # every service's appsettings.json; override one by putting the RESILIENCE_* variable in .env
 # (the commented examples in .env.example). Merged into the environment of the services below.
@@ -208,11 +218,12 @@ services:
     build:
       context: .
       dockerfile: src/Identity/ShopEasy.Identity/Dockerfile
+      args: *build-args
     container_name: shopeasy-identity
     ports:
       - "5001:8080"
     environment:
-      <<: [*resilience-postgres, *web-security]
+      <<: [*logging, *resilience-postgres, *web-security]
       ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_identity;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
       Clients__Gateway__Secret: ${GATEWAY_CLIENT_SECRET:?Set GATEWAY_CLIENT_SECRET in .env}
@@ -255,11 +266,12 @@ services:
     build:
       context: .
       dockerfile: src/Services/ShopEasy.ProductService/Dockerfile
+      args: *build-args
     container_name: shopeasy-product
     ports:
       - "5101:8080"
     environment:
-      <<: [*resilience-postgres, *redis, *identity-validation, *swagger]
+      <<: [*logging, *resilience-postgres, *redis, *identity-validation, *swagger]
       ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_products;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
       IdentityServer__Authority: "http://identity:8080"
@@ -285,11 +297,12 @@ services:
     build:
       context: .
       dockerfile: src/Services/ShopEasy.InventoryService/Dockerfile
+      args: *build-args
     container_name: shopeasy-inventory
     ports:
       - "5103:8080"
     environment:
-      <<: [*resilience-postgres, *resilience-consumers, *redis, *identity-validation, *swagger]
+      <<: [*logging, *resilience-postgres, *resilience-consumers, *redis, *identity-validation, *swagger]
       # Enable HTTP/2 for gRPC (required)
       ASPNETCORE_HTTP_PORTS: ""   # disable default
         # Force HTTP/2 support
@@ -323,11 +336,12 @@ services:
     build:
       context: .
       dockerfile: src/Services/ShopEasy.PaymentService/Dockerfile
+      args: *build-args
     container_name: shopeasy-payment
     ports:
       - "5104:8080"
     environment:
-      <<: [*resilience-postgres, *resilience-consumers, *identity-validation, *swagger]
+      <<: [*logging, *resilience-postgres, *resilience-consumers, *identity-validation, *swagger]
       ASPNETCORE_URLS: http://+:8080
       Testing__ForcePaymentSuccess: "true"
       ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_payments;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
@@ -357,11 +371,12 @@ services:
     build:
       context: .
       dockerfile: src/Services/ShopEasy.OrderService/Dockerfile
+      args: *build-args
     # container_name: shopeasy-order
     ports:
       - "8080"        # ← change from "5102:8080" to just "8080" (dynamic host port)
     environment:
-      <<: [*resilience-postgres, *resilience-consumers, *resilience-retry-budget, *redis, *identity-validation, *swagger]
+      <<: [*logging, *resilience-postgres, *resilience-consumers, *resilience-retry-budget, *redis, *identity-validation, *swagger]
       # Calls to the Inventory service (the stock check): deadline, retries, circuit breaker
       Resilience__Inventory__TimeoutSeconds: "${RESILIENCE_INVENTORY_TIMEOUT_SECONDS:-3}"
       Resilience__Inventory__MaxRetries: "${RESILIENCE_INVENTORY_MAX_RETRIES:-2}"
@@ -423,11 +438,12 @@ services:
     build:
       context: .
       dockerfile: src/Gateway/ShopEasy.Gateway/Dockerfile
+      args: *build-args
     container_name: shopeasy-gateway
     ports:
       - "5000:8080"
     environment:
-      <<: [*resilience-retry-budget, *identity-validation, *web-security]
+      <<: [*logging, *resilience-retry-budget, *identity-validation, *web-security]
       # Proxying: timeout for a silent service, connection limits, retries of GETs
       Resilience__Gateway__ActivityTimeoutSeconds: "${RESILIENCE_GATEWAY_ACTIVITY_TIMEOUT_SECONDS:-30}"
       Resilience__Gateway__ConnectTimeoutSeconds: "${RESILIENCE_GATEWAY_CONNECT_TIMEOUT_SECONDS:-5}"

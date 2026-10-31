@@ -45,6 +45,10 @@ data:
   # before a request reads the database instead (README, pattern 16). Restart the pods to apply.
   Redis__ConnectTimeoutMs: "1000"
   Redis__CommandTimeoutMs: "500"
+  # One JSON object per line on the console, for the log collector of the cluster to read. "text" is the
+  # readable line of the local stack (README, "Logs"). Every line carries TraceId, SpanId, CorrelationId,
+  # Service, ServiceVersion (the commit the image was built from) and Environment.
+  Logging__ConsoleFormat: "json"
   # Seq (log explorer) is part of the Docker Compose stack only. Empty = do not ship logs to Seq;
   # logs still go to the container console. Set it to the URL of your own Seq to use one.
   Seq__ServerUrl: ""
