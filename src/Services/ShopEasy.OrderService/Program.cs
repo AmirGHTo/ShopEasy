@@ -509,6 +509,13 @@ try
     builder.Services.AddScoped<IdempotencyStore>();
     builder.Services.AddHostedService<IdempotencyCleanupService>();
 
+    // ── Saga history: every change of a saga's status is a row in SagaTransitions ──
+    builder.Services.AddOptions<SagaHistoryOptions>()
+        .Bind(builder.Configuration.GetSection(SagaHistoryOptions.SectionName))
+        .Validate(o => o.RetentionDays >= 1,
+            $"{SagaHistoryOptions.SectionName}:{nameof(SagaHistoryOptions.RetentionDays)} must be at least 1.")
+        .ValidateOnStart();
+
     var app = builder.Build();
 
     app.UseMiddleware<CorrelationIdMiddleware>();

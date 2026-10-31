@@ -52,6 +52,7 @@ public class EndpointAccessTests(ApiHosts hosts) : IClassFixture<ApiHosts>
             R("GET",    "api/outbox/pending",                        "api/outbox/pending",                            "401  403  ok   403  403  401  401"),
             R("GET",    "api/outbox/delivered",                      "api/outbox/delivered",                          "401  403  ok   403  403  401  401"),
             R("GET",    "api/outbox/sagas",                          "api/outbox/sagas",                              "401  403  ok   403  403  401  401"),
+            R("GET",    "api/outbox/sagas/{orderId}/timeline",       $"api/outbox/sagas/{Id}/timeline",               "401  403  ok   403  403  401  401"),
             R("GET",    "api/outbox/deadletters",                    "api/outbox/deadletters",                        "401  403  ok   403  403  401  401"),
             R("POST",   "api/outbox/deadletters/{queueName}/requeue","api/outbox/deadletters/some_error/requeue",     "401  403  ok   403  403  401  401"),
         ],
