@@ -124,6 +124,35 @@ services:
       - shopeasy-net
     depends_on:
       - gateway
+      - alertmanager
+
+  # Takes the alerts Prometheus raises (prometheus-rules.yml), groups them and sends them on
+  # (alertmanager.yml). Web UI and API: http://localhost:9093
+  alertmanager:
+    image: prom/alertmanager:v0.34.2
+    container_name: shopeasy-alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.external-url=http://localhost:9093
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - shopeasy-net
+    depends_on:
+      - mailpit
+
+  # A catch-all mailbox for the alert mails: nothing leaves the machine. Web UI and API:
+  # http://localhost:8025. Its SMTP port (1025) is reachable inside the Compose network only.
+  mailpit:
+    image: axllent/mailpit:v1.33.0
+    container_name: shopeasy-mailpit
+    ports:
+      - "8025:8025"
+    networks:
+      - shopeasy-net
 
   grafana:
     image: grafana/grafana:10.4.0

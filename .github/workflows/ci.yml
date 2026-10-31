@@ -282,6 +282,14 @@ jobs:
             docker run --rm --entrypoint promtool -v "$PWD:/work:ro" -w /work prom/prometheus:v2.51.0 $check
           done
 
+      # Alertmanager's own configuration must be valid, every alert must carry a severity and a
+      # runbook link to a README heading that exists, and the inhibitions may only name real alerts.
+      - name: Alertmanager configuration and the alerts' runbooks
+        run: |
+          docker run --rm --entrypoint amtool -v "$PWD:/work:ro" -w /work prom/alertmanager:v0.34.2 check-config alertmanager.yml
+          python3 -m pip install --quiet pyyaml
+          python3 .github/scripts/check-alert-rules.py
+
       # kubeconform says the YAML is valid; this says it is safe: images pinned to a commit, no
       # root, read-only root file system, no capabilities, ingress denied by default.
       - name: Kubernetes deployment rules
@@ -320,18 +328,24 @@ jobs:
       - name: Make the consistency check quick
         run: printf 'ORDER_CONSISTENCY_CHECK_SETTLE_SECONDS=10\nORDER_CONSISTENCY_CHECK_INTERVAL_SECONDS=15\n' >> .env
 
-      # The services of the application, and Prometheus to prove it can scrape them; the other
+      # The services of the application, Prometheus to prove it can scrape them, and Alertmanager with its
+      # mailbox to prove its alerts arrive; the other
       # monitoring tools (Grafana, Seq, Jaeger, ...) do not affect whether the application starts.
       - name: Build the images and start the services
         run: >-
           docker compose up -d --build --wait --wait-timeout 900
-          postgres rabbitmq redis identity product inventory payment order gateway prometheus
+          postgres rabbitmq redis identity product inventory payment order gateway prometheus alertmanager mailpit
 
       - name: Containers run unprivileged
         run: bash .github/scripts/check-running-containers.sh
 
       - name: Metrics are scraped from the internal port only
         run: bash .github/scripts/check-metrics.sh
+
+      # Prometheus -> Alertmanager -> mailbox: the Watchdog alert always fires, so its mail arriving
+      # proves that an alert raised anywhere would arrive too.
+      - name: Alerts reach their receiver (Watchdog mail in the mailbox)
+        run: bash .github/scripts/check-alerting.sh
 
       - name: Identity serves its signing key (generated into and read from PostgreSQL)
         run: |
@@ -435,7 +449,7 @@ jobs:
       - name: Container logs (on failure)
         if: failure()
         run: |
-          docker compose logs --no-color --timestamps --tail 150 identity product gateway postgres redis prometheus
+          docker compose logs --no-color --timestamps --tail 150 identity product gateway postgres redis prometheus alertmanager mailpit
           docker compose logs --no-color --timestamps --tail 1500 order inventory payment rabbitmq
 
       - name: Stop

@@ -1,0 +1,72 @@
+# Alertmanager: what happens to an alert after Prometheus has decided it fires.
+# (Prometheus decides, in prometheus-rules.yml; Alertmanager groups, de-duplicates, silences, inhibits and
+# delivers.) Web UI: http://localhost:9093. The mails land in Mailpit, a catch-all mailbox: http://localhost:8025.
+#
+# To send alerts somewhere real, add a receiver below (e-mail, Slack, a pager service...) and route to it:
+# https://prometheus.io/docs/alerting/latest/configuration/. Credentials do not belong in this file.
+
+global:
+  smtp_smarthost: mailpit:1025        # Mailpit's SMTP port, reachable inside the Compose network only
+  smtp_from: alerts@shopeasy.local
+  smtp_require_tls: false             # a local mailbox: no TLS, no login
+  resolve_timeout: 5m
+
+route:
+  receiver: team
+  # one mail per kind of alert, however many instances fire it
+  group_by: [alertname]
+  group_wait: 30s          # wait a moment for the other alerts of the group before the first mail
+  group_interval: 5m       # how soon a group that already sent a mail may send another about new members
+  repeat_interval: 4h      # remind about an alert that is still firing
+  routes:
+    # the watchdog always fires: it is proof that the chain works, not news
+    - matchers: [alertname = "Watchdog"]
+      receiver: watchdog
+      group_wait: 5s
+      group_interval: 1h
+      repeat_interval: 12h
+    # something that needs a person now: do not wait
+    - matchers: [severity = "critical"]
+      receiver: team
+      group_wait: 10s
+      group_interval: 2m
+      repeat_interval: 1h
+
+receivers:
+  - name: team
+    email_configs:
+      - to: team@shopeasy.local
+        send_resolved: true
+        headers:
+          Subject: '[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .CommonLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}{{ .Annotations.summary }}
+          {{ .Annotations.description }}
+          severity: {{ .Labels.severity }}   {{ if .Labels.job }}job: {{ .Labels.job }}{{ end }}
+          runbook: {{ .Annotations.runbook_url }}
+
+          {{ end }}
+        html: |
+          <h3>{{ .Status | toUpper }}: {{ .CommonLabels.alertname }}</h3>
+          {{ range .Alerts }}<p><b>{{ .Annotations.summary }}</b><br>
+          {{ .Annotations.description }}<br>
+          severity: {{ .Labels.severity }}{{ if .Labels.job }} &middot; job: {{ .Labels.job }}{{ end }}<br>
+          <a href="{{ .Annotations.runbook_url }}">Runbook</a></p>
+          {{ end }}
+  - name: watchdog
+    email_configs:
+      - to: watchdog@shopeasy.local
+        send_resolved: false
+        headers:
+          Subject: '[watchdog] alerting is working'
+        text: |
+          This mail comes from the Watchdog alert, which always fires. If it stops arriving, alerts are not
+          being delivered. Runbook: {{ (index .Alerts 0).Annotations.runbook_url }}
+
+inhibit_rules:
+  # A service that is down explains the symptoms it causes (errors, slowness, stuck orders, a backlog):
+  # while ServiceDown fires, those alerts are not mailed. They fire again if ServiceDown stops and they
+  # are still true. (Downside: a second, unrelated problem is hidden while one service is down.)
+  - source_matchers: [alertname = "ServiceDown"]
+    target_matchers:
+      - alertname =~ "ShopServerErrorsHigh|ShopSlow|OrderStuck|SagaCommandsNotSent|OutboxBacklog|PollingLoopStalled|PaymentsDeclinedHigh"

@@ -1,5 +1,8 @@
-# Alert rules for the business metrics. Firing alerts are listed at http://localhost:9090/alerts;
-# sending them anywhere (e-mail, chat, a pager) needs an Alertmanager, which is not part of this stack.
+# Alert rules. Firing alerts are listed at http://localhost:9090/alerts and sent to Alertmanager
+# (alertmanager.yml), which mails them to a local mailbox (Mailpit, http://localhost:8025). Every alert
+# carries a `severity` and a `runbook_url`: the README section "Runbooks" has one heading per alert
+# (.github/scripts/check-alert-rules.py fails the build if one is missing). Fork? Change the base of
+# the runbook_url values to your repository.
 groups:
   - name: shopeasy-orders
     rules:
@@ -9,6 +12,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#orderstuck
           summary: An order has been in progress for more than 10 minutes
           description: The oldest active order is {{ $value | humanizeDuration }} old. The saga timeout service should have settled it long before.
 
@@ -17,6 +21,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#orderfailed
           summary: The orchestrator gave up on an order, and a person has to look at it
 
       - alert: StockMayHaveLeaked
@@ -24,6 +29,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#stockmayhaveleaked
           summary: An order was cancelled but the release of its reserved stock was never confirmed
 
       - alert: OutboxBacklog
@@ -32,6 +38,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#outboxbacklog
           summary: More than 50 events are waiting in the Order outbox, so the broker is probably unreachable
 
       - alert: SagaCommandsNotSent
@@ -40,6 +47,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#sagacommandsnotsent
           summary: A saga command has been waiting in the Order outbox for more than 2 minutes, so the broker is probably unreachable
 
       - alert: PollingLoopStalled
@@ -48,6 +56,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#pollingloopstalled
           summary: A polling loop of the Order service has completed no pass for 2 minutes
           description: The {{ $labels.loop }} loop last completed a pass {{ $value | humanizeDuration }} ago. It fails (see the Order service log) or hangs.
 
@@ -62,6 +71,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#orderconsistencyviolated
           summary: An order disagrees with what Payment holds for it ({{ $labels.rule }})
           description: >-
             {{ $value }} order(s) break the rule {{ $labels.rule }} (confirmed_not_paid: goods without a payment;
@@ -80,6 +90,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#paymentsdeclinedhigh
           summary: More than 30% of the last payments were declined
           description: The simulated provider declines about 10%. A rate this high points to a broken provider or a bad deployment.
 
@@ -102,6 +113,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#servicedown
           summary: "{{ $labels.job }} cannot be scraped"
           description: The service is down, or its metrics port ({{ $labels.instance }}) cannot be reached. Look at its health check and its log first.
 
@@ -113,6 +125,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#shopservererrorshigh
           summary: More than 2% of the gateway's answers in the last 10 minutes were server errors
           description: "{{ $value | humanizePercentage }} of the answers were 5xx. The \"HTTP Error Rate\" panel of the ShopEasy Overview dashboard shows where they come from."
 
@@ -122,5 +135,19 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#shopslow
           summary: 1 request in 20 takes longer than 2 seconds
           description: The 95th percentile of the gateway's answer time over the last 10 minutes is {{ $value | humanizeDuration }}.
+
+  # An alert that always fires. If its mail stops arriving (or Alertmanager stops listing it), the chain
+  # Prometheus -> Alertmanager -> mailbox is broken, which no other alert could tell us.
+  - name: shopeasy-meta
+    rules:
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#watchdog
+          summary: Alerting is working (this alert always fires)
+          description: Prometheus evaluates its rules and Alertmanager receives the result. If this stops arriving, alerts would not be delivered either.
