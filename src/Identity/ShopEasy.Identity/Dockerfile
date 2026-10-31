@@ -19,6 +19,10 @@ RUN dotnet publish "ShopEasy.Identity.csproj" -c Release -o /app/publish /p:UseA
 FROM base AS final
 WORKDIR /app
 COPY --from=build /app/publish .
+# The commit the image is built from (CI passes it); every log line carries it as ServiceVersion.
+# Last, so that a new commit does not invalidate the cached copy of the application above.
+ARG SERVICE_VERSION=dev
+ENV Service__Version=$SERVICE_VERSION
 # Run as the unprivileged "app" user the base image provides (UID 1654), not as root.
 # The service listens on 8080 (> 1024) and writes nothing to the image's file system.
 USER $APP_UID

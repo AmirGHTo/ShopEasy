@@ -20,6 +20,7 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#orderstuck
               summary: An order has been in progress for more than 10 minutes
               description: The oldest active order is 11m 40s old. The saga timeout service should have settled it long before.
 
@@ -38,6 +39,7 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#sagacommandsnotsent
               summary: A saga command has been waiting in the Order outbox for more than 2 minutes, so the broker is probably unreachable
 
   - interval: 1m
@@ -78,6 +80,7 @@ tests:
               severity: warning
               loop: saga_orchestrator
             exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#pollingloopstalled
               summary: A polling loop of the Order service has completed no pass for 2 minutes
               description: The saga_orchestrator loop last completed a pass 5m 0s ago. It fails (see the Order service log) or hangs.
 
@@ -99,6 +102,7 @@ tests:
               severity: critical
               rule: cancelled_still_charged
             exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#orderconsistencyviolated
               summary: An order disagrees with what Payment holds for it (cancelled_still_charged)
               description: >-
                 1 order(s) break the rule cancelled_still_charged (confirmed_not_paid: goods without a payment;
@@ -118,6 +122,7 @@ tests:
           - exp_labels:
               severity: critical
             exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#orderfailed
               summary: The orchestrator gave up on an order, and a person has to look at it
 
   - interval: 1m
@@ -134,6 +139,7 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#paymentsdeclinedhigh
               summary: More than 30% of the last payments were declined
               description: The simulated provider declines about 10%. A rate this high points to a broken provider or a bad deployment.
 
@@ -168,6 +174,7 @@ tests:
               job: shopeasy-payment
               instance: payment:9091
             exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#servicedown
               summary: shopeasy-payment cannot be scraped
               description: The service is down, or its metrics port (payment:9091) cannot be reached. Look at its health check and its log first.
 
@@ -188,6 +195,7 @@ tests:
           - exp_labels:
               severity: critical
             exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#shopservererrorshigh
               summary: More than 2% of the gateway's answers in the last 10 minutes were server errors
               description: '14.29% of the answers were 5xx. The "HTTP Error Rate" panel of the ShopEasy Overview dashboard shows where they come from.'
 
@@ -248,6 +256,7 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#shopslow
               summary: 1 request in 20 takes longer than 2 seconds
               description: The 95th percentile of the gateway's answer time over the last 10 minutes is 3.9s.
 
@@ -262,3 +271,17 @@ tests:
       - eval_time: 25m
         alertname: ShopSlow
         exp_alerts: []
+
+  - interval: 1m
+    name: the watchdog always fires, so a missing watchdog means alerting is broken
+    input_series: []
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels:
+              severity: none
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#watchdog
+              summary: Alerting is working (this alert always fires)
+              description: Prometheus evaluates its rules and Alertmanager receives the result. If this stops arriving, alerts would not be delivered either.

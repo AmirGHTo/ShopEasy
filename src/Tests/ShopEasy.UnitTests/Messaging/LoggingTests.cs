@@ -10,7 +10,8 @@ using Xunit;
 
 namespace ShopEasy.UnitTests.Messaging;
 
-// What an operator reads: which service wrote the line, and which request it belongs to.
+// What an operator reads: which service wrote the line, which request it belongs to, and which
+// trace (the one Jaeger shows) it is part of.
 public class LoggingTests
 {
     private sealed class Collector : ILogEventSink
@@ -20,11 +21,11 @@ public class LoggingTests
     }
 
     // A logger with the production enrichers and levels, writing to memory instead of the console
-    private static (Serilog.ILogger Logger, Collector Sink) Create(string service, string? environment = null)
+    private static (Serilog.ILogger Logger, Collector Sink) Create(string service, string? environment = null, string? version = null)
     {
         var sink = new Collector();
         var logger = new LoggerConfiguration()
-            .ApplyShopEasyDefaults(service, environment)
+            .ApplyShopEasyDefaults(service, environment, version)
             .WriteTo.Sink(sink)
             .CreateLogger();
         return (logger, sink);
@@ -50,7 +51,7 @@ public class LoggingTests
 
         logger.Information("Order saved");
 
-        Render(sink.Events.Single()).Should().Be($"[INF] [{service}] [-] Order saved");
+        Render(sink.Events.Single()).Should().Be($"[INF] [{service}] [-] [] Order saved");
     }
 
     [Fact]
@@ -64,9 +65,9 @@ public class LoggingTests
         logger.Information("after");
 
         sink.Events.Select(Render).Should().Equal(
-            "[INF] [ShopEasy.PaymentService] [-] before",
-            "[INF] [ShopEasy.PaymentService] [a1b2c3d4] during",
-            "[INF] [ShopEasy.PaymentService] [-] after");
+            "[INF] [ShopEasy.PaymentService] [-] [] before",
+            "[INF] [ShopEasy.PaymentService] [a1b2c3d4] [] during",
+            "[INF] [ShopEasy.PaymentService] [-] [] after");
     }
 
     [Fact]
@@ -77,6 +78,16 @@ public class LoggingTests
         logger.Information("hello");
 
         sink.Events.Single().Properties["Environment"].ToString().Should().Be("\"Production\"");
+    }
+
+    [Fact]
+    public void TheVersionOfTheImageIsAPropertyWhenGiven()
+    {
+        var (logger, sink) = Create("ShopEasy.OrderService", version: "3f2c9ab");
+
+        logger.Information("hello");
+
+        sink.Events.Single().Properties["ServiceVersion"].ToString().Should().Be("\"3f2c9ab\"");
     }
 
     [Fact]
