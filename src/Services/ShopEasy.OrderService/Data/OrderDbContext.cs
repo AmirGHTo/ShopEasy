@@ -40,6 +40,11 @@ public class OrderSagaState
 
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
+
+    // When Status last changed. Set by OrderDbContext together with the SagaTransition row (never by
+    // hand); the time since it is how long the saga stayed in its previous status. Null for a saga
+    // that has not changed status since this column was added.
+    public DateTime? StatusChangedAt { get; set; }
 }
 
 
@@ -128,6 +133,44 @@ public class OrderDbContext : DbContext
     public DbSet<OrderSagaState> SagaStates => Set<OrderSagaState>();
     public DbSet<OrderSummary> OrderSummaries => Set<OrderSummary>();
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
+    public DbSet<SagaTransition> SagaTransitions => Set<SagaTransition>();
+
+    // The choke point of the saga history: every save of a changed saga status also writes its
+    // SagaTransition row, in the same SaveChanges and so the same transaction (SagaHistory). Both
+    // overrides, because SaveChanges() and SaveChangesAsync() end in these two and MassTransit's
+    // outbox saves through the context too.
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        var rows = SagaHistory.Record(this);
+        try
+        {
+            var saved = base.SaveChanges(acceptAllChangesOnSuccess);
+            SagaHistory.Observe(rows);
+            return saved;
+        }
+        catch
+        {
+            SagaHistory.Forget(this, rows);
+            throw;
+        }
+    }
+
+    public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        var rows = SagaHistory.Record(this);
+        try
+        {
+            var saved = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+            SagaHistory.Observe(rows);
+            return saved;
+        }
+        catch
+        {
+            SagaHistory.Forget(this, rows);
+            throw;
+        }
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // ── MassTransit transactional inbox/outbox tables ────────────────────
@@ -177,6 +220,18 @@ public class OrderDbContext : DbContext
             // only one of them can commit its order.
             e.HasIndex(r => new { r.UserId, r.Key }).IsUnique().HasDatabaseName(IdempotencyRecord.KeyIndexName);
             e.HasIndex(r => r.CreatedAt); // retention clean-up
+        });
+
+        modelBuilder.Entity<SagaTransition>(e =>
+        {
+            e.HasKey(t => t.Id);
+            // Names, not numbers, so that a person reading the table (or a query) sees the status
+            e.Property(t => t.FromStatus).HasConversion<string>().HasMaxLength(32);
+            e.Property(t => t.ToStatus).HasConversion<string>().HasMaxLength(32);
+            e.Property(t => t.Reason).HasMaxLength(SagaTransition.MaxReasonLength);
+            e.Property(t => t.CorrelationId).HasMaxLength(SagaTransition.MaxCorrelationIdLength);
+            e.HasIndex(t => new { t.OrderId, t.At }); // the timeline of one order
+            e.HasIndex(t => t.At);                    // retention clean-up
         });
 
         modelBuilder.Entity<OrderSagaState>(e =>

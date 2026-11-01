@@ -17,7 +17,8 @@ namespace ShopEasy.OrderService.Services;
 public class SagaTimeoutService(
     IServiceScopeFactory scopeFactory,
     ILogger<SagaTimeoutService> logger,
-    IOptions<BackgroundLoopOptions>? loops = null) : BackgroundService
+    IOptions<BackgroundLoopOptions>? loops = null,
+    IOptions<SagaHistoryOptions>? history = null) : BackgroundService
 {
     private readonly GuardedPass _guard = new(logger, "Saga timeout service", loops);
     private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
@@ -25,6 +26,12 @@ public class SagaTimeoutService(
     private readonly TimeSpan _checkInterval = TimeSpan.FromSeconds(30);
     // How long a saga may go without progress before the timeout service steps in
     public static readonly TimeSpan SagaTimeout = TimeSpan.FromMinutes(2);
+    // The saga history (SagaTransitions) is trimmed from this loop, not more often than this and not
+    // right at start-up: the first pass has enough to do
+    private static readonly TimeSpan HistoryPurgeInterval = TimeSpan.FromMinutes(15);
+    private DateTime _nextHistoryPurge = DateTime.UtcNow + HistoryPurgeInterval;
+    private readonly TimeSpan _historyRetention =
+        TimeSpan.FromDays((history?.Value ?? new SagaHistoryOptions()).RetentionDays);
     private const int MaxReleaseAttempts = 3;
     private const int PaidCancellationAttemptsBeforeAlarm = 5;
 
@@ -114,6 +121,17 @@ public class SagaTimeoutService(
             scope.ServiceProvider.GetRequiredService<ISagaLocking>(),
             ct,
             _guard.Settled);
+
+        // After the timeouts, so housekeeping can never hold up a compensation
+        if (DateTime.UtcNow >= _nextHistoryPurge)
+        {
+            var removed = await SagaHistory.PurgeAsync(
+                scope.ServiceProvider.GetRequiredService<OrderDbContext>(), _historyRetention, DateTime.UtcNow, ct);
+            _nextHistoryPurge = DateTime.UtcNow + HistoryPurgeInterval;
+            if (removed > 0)
+                _logger.LogInformation(
+                    "Removed {Count} saga transitions older than {Retention} days", removed, _historyRetention.TotalDays);
+        }
     }
 
     internal async Task HandleTimedOutSaga(

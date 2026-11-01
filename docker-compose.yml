@@ -413,6 +413,8 @@ services:
       # Idempotency-Key on POST /api/orders (README, "Order API"). Both are optional.
       Idempotency__RequireKey: "${ORDER_IDEMPOTENCY_REQUIRE_KEY:-false}"
       Idempotency__RetentionHours: "${ORDER_IDEMPOTENCY_RETENTION_HOURS:-24}"
+      # How many days Order keeps the history of every saga status change (README, "Saga history")
+      SagaHistory__RetentionDays: "${ORDER_SAGA_HISTORY_RETENTION_DAYS:-30}"
       # How often Order looks in its outbox table for saga commands to send to RabbitMQ (at least 50)
       Outbox__QueryDelayMs: "${ORDER_OUTBOX_QUERY_DELAY_MS:-500}"
       # How long the orchestrator keeps retrying an order's first step when it fails (README, compensation matrix)
