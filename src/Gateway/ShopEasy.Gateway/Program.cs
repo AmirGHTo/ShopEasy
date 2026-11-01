@@ -3,8 +3,6 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using OpenTelemetry.Resources;
-using OpenTelemetry.Trace;
 using Prometheus;
 using Serilog;
 using Serilog.Events;
@@ -12,6 +10,7 @@ using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Messaging;
 using ShopEasy.Shared.Middleware;
 using ShopEasy.Shared.Security;
+using ShopEasy.Shared.Telemetry;
 using System.Net.Http.Headers;
 using Yarp.ReverseProxy.Transforms;
 using ShopEasy.Gateway.Resilience;
@@ -204,22 +203,7 @@ try
             tags: new[] { "ready" });
 
     // ── OpenTelemetry Distributed Tracing ─────────────────────────────────────
-    builder.Services.AddOpenTelemetry()
-        .WithTracing(tracing => tracing
-            .SetResourceBuilder(ResourceBuilder.CreateDefault()
-                .AddService("ShopEasy.Gateway"))
-            .AddAspNetCoreInstrumentation(options =>
-            {
-                options.Filter = ctx =>
-                    !ctx.Request.Path.StartsWithSegments("/health");
-            })
-            .AddHttpClientInstrumentation()
-            .AddOtlpExporter(options =>
-            {
-                options.Endpoint = new Uri(
-                    builder.Configuration["Telemetry:Endpoint"]
-                    ?? "http://jaeger:4317");
-            }));
+    builder.Services.AddShopEasyTracing(builder.Configuration, "ShopEasy.Gateway", builder.Environment.EnvironmentName);
 
     // ── YARP Reverse Proxy ────────────────────────────────────────────────────
     builder.Services

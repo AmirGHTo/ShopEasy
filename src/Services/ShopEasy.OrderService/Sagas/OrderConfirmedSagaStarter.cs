@@ -1,6 +1,7 @@
 ﻿using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using ShopEasy.OrderService.Data;
+using ShopEasy.OrderService.Tracing;
 using ShopEasy.Shared.Contracts;
 using ShopEasy.Shared.Messaging;
 using System.Text.Json;
@@ -44,6 +45,8 @@ public class OrderConfirmedSagaStarter(
             ItemsJson = JsonSerializer.Serialize(evt.Items),
             // restored from the message header by the consume filter
             CorrelationId = CorrelationContext.Current,
+            // the orchestrator and the timeout service continue this trace
+            TraceContext = OrderSpans.CurrentContext(),
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };

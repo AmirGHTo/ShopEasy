@@ -1,0 +1,39 @@
+# OpenTelemetry Collector: the one place the services send their spans to (OTLP, port 4317), and the
+# one place that knows where they go next. Changing the backend (another Jaeger, Tempo, a vendor) means
+# changing the exporter below; none of the six services has to be touched or rebuilt.
+#
+#   services --OTLP--> this Collector --OTLP--> Jaeger (http://localhost:16686)
+#
+# Every span is kept here. The services decide what to record (Telemetry__SamplingRatio, README
+# "Traces"). For the other way round, keeping every trace that failed or was slow and a share of the
+# rest, start the stack with OTEL_COLLECTOR_CONFIG=otel-collector-tail-sampling.yml.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Refuse data rather than run out of memory when Jaeger is slow or away
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  # Send spans in batches, not one request each
+  batch:
+    timeout: 2s
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true # inside the Compose network
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/jaeger]

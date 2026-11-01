@@ -9,6 +9,7 @@ using ShopEasy.OrderService.Idempotency;
 using ShopEasy.OrderService.Metrics;
 using ShopEasy.OrderService.ReadModels;
 using ShopEasy.OrderService.Services;
+using ShopEasy.OrderService.Tracing;
 using ShopEasy.Shared.Contracts;
 using ShopEasy.Shared.Messaging;
 using System.Text.Json;
@@ -244,8 +245,11 @@ public class OrderCommandsController(
             Payload = System.Text.Json.JsonSerializer.Serialize(eventData),
             CreatedAt = DateTime.UtcNow,
             // lets the saga's messages, in every service, be found by this request's id
-            CorrelationId = CorrelationContext.Current
+            CorrelationId = CorrelationContext.Current,
+            // and lets the delivery service, later, put its span in this request's trace
+            TraceContext = OrderSpans.CurrentContext()
         };
+        OrderSpans.TagOrder(order.Id);
 
         // The read model row is part of the same transaction, so an order is never visible
         // without its summary (it appears immediately in GET /api/orders). Later status

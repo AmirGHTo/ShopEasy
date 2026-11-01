@@ -1,5 +1,4 @@
 using Microsoft.EntityFrameworkCore;
-using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Prometheus;
 using Serilog;
@@ -10,6 +9,7 @@ using ShopEasy.Shared.Middleware;
 using ShopEasy.Shared.Resilience;
 using ShopEasy.Shared.Security;
 using ShopEasy.Shared.Services;
+using ShopEasy.Shared.Telemetry;
 
 Log.Logger = new LoggerConfiguration()
     .ConfigureShopEasy("ShopEasy.ProductService")
@@ -38,23 +38,9 @@ try
     builder.Services.AddApiAuthentication(builder.Configuration, ApiAudiences.Product);
     builder.Services.AddApiAuthorization(AccessPolicies.Product);
 
-    builder.Services.AddOpenTelemetry()
-    .WithTracing(tracing => tracing
-        .SetResourceBuilder(ResourceBuilder.CreateDefault()
-        .AddService("ShopEasy.ProductService"))
-        .AddSource("Npgsql") // a span per database command
-        .AddAspNetCoreInstrumentation(options =>
-        {
-            options.Filter = ctx =>
-                !ctx.Request.Path.StartsWithSegments("/health");
-        })
-        .AddHttpClientInstrumentation()
-        .AddOtlpExporter(options =>
-        {
-            options.Endpoint = new Uri(
-                builder.Configuration["Telemetry:Endpoint"]
-                ?? "http://jaeger:4317");
-        }));
+    builder.Services.AddShopEasyTracing(builder.Configuration, "ShopEasy.ProductService", builder.Environment.EnvironmentName,
+        // a span per Redis command (the product cache)
+        t => t.AddRedisInstrumentation());
 
     builder.Services.AddControllers();
     builder.Services.AddEndpointsApiExplorer();
