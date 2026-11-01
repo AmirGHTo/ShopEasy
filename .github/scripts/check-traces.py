@@ -84,7 +84,10 @@ def missing_from(trace):
 
 def best_candidate():
     """The trace that comes closest, among the recent traces that contain a gateway span."""
-    traces = get("/api/traces", service="ShopEasy.Gateway", lookback="1h", limit=1000).get("data") or []
+    # the API takes a time window in microseconds since the epoch: the last hour
+    end = int(time.time() * 1_000_000)
+    start = end - 3600 * 1_000_000
+    traces = get("/api/traces", service="ShopEasy.Gateway", start=start, end=end, limit=1000).get("data") or []
     best = None
     for trace in traces:
         missing = missing_from(trace)
