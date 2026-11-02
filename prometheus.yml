@@ -45,3 +45,21 @@ scrape_configs:
     static_configs:
       - targets: ['identity:9091']
     metrics_path: '/metrics'
+
+  # What the services depend on (README, "Dependencies"). Their ports are internal as well.
+  # RabbitMQ serves its own metrics (rabbitmq_prometheus); the per-queue series are switched on in rabbitmq/90-shopeasy.conf
+  - job_name: 'rabbitmq'
+    static_configs:
+      - targets: ['rabbitmq:15692']
+    metrics_path: '/metrics'
+
+  # PostgreSQL and Redis through the exporters that sit next to them (docker-compose.yml)
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+    metrics_path: '/metrics'
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+    metrics_path: '/metrics'

@@ -190,6 +190,188 @@ tests:
         exp_alerts: []
 
   - interval: 1m
+    name: a queue that loses its consumers raises QueueWithoutConsumers after 2 minutes, one that keeps them (or an error queue) does not
+    input_series:
+      - series: rabbitmq_queue_consumers{queue="payment-process", vhost="/"}
+        values: "1 1 1 0 0 0 0 0 0 0"
+      - series: rabbitmq_queue_consumers{queue="inventory-reserve", vhost="/"}
+        values: "1x10"
+      # nobody reads an error queue on purpose
+      - series: rabbitmq_queue_consumers{queue="payment-process_error", vhost="/"}
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 4m   # without consumers for 1 minute
+        alertname: QueueWithoutConsumers
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: QueueWithoutConsumers
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              queue: payment-process
+              vhost: /
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#queuewithoutconsumers
+              summary: Nothing is reading the queue payment-process
+              description: The queue payment-process has had no consumer for 2 minutes, so what is sent to it waits. The service that reads it is down, or has lost its connection to the broker and not found it again.
+
+  - interval: 1m
+    name: a queue that grows past 100 messages for 5 minutes raises QueueBacklogGrowing; a flat, a small or an error queue does not
+    input_series:
+      - series: rabbitmq_queue_messages_ready{queue="payment-process", vhost="/"}
+        values: "0+30x30"
+      # a long queue that is not growing (a slow period that is over)
+      - series: rabbitmq_queue_messages_ready{queue="inventory-reserve", vhost="/"}
+        values: "500x30"
+      # growing, but not worth a person's time yet
+      - series: rabbitmq_queue_messages_ready{queue="inventory-commit", vhost="/"}
+        values: "0+1x30"
+      # dead letters have an alert of their own
+      - series: rabbitmq_queue_messages_ready{queue="payment-process_error", vhost="/"}
+        values: "0+30x30"
+    alert_rule_test:
+      - eval_time: 6m   # over 100 since minute 4, rising: still pending
+        alertname: QueueBacklogGrowing
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: QueueBacklogGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              queue: payment-process
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#queuebackloggrowing
+              summary: The queue payment-process is filling up faster than it is read
+              description: "360 messages have been waiting for 5 minutes or more in payment-process, and the number keeps rising: the consumers are too slow or stuck."
+
+  - interval: 1m
+    name: a queue that has grown and is draining again raises nothing
+    input_series:
+      - series: rabbitmq_queue_messages_ready{queue="payment-process", vhost="/"}
+        values: "0+40x6 240 200 160 120 80 40 0 0 0 0 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: QueueBacklogGrowing
+        exp_alerts: []
+
+  - interval: 1m
+    name: connections above 80% of max_connections raise PostgresConnectionsHigh, fewer do not
+    input_series:
+      - series: pg_connections_used{instance="postgres-exporter:9187"}
+        values: "50 50 50 90 90 90 90 90 90 90"
+      - series: pg_connections_max{instance="postgres-exporter:9187"}
+        values: "100x10"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PostgresConnectionsHigh
+        exp_alerts: []
+      - eval_time: 6m   # above the limit for 3 minutes
+        alertname: PostgresConnectionsHigh
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: PostgresConnectionsHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#postgresconnectionshigh
+              summary: More than 80% of the PostgreSQL connections are in use
+              description: "90% of max_connections are open. At 100% the services cannot open another connection and requests fail."
+
+  - interval: 1m
+    name: 79 of 100 connections raise nothing
+    input_series:
+      - series: pg_connections_used
+        values: "79x20"
+      - series: pg_connections_max
+        values: "100x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PostgresConnectionsHigh
+        exp_alerts: []
+
+  - interval: 1m
+    name: 81 of 100 connections raise PostgresConnectionsHigh
+    input_series:
+      - series: pg_connections_used
+        values: "81x20"
+      - series: pg_connections_max
+        values: "100x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PostgresConnectionsHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#postgresconnectionshigh
+              summary: More than 80% of the PostgreSQL connections are in use
+              description: "81% of max_connections are open. At 100% the services cannot open another connection and requests fail."
+
+  - interval: 1m
+    name: a dependency that cannot be measured, or that says it is down, raises DependencyDown; a healthy one and a down service do not
+    input_series:
+      # the broker serves its own metrics: when it is down, the target is down
+      - series: up{job="rabbitmq", instance="rabbitmq:15692"}
+        values: "1 1 0 0 0 0 0 0"
+      # the exporter is up and reports that PostgreSQL is not
+      - series: up{job="postgres", instance="postgres-exporter:9187"}
+        values: "1x8"
+      - series: pg_up{job="postgres", instance="postgres-exporter:9187"}
+        values: "1 1 1 0 0 0 0 0"
+      # the exporter itself cannot be scraped (the series simply disappear: no redis_up)
+      - series: up{job="redis", instance="redis-exporter:9121"}
+        values: "1 1 1 1 0 0 0 0"
+      - series: redis_up{job="redis", instance="redis-exporter:9121"}
+        values: "1 1 1 1 stale stale stale stale"
+      # an application service is down: ServiceDown, not DependencyDown
+      - series: up{job="shopeasy-payment", instance="payment:9091"}
+        values: "1 1 0 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 2m   # the broker went down a moment ago: pending
+        alertname: DependencyDown
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: DependencyDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: rabbitmq
+              instance: rabbitmq:15692
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#dependencydown
+              summary: rabbitmq is down or cannot be measured
+              description: The rabbitmq metrics at rabbitmq:15692 are missing or report the server as down. Orders and sign-ins fail or wait while it lasts.
+          - exp_labels:
+              severity: critical
+              job: postgres
+              instance: postgres-exporter:9187
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#dependencydown
+              summary: postgres is down or cannot be measured
+              description: The postgres metrics at postgres-exporter:9187 are missing or report the server as down. Orders and sign-ins fail or wait while it lasts.
+          - exp_labels:
+              severity: critical
+              job: redis
+              instance: redis-exporter:9121
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#dependencydown
+              summary: redis is down or cannot be measured
+              description: The redis metrics at redis-exporter:9121 are missing or report the server as down. Orders and sign-ins fail or wait while it lasts.
+      # the payment service is down: its own alert, not this one
+      - eval_time: 7m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: shopeasy-payment
+              instance: payment:9091
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#servicedown
+              summary: shopeasy-payment cannot be scraped
+              description: The service is down, or its metrics port (payment:9091) cannot be reached. Look at its health check and its log first.
+
+  - interval: 1m
     name: many declined payments raise PaymentsDeclinedHigh, the usual rate does not
     input_series:
       - series: shopeasy_payments_total{result="succeeded"}

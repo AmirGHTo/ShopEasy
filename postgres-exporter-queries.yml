@@ -1,0 +1,33 @@
+# Numbers the PostgreSQL exporter does not produce by itself (it reads this file with --extend.query-path;
+# README, "Dependencies"). Each top level key is a prefix: the column "used" of "pg_connections" becomes
+# the metric pg_connections_used. What the exporter does produce (pg_up, pg_stat_database_*) is not repeated.
+
+# Connections in use against the limit. Alert: PostgresConnectionsHigh.
+pg_connections:
+  query: |
+    SELECT count(*) AS used,
+           current_setting('max_connections')::int AS max
+    FROM pg_stat_activity
+    WHERE backend_type = 'client backend'
+  metrics:
+    - used:
+        usage: "GAUGE"
+        description: "Client connections open now (all databases, the exporter's own included)"
+    - max:
+        usage: "GAUGE"
+        description: "max_connections of the server"
+
+# The longest transaction that is still open (0 when there is none): a transaction that a service forgot
+# to end holds locks and a connection. The services end idle transactions after
+# Resilience:Postgres:IdleInTransactionTimeoutSeconds (60 s); this shows if that ever fails.
+pg_transaction:
+  query: |
+    SELECT COALESCE(MAX(EXTRACT(EPOCH FROM (now() - xact_start))), 0) AS oldest_seconds
+    FROM pg_stat_activity
+    WHERE xact_start IS NOT NULL
+      AND backend_type = 'client backend'
+      AND pid <> pg_backend_pid()
+  metrics:
+    - oldest_seconds:
+        usage: "GAUGE"
+        description: "Age in seconds of the longest transaction that is still open (0 when none)"

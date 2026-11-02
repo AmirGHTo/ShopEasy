@@ -476,9 +476,10 @@ Every service exposes `/health`, `/health/ready`, and `/health/live`. Used by Do
   - **Saga commands waiting for the broker:** `shopeasy_saga_commands_pending` is the number of saga commands saved in the Order database (the `OutboxMessage` table) that RabbitMQ has not taken yet, and `shopeasy_saga_command_oldest_pending_age_seconds` the age of the oldest (0 when there is none). Read by the timeout service every 30 seconds, like the gauges above. Normally a command waits well under a second; an age that keeps rising means the broker is unreachable (or the Order delivery service is stuck).
   - **Polling loops:** `shopeasy_background_loop_failed_passes_total{loop}` counts the passes of the saga orchestrator, saga timeout service, outbox delivery and dead-letter monitor (`loop` is `saga_orchestrator`, `saga_timeout_service`, `outbox_delivery_service` or `dead_letter_monitor`) that failed or were cancelled for taking too long. `shopeasy_background_loop_last_success_timestamp_seconds{loop}` is when each loop last completed a pass (it is set when the loop starts, too), so `time()` minus it is how long the loop has made no progress.
   - **Dead letters:** `shopeasy_error_queue_messages{queue}` is the number of messages waiting in each error queue, read from RabbitMQ every 30 seconds by the dead-letter monitor ([pattern 14](#14-dead-letter-queues)). Every known error queue has a series, `0` when it is empty or does not exist yet. When RabbitMQ cannot be read the figure keeps its last value (a gap would hide dead letters, a `0` would deny them) and the failed pass is counted in the polling-loop metric above. Every Order instance reports the same queues (use `max by (queue)`). Should be 0.
+  - **Dependencies:** RabbitMQ, PostgreSQL and Redis are measured too ([Dependencies](#dependencies-rabbitmq-postgresql-redis)): `rabbitmq_queue_messages_ready{queue}`, `rabbitmq_queue_messages_unacked{queue}` and `rabbitmq_queue_consumers{queue}` for every queue; `pg_up`, `pg_connections_used` against `pg_connections_max`, `pg_transaction_oldest_seconds` and `pg_stat_database_*` (deadlocks, cache hits); `redis_up`, `redis_memory_used_bytes`, `redis_evicted_keys_total`, `redis_connected_clients` and `redis_keyspace_hits_total`.
   - **Consistency:** `shopeasy_consistency_violations{rule}` is the number of settled orders that disagree with what Payment holds, by rule (pattern 27); it should be 0. `shopeasy_consistency_orders_checked_total` counts the orders compared.
   - **The front door:** what a customer feels is what the gateway answers. `http_requests_received_total{service="Gateway"}` and `http_request_duration_seconds` give two measures, recorded by `prometheus-rules.yml` as `shopeasy:gateway_server_errors:ratio_10m` (the share of answers that were a 5xx in the last 10 minutes; a 4xx, the 429 of a rate limit included, is the system doing its job and does not count) and `shopeasy:gateway_request_duration_seconds:p95_10m` (the time within which 19 answers in 20 came). `ShopServerErrorsHigh` fires when the first is above 2% for 5 minutes (with at least 20 answers in the window, so a few failed requests on a quiet night say nothing) and `ShopSlow` when the second is above 2 seconds for 10 minutes. Prometheus keeps its history (15 days) in the `prometheus-data` volume, so a restart does not erase the evidence of what happened.
-  - **Alert rules:** `prometheus-rules.yml` raises `OrderStuck`, `OrderFailed`, `StockMayHaveLeaked`, `DeadLettersPresent` (a message waits in an error queue), `OutboxBacklog`, `SagaCommandsNotSent` (a saga command has waited in the outbox for more than 2 minutes), `PollingLoopStalled` (a loop has completed no pass for 2 minutes), `OrderConsistencyViolated` (an order disagrees with its payment), `PaymentsDeclinedHigh`, `ServiceDown` (Prometheus cannot scrape a service for a minute), `ShopServerErrorsHigh` and `ShopSlow` (see *The front door* above); firing alerts are listed at http://localhost:9090/alerts and mailed by Alertmanager to a local mailbox (Mailpit, http://localhost:8025; [How alerts reach you](#how-alerts-reach-you)), each with a link to its [runbook](#runbooks); `Watchdog` always fires, to prove the chain works. `prometheus-rules.test.yml` checks each rule against made-up series (`promtool test rules prometheus-rules.test.yml`), and CI runs it.
+  - **Alert rules:** `prometheus-rules.yml` raises `OrderStuck`, `OrderFailed`, `StockMayHaveLeaked`, `DeadLettersPresent` (a message waits in an error queue), `DependencyDown` (RabbitMQ, PostgreSQL or Redis cannot be measured or is down), `QueueWithoutConsumers`, `QueueBacklogGrowing`, `PostgresConnectionsHigh`, `OutboxBacklog`, `SagaCommandsNotSent` (a saga command has waited in the outbox for more than 2 minutes), `PollingLoopStalled` (a loop has completed no pass for 2 minutes), `OrderConsistencyViolated` (an order disagrees with its payment), `PaymentsDeclinedHigh`, `ServiceDown` (Prometheus cannot scrape a service of the application for a minute), `ShopServerErrorsHigh` and `ShopSlow` (see *The front door* above); firing alerts are listed at http://localhost:9090/alerts and mailed by Alertmanager to a local mailbox (Mailpit, http://localhost:8025; [How alerts reach you](#how-alerts-reach-you)), each with a link to its [runbook](#runbooks); `Watchdog` always fires, to prove the chain works. `prometheus-rules.test.yml` checks each rule against made-up series (`promtool test rules prometheus-rules.test.yml`), and CI runs it.
 
 ### 20. Server-Side Pricing & Request Validation
 
@@ -684,7 +685,7 @@ Microsoft's Azure Well-Architected Framework describes the reliability of a work
 | **RE:07** | Protect the workload under stress (self-preservation) and let it repair itself (self-healing). | Preservation: deadlines, retry budgets, circuit breakers, back-pressure, rate limits, bounded pools, bounded database waits ([24](#24-surviving-database-and-network-outages), [26](#26-resilient-calls-between-services)). Healing: probes and restarts in Kubernetes, reconnecting clients, guarded polling loops, the saga timeout and the orchestrator's retries, idempotent redelivery. | Applied. Compose has no restart policy on purpose (below) |
 | **RE:08** | Test resiliency by injecting failures (chaos engineering). | Eight scenarios in real containers (broker down, broker restarted with a command waiting in a queue, Payment killed, PostgreSQL stopped mid-saga, a crash loop of three services, Redis down, Identity down, gateway killed), failure injection against real PostgreSQL with a control for every limit, and tests of the alert rules ([How it is proved](#how-it-is-proved)). They found real defects, each now covered by a test that fails without its fix. | Applied, with limits: no scheduled game day and no load test |
 | **RE:09** | Have a tested, documented disaster-recovery plan that matches the targets. | [Backups and disaster recovery](#backups-and-disaster-recovery): what is backed up and what is not, two scripts, the restore steps, and a **rehearsal in CI** that deletes the PostgreSQL container and its volume, restores, and compares every table. | Applied, with limits: daily-dump grade (the recovery point is the age of the last backup); no schedule and no off-site copy shipped |
-| **RE:10** | Measure health indicators across components and flows, and keep the measurements. | Metrics from every service, [twelve alerts and a watchdog, each with a runbook](#what-to-watch), a dashboard, structured logs and traces with one correlation id across HTTP and messages; Prometheus keeps its 15 days of history in a volume. | Applied, with limits: alerts go through Alertmanager to a local mailbox; a real receiver (e-mail, chat or a pager) is a deployment choice and is documented, not configured |
+| **RE:10** | Measure health indicators across components and flows, and keep the measurements. | Metrics from every service, [sixteen alerts and a watchdog, each with a runbook](#what-to-watch), a dashboard, structured logs and traces with one correlation id across HTTP and messages; Prometheus keeps its 15 days of history in a volume. | Applied, with limits: alerts go through Alertmanager to a local mailbox; a real receiver (e-mail, chat or a pager) is a deployment choice and is documented, not configured |
 
 The five **design principles** of the same pillar, and where each shows:
 
@@ -734,9 +735,9 @@ The part, what the customer sees, what detects it, what puts it right, and wheth
 | **Order** (two to ten) | Orders cannot be placed or read through that copy; sagas it was driving pause and are picked up by the other copy. | `ServiceDown`, `OrderStuck`, `PollingLoopStalled` | The other copies; row locks and the outbox make a takeover safe | Killed (crash loop) |
 | **Inventory** (two) | Stock checks use the stale cached level; reservations wait in the queue. | `ServiceDown`, `OrderStuck` | The other copy; commands wait in a durable queue | Killed (crash loop) |
 | **Payment** (two) | Orders wait at the payment step. | `ServiceDown`, `OrderStuck` | The other copy; the command waits in the queue | Killed |
-| **PostgreSQL** (one) | Nothing can be saved. Orders cannot be placed; consumers retry for about 7 minutes. | `ServiceDown`, `OutboxBacklog`, `PollingLoopStalled` | Restart (clients drop dead connections themselves); after data loss, the restore | Stopped mid-saga; lost and restored in the CI rehearsal |
-| **RabbitMQ** (one) | Orders are still accepted and wait; nothing moves on. | `SagaCommandsNotSent`, `OutboxBacklog` | Restart: queues and messages are on a volume, services reconnect | Stopped; restarted with a command in a queue |
-| **Redis** (one) | Slower answers; nothing is refused. | `ShopSlow` | Restart; the cache fills again | Stopped |
+| **PostgreSQL** (one) | Nothing can be saved. Orders cannot be placed; consumers retry for about 7 minutes. | `DependencyDown`, `PostgresConnectionsHigh` (before it is full), `OutboxBacklog`, `PollingLoopStalled` | Restart (clients drop dead connections themselves); after data loss, the restore | Stopped mid-saga; lost and restored in the CI rehearsal |
+| **RabbitMQ** (one) | Orders are still accepted and wait; nothing moves on. | `DependencyDown`, `SagaCommandsNotSent`, `OutboxBacklog`, `QueueWithoutConsumers`, `QueueBacklogGrowing` | Restart: queues and messages are on a volume, services reconnect | Stopped; restarted with a command in a queue |
+| **Redis** (one) | Slower answers; nothing is refused. | `DependencyDown`, `ShopSlow` | Restart; the cache fills again | Stopped |
 | **Prometheus, Grafana, Seq, Jaeger, the Collector** | No dashboards, no alerts, no traces (spans are lost while the Collector is away). The shop is not affected. | (nothing can say so) | Restart; Prometheus keeps its history | Not tested |
 | **A bad release** | A pod that never becomes ready does not replace a working one. | the readiness probes, `ServiceDown` | Roll back to the previous image tag | Not tested |
 
@@ -808,7 +809,11 @@ The chaos tests found real defects: a database restart answered the next HTTP re
 | `PollingLoopStalled` | A background loop has completed no pass for 2 minutes. |
 | `OrderConsistencyViolated` | An order disagrees with what Payment holds for it. |
 | `PaymentsDeclinedHigh` | More than 30 % of recent payments were declined. |
-| `ServiceDown` | Prometheus cannot scrape a service for a minute: it is down, or its metrics port is unreachable. |
+| `ServiceDown` | Prometheus cannot scrape a service of the application for a minute: it is down, or its metrics port is unreachable. |
+| `DependencyDown` | RabbitMQ, PostgreSQL or Redis cannot be measured for a minute, or its exporter says it is down. |
+| `QueueWithoutConsumers` | A queue that is not an error queue has had no consumer for 2 minutes: whatever is sent to it waits. |
+| `QueueBacklogGrowing` | More than 100 messages are waiting in a queue, and the number has been rising for 5 minutes. |
+| `PostgresConnectionsHigh` | More than 80 % of `max_connections` are in use. |
 | `ShopServerErrorsHigh` | More than 2 % of the gateway's answers in 10 minutes were server errors (with at least 20 answers). |
 | `ShopSlow` | The gateway's 95th-percentile answer time has been above 2 seconds for 10 minutes. |
 | `Watchdog` | Always fires, on purpose: its mail proves that alerting works. If it stops arriving, alerts are not being delivered. |
@@ -910,6 +915,7 @@ cp .env.example .env     # Windows cmd: copy .env.example .env
 | Variable | Required | Purpose |
 |---|---|---|
 | `POSTGRES_PASSWORD` | yes | Password of the `shopeasy` Postgres user. Also embedded in every service connection string, so **avoid `;` and `$`**. |
+| `POSTGRES_EXPORTER_PASSWORD` | yes | Password of the read-only `postgres_exporter` role that the PostgreSQL exporter signs in with ([Dependencies](#dependencies-rabbitmq-postgresql-redis)). The role is created with it when the database volume is created; for a volume that exists already, see below. |
 | `RABBITMQ_USER` / `RABBITMQ_PASSWORD` | yes | RabbitMQ credentials used by the broker and by Order, Inventory and Payment. |
 | `RABBITMQ_ERLANG_COOKIE` | yes | Shared secret for RabbitMQ node clustering. Any long random string. |
 | `GATEWAY_CLIENT_SECRET` | yes | OAuth2 client secret: Identity registers it, the Gateway presents it. |
@@ -1296,7 +1302,7 @@ All reachable from the developer portal at `http://localhost:5000/portal` (the s
 | RabbitMQ Management | http://localhost:15672 | `RABBITMQ_USER` / `RABBITMQ_PASSWORD` from `.env` |
 | Jaeger (tracing) | http://localhost:16686 (see [Traces](#traces)) | — |
 | OpenTelemetry Collector (where the services send spans) | OTLP `localhost:4317` (gRPC) and `localhost:4318` (HTTP); no page | — |
-| Prometheus | http://localhost:9090 (Status → Targets shows the six services it scrapes on port `9091`) | — |
+| Prometheus | http://localhost:9090 (Status → Targets shows the nine things it scrapes: the six services on port `9091`, and [RabbitMQ, PostgreSQL and Redis](#dependencies-rabbitmq-postgresql-redis)) | — |
 | Alertmanager (alerts: groups, silences) | http://localhost:9093 (see [How alerts reach you](#how-alerts-reach-you)) | — |
 | Mailpit (the mailbox the alert mails land in) | http://localhost:8025 | — |
 | Grafana (dashboards) | http://localhost:3000 | `admin` / `GRAFANA_ADMIN_PASSWORD` from `.env` |
@@ -1385,9 +1391,34 @@ docker-compose start payment
 To reliably get a successful payment for the refund test, set `Testing__ForcePaymentSuccess: "true"` on the payment service in `docker-compose.yml` (Compose already does). To get a declined one on purpose, order more than 10,000 worth: the provider's single-transaction limit declines it even then.
 
 
+### Dependencies (RabbitMQ, PostgreSQL, Redis)
+
+Every failure scenario in this README turns on three things that are not the application: the broker, the database and the cache. Their first signs (a queue growing, a consumer gone, connections running out) are in their own numbers, so Prometheus reads those too:
+
+| What | Where the numbers come from | What it tells |
+|---|---|---|
+| **RabbitMQ** | The broker itself: its `rabbitmq_prometheus` plugin (on in the official image) serves them on port `15692`. [`rabbitmq/90-shopeasy.conf`](rabbitmq/90-shopeasy.conf) switches on one series per queue. | `rabbitmq_queue_messages_ready`, `rabbitmq_queue_messages_unacked` and `rabbitmq_queue_consumers` for every queue (`queue` label), publish and deliver rates |
+| **PostgreSQL** | `postgres-exporter`, signing in as a read-only role. Two extra queries are in [`postgres-exporter-queries.yml`](postgres-exporter-queries.yml). | `pg_up`; `pg_connections_used` against `pg_connections_max`; `pg_transaction_oldest_seconds` (the longest transaction still open); `pg_stat_database_*` (deadlocks, cache hits and misses) |
+| **Redis** | `redis-exporter` | `redis_up`, `redis_memory_used_bytes`, `redis_evicted_keys_total`, `redis_connected_clients`, `redis_keyspace_hits_total` and `_misses_total` |
+
+None of the three ports is published to the host; only Prometheus reads them (CI checks it). Prometheus → Status → Targets lists all nine things it scrapes, and the alerts are `DependencyDown`, `QueueWithoutConsumers`, `QueueBacklogGrowing` and `PostgresConnectionsHigh` ([runbooks](#runbooks)).
+
+**The PostgreSQL role.** The exporter signs in as `postgres_exporter`, a role that has only `pg_monitor`: it may read the statistics of the server (connections, locks, cache hits) and nothing else; it cannot read a table of any service. [`postgres-monitoring-role.sh`](postgres-monitoring-role.sh) creates it, with the password `POSTGRES_EXPORTER_PASSWORD` from `.env`, when the database volume is created. The backups (`pg_dump` of each database) do not contain it; a restored server gets it from the same script.
+
+**A database volume that exists already** was created before the role, and PostgreSQL runs its start-up scripts only once. Until you create the role, the exporter cannot sign in and `DependencyDown` fires for `postgres`. Add `POSTGRES_EXPORTER_PASSWORD` to `.env`, then run the script by hand (it is safe to run again, and it is also how you change the password after editing `.env`):
+
+```bash
+docker compose up -d postgres
+docker compose exec postgres sh /docker-entrypoint-initdb.d/20-monitoring-role.sh
+```
+
+**The connection budget.** PostgreSQL runs with its default `max_connections` (100), and each instance of a service may open up to `Resilience__Postgres__MaxPoolSize` (20) connections, so five services with one instance each can already use all 100. `PostgresConnectionsHigh` tells you at 80 %; what to do about it (a smaller pool, a larger `max_connections`) is a decision about the deployment and is left open.
+
+Try it: place an order, then `docker compose stop payment` and place a few more. In Prometheus, `rabbitmq_queue_consumers{queue="payment-process"}` drops to `0` and `rabbitmq_queue_messages_ready{queue="payment-process"}` rises; after 2 minutes `QueueWithoutConsumers` shows as firing on the Alerts page. Its mail is held back, because `ServiceDown` explains it (Alertmanager shows it as inhibited). Start Payment again and the queue drains.
+
 ### How alerts reach you
 
-Prometheus evaluates `prometheus-rules.yml` every 15 seconds. An alert that stays true for its `for:` time **fires** and Prometheus hands it to **Alertmanager** (http://localhost:9093), which does what Prometheus does not: it **groups** alerts of one kind into one message, **de-duplicates** them, lets you **silence** one (Silences in its UI) and **inhibits** symptoms of a known cause. The message is an e-mail to **Mailpit** (http://localhost:8025), a catch-all mailbox that keeps everything on the machine. The rules are in `alertmanager.yml`: critical alerts go out within seconds and repeat hourly, warnings are grouped and repeat every four hours, and while `ServiceDown` fires the alerts it explains (errors, slowness, stuck orders, a backlog) are not mailed. To send alerts somewhere real, add a receiver (e-mail, Slack, a pager service) to that file; credentials do not belong in it.
+Prometheus evaluates `prometheus-rules.yml` every 15 seconds. An alert that stays true for its `for:` time **fires** and Prometheus hands it to **Alertmanager** (http://localhost:9093), which does what Prometheus does not: it **groups** alerts of one kind into one message, **de-duplicates** them, lets you **silence** one (Silences in its UI) and **inhibits** symptoms of a known cause. The message is an e-mail to **Mailpit** (http://localhost:8025), a catch-all mailbox that keeps everything on the machine. The rules are in `alertmanager.yml`: critical alerts go out within seconds and repeat hourly, warnings are grouped and repeat every four hours, and while `ServiceDown` or `DependencyDown` fires the alerts they explain (errors, slowness, stuck orders, a backlog) are not mailed. To send alerts somewhere real, add a receiver (e-mail, Slack, a pager service) to that file; credentials do not belong in it.
 
 **`Watchdog`** always fires on purpose. Its mail, sent every 12 hours, is the proof that the chain Prometheus → Alertmanager → mailbox works; if it stops arriving, nothing else could tell you that alerts are lost.
 
@@ -1404,9 +1435,33 @@ Each alert mail links to its heading here: what it means, where to look first, w
 
 #### ServiceDown
 
-- **Means:** Prometheus has not been able to scrape a service's metrics port for a minute (`job` in the mail says which): the service is down, or stuck, or its metrics port is unreachable.
+- **Means:** Prometheus has not been able to scrape the metrics port of one of the application's services for a minute (`job` in the mail says which): the service is down, or stuck, or its metrics port is unreachable. (RabbitMQ, PostgreSQL and Redis have their own alert, `DependencyDown`.)
 - **Look at:** `docker compose ps`, `docker compose logs <service>` (a crash loop usually names a missing or invalid setting at start-up), the service's `/health/ready` and Prometheus → Status → Targets.
 - **Do:** fix the cause and restart it. While it fires, the alerts it causes are held back; check them after it resolves.
+
+#### DependencyDown
+
+- **Means:** RabbitMQ, PostgreSQL or Redis (`job` in the mail says which) has been missing from Prometheus for a minute (the broker, or the exporter next to the database or the cache, cannot be scraped), or the exporter is up and reports that its server is not (`pg_up` or `redis_up` is 0). Orders and sign-ins fail or wait while it lasts.
+- **Look at:** Prometheus → Status → Targets (the error text of the target); `docker compose ps rabbitmq postgres redis postgres-exporter redis-exporter` and the log of the dependency and of its exporter. If the PostgreSQL container is healthy but `pg_up` is 0 and the exporter log says `password authentication failed for user "postgres_exporter"`, the role does not exist or `.env` holds another password: this happens on a database volume that is older than the role, see [Dependencies](#dependencies-rabbitmq-postgresql-redis) for the one command that fixes it.
+- **Do:** bring the dependency back (restart it; after data loss the [restore](#backups-and-disaster-recovery) applies). The services reconnect by themselves. While it fires, the alerts it causes (errors, slowness, stuck orders, queues nobody reads) are held back; check them after it resolves.
+
+#### QueueWithoutConsumers
+
+- **Means:** nothing has read the queue named in the mail for 2 minutes, so what is sent to it waits and the step it serves stands still (`payment-process`: payments; `inventory-…`: stock; `order-saga-…`: the Order service's own replies). Nothing is lost: the messages stay in the queue.
+- **Look at:** which service reads that queue (the prefix says: `payment-…`, `inventory-…`, `order-saga-…`); `ServiceDown` (a stopped service explains this alert, which is then held back); if the service is up, its log for broker connection errors and its `/health/ready` (the `masstransit-bus` check); RabbitMQ Management → Queues (the *Consumers* column) and Connections.
+- **Do:** restart the service that should read the queue. If the queue belongs to an endpoint that no longer exists (a consumer that was renamed), check that it is empty and delete it in RabbitMQ Management.
+
+#### QueueBacklogGrowing
+
+- **Means:** more than 100 messages are waiting in the queue named in the mail, and the number has kept rising for 5 minutes: its consumers are slower than the messages arrive, or stuck. (Error queues are not counted here; see `DeadLettersPresent`.)
+- **Look at:** `rabbitmq_queue_messages_unacked` for the same queue (taken but not finished: a high figure with a rising backlog means the consumers are busy or slow, often because the database is); the consuming service's log, `ShopSlow` and `PostgresConnectionsHigh`; Jaeger for long consumer spans.
+- **Do:** fix what makes the consumers slow (usually the database). A burst of orders ends by itself: the alert resolves when the number stops rising. For a lasting load, run more copies of the consuming service (Kubernetes: more replicas).
+
+#### PostgresConnectionsHigh
+
+- **Means:** more than 80 % of the `max_connections` of PostgreSQL (100 by default) have been in use for 5 minutes. At 100 % no service can open another connection and requests fail.
+- **Look at:** `pg_connections_used` over time; in pgAdmin or `psql`: `SELECT datname, usename, state, count(*) FROM pg_stat_activity GROUP BY 1, 2, 3 ORDER BY 4 DESC`; `pg_transaction_oldest_seconds` (a transaction that never ends holds its connection); the pool size per instance (`Resilience__Postgres__MaxPoolSize`, 20) times the number of instances.
+- **Do:** a service that holds far more than the others or a stuck transaction: restart that service. If the load is real, lower the pool size or raise `max_connections` of PostgreSQL (and give it the memory for it).
 
 #### ShopServerErrorsHigh
 

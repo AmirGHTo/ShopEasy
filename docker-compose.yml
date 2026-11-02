@@ -1,6 +1,7 @@
-# Applied to the six application containers (not to the third-party infrastructure images):
-# no root, no extra privileges, nothing writable except /tmp. The Kubernetes manifests apply the
-# same restrictions, so a problem shows up here and in CI before it shows up in a cluster.
+# Applied to the six application containers and to the two metrics exporters (not to the databases and
+# the broker, which need to write): no root, no extra privileges, nothing writable except /tmp. The
+# Kubernetes manifests apply the same restrictions, so a problem shows up here and in CI before it shows
+# up in a cluster.
 x-hardened: &hardened
   read_only: true
   tmpfs:
@@ -91,9 +92,14 @@ services:
       POSTGRES_USER:     shopeasy
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB:       shopeasy
+      # Read by 20-monitoring-role.sh below: the password of the read-only role the exporter uses
+      POSTGRES_EXPORTER_PASSWORD: ${POSTGRES_EXPORTER_PASSWORD:?Set POSTGRES_EXPORTER_PASSWORD in .env}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres-init.sql:/docker-entrypoint-initdb.d/init.sql
+      # Creates the read-only monitoring role (README, "Dependencies"). The entrypoint runs these scripts
+      # only for a new data volume; for an existing one, see the comment in the script.
+      - ./postgres-monitoring-role.sh:/docker-entrypoint-initdb.d/20-monitoring-role.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shopeasy"]
       interval: 10s
@@ -126,6 +132,40 @@ services:
       ACCEPT_EULA: Y
     networks:
       - shopeasy-net
+
+  # ── What the services depend on, measured (README, "Dependencies") ─────────────
+  # RabbitMQ serves its own metrics (plugin rabbitmq_prometheus, port 15692); PostgreSQL and Redis do not,
+  # so each has an exporter next to it. None of the three ports is published: only Prometheus reads them.
+  postgres-exporter:
+    <<: *hardened
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: shopeasy-postgres-exporter
+    command:
+      - --extend.query-path=/etc/postgres-exporter/queries.yml
+    environment:
+      # The role postgres_exporter (pg_monitor: may read statistics, nothing else), see postgres-monitoring-role.sh
+      DATA_SOURCE_URI: "postgres:5432/postgres?sslmode=disable"
+      DATA_SOURCE_USER: postgres_exporter
+      DATA_SOURCE_PASS: ${POSTGRES_EXPORTER_PASSWORD:?Set POSTGRES_EXPORTER_PASSWORD in .env}
+    volumes:
+      - ./postgres-exporter-queries.yml:/etc/postgres-exporter/queries.yml:ro
+    networks:
+      - shopeasy-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis-exporter:
+    <<: *hardened
+    image: oliver006/redis_exporter:v1.62.0
+    container_name: shopeasy-redis-exporter
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    networks:
+      - shopeasy-net
+    depends_on:
+      redis:
+        condition: service_healthy
 
   prometheus:
     image: prom/prometheus:v2.51.0
@@ -227,6 +267,8 @@ services:
     # only when this volume is empty (README, "Changing RABBITMQ_PASSWORD").
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+      # One series per queue on the metrics port (15692, reachable inside the network only)
+      - ./rabbitmq/90-shopeasy.conf:/etc/rabbitmq/conf.d/90-shopeasy.conf:ro
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
