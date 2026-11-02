@@ -69,7 +69,7 @@ public class DeadLetterMonitorTests
     }
 
     [Fact]
-    public async Task WhenTheBrokerIsDown_WarnsOnceAndKeepsRunning()
+    public async Task WhenTheBrokerIsDown_TheCheckFails_SoThePassIsCountedAsFailed()
     {
         var client = Substitute.For<IErrorQueueClient>();
         client.GetStatusAsync(Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
@@ -77,33 +77,11 @@ public class DeadLetterMonitorTests
                 _ => throw new BrokerUnavailableException("RabbitMQ is not reachable."));
         var monitor = Create(client, out var log);
 
-        await monitor.CheckErrorQueues(CancellationToken.None);
-        await monitor.CheckErrorQueues(CancellationToken.None);
-        await monitor.CheckErrorQueues(CancellationToken.None);
+        // the guard around the loop counts it and logs the outage once; the monitor must not hide it
+        var act = () => monitor.CheckErrorQueues(CancellationToken.None);
 
-        log.Messages(LogLevel.Warning).Should().HaveCount(1);
-        log.Messages(LogLevel.Error).Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task AfterTheBrokerComesBack_ANewOutageIsReportedAgain()
-    {
-        var client = Substitute.For<IErrorQueueClient>();
-        var monitor = Create(client, out var log);
-
-        client.GetStatusAsync(Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
-            .Returns<Task<IReadOnlyList<ErrorQueueStatus>>>(_ => throw new BrokerUnavailableException("down"));
-        await monitor.CheckErrorQueues(CancellationToken.None);
-
-        client.GetStatusAsync(Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
-            .Returns(new List<ErrorQueueStatus>());
-        await monitor.CheckErrorQueues(CancellationToken.None);
-
-        client.GetStatusAsync(Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
-            .Returns<Task<IReadOnlyList<ErrorQueueStatus>>>(_ => throw new BrokerUnavailableException("down again"));
-        await monitor.CheckErrorQueues(CancellationToken.None);
-
-        log.Messages(LogLevel.Warning).Should().HaveCount(2);
+        await act.Should().ThrowAsync<BrokerUnavailableException>();
+        log.Messages(LogLevel.Error).Should().BeEmpty("a queue holding messages is the only thing it alerts on");
     }
 
     [Fact]
@@ -119,6 +97,110 @@ public class DeadLetterMonitorTests
         var with = await Create(client, out _, new() { ["RabbitMQ:ManagementUiUrl"] = "https://mq.example.com/" })
             .GetAllErrorQueues();
         with.Single().ManagementUrl.Should().Be("https://mq.example.com/#/queues/%2F/payment-process_error");
+    }
+}
+
+// shopeasy_error_queue_messages, the figure behind the DeadLettersPresent alert. The metric is static and
+// shared by the whole run, so every test uses queue names of its own.
+[Collection(MetricsCollection.Name)]
+public class DeadLetterGaugeTests
+{
+    private static string Series(string queue) => $"shopeasy_error_queue_messages{{queue=\"{queue}\"}}";
+
+    private static string NewQueue(string name) => $"{name}-{Guid.NewGuid():N}_error";
+
+    private static DeadLetterMonitor Create(IErrorQueueClient client, params string[] queues) =>
+        new(client, new ConfigurationBuilder().Build(), NullLogger<DeadLetterMonitor>.Instance)
+        {
+            Queues = queues
+        };
+
+    private static IErrorQueueClient Broker(params ErrorQueueStatus[] statuses)
+    {
+        var client = Substitute.For<IErrorQueueClient>();
+        client.GetStatusAsync(Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
+            .Returns(statuses.ToList());
+        return client;
+    }
+
+    [Fact]
+    public async Task EveryMonitoredQueueHasAValue_ZeroWhenItIsEmptyOrDoesNotExistYet()
+    {
+        var holding = NewQueue("holding");
+        var empty = NewQueue("empty");
+        var missing = NewQueue("missing"); // MassTransit creates an error queue when its first message fails
+        var monitor = Create(Broker(new(holding, 3, 0), new(empty, 0, 0)), holding, empty, missing);
+
+        await monitor.CheckErrorQueues(CancellationToken.None);
+
+        (await MetricValues.ReadAsync(Series(holding))).Should().Be(3);
+        (await MetricValues.ExistsAsync(Series(empty))).Should().BeTrue();
+        (await MetricValues.ReadAsync(Series(empty))).Should().Be(0);
+        (await MetricValues.ExistsAsync(Series(missing))).Should().BeTrue("\"nothing failed\" is a value, not a gap");
+        (await MetricValues.ReadAsync(Series(missing))).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ARequeuedQueue_GoesBackToZero()
+    {
+        var queue = NewQueue("requeued");
+        var client = Substitute.For<IErrorQueueClient>();
+        var monitor = Create(client, queue);
+
+        client.GetStatusAsync(Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
+            .Returns(new List<ErrorQueueStatus> { new(queue, 2, 0) });
+        await monitor.CheckErrorQueues(CancellationToken.None);
+        (await MetricValues.ReadAsync(Series(queue))).Should().Be(2);
+
+        client.GetStatusAsync(Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
+            .Returns(new List<ErrorQueueStatus> { new(queue, 0, 0) });
+        await monitor.CheckErrorQueues(CancellationToken.None);
+
+        (await MetricValues.ReadAsync(Series(queue))).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task APassThatCannotReachTheBroker_ExportsNothing_NotZero()
+    {
+        var queue = NewQueue("never-read");
+        var client = Substitute.For<IErrorQueueClient>();
+        client.GetStatusAsync(Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
+            .Returns<Task<IReadOnlyList<ErrorQueueStatus>>>(_ => throw new BrokerUnavailableException("down"));
+
+        var act = () => Create(client, queue).CheckErrorQueues(CancellationToken.None);
+
+        await act.Should().ThrowAsync<BrokerUnavailableException>();
+        (await MetricValues.ExistsAsync(Series(queue))).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task WhenTheBrokerGoesAway_TheLastValueStays_SoAnOutageNeverLooksLikeAnEmptyQueue()
+    {
+        var queue = NewQueue("outage");
+        var client = Substitute.For<IErrorQueueClient>();
+        var monitor = Create(client, queue);
+        client.GetStatusAsync(Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
+            .Returns(new List<ErrorQueueStatus> { new(queue, 4, 0) });
+        await monitor.CheckErrorQueues(CancellationToken.None);
+
+        client.GetStatusAsync(Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
+            .Returns<Task<IReadOnlyList<ErrorQueueStatus>>>(_ => throw new BrokerUnavailableException("down"));
+        var act = () => monitor.CheckErrorQueues(CancellationToken.None);
+        await act.Should().ThrowAsync<BrokerUnavailableException>();
+
+        (await MetricValues.ReadAsync(Series(queue))).Should().Be(4);
+    }
+
+    [Fact]
+    public async Task ByDefault_EveryKnownErrorQueueIsExported()
+    {
+        var monitor = new DeadLetterMonitor(
+            Broker(), new ConfigurationBuilder().Build(), NullLogger<DeadLetterMonitor>.Instance);
+
+        await monitor.CheckErrorQueues(CancellationToken.None);
+
+        foreach (var queue in ErrorQueues.Monitored)
+            (await MetricValues.ExistsAsync(Series(queue))).Should().BeTrue(queue);
     }
 }
 

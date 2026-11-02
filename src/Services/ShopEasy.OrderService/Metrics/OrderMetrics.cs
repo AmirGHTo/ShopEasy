@@ -121,6 +121,17 @@ public static class OrderMetrics
                 LabelNames = new[] { "rule" }
             });
 
+    private static readonly Gauge ErrorQueueMessages = Prometheus.Metrics
+        .CreateGauge(
+            "shopeasy_error_queue_messages",
+            "Messages waiting in an error (dead-letter) queue, as of the last pass of the dead letter monitor that " +
+            "could read the broker. Every monitored queue has a series (0 when it is empty or does not exist yet). " +
+            "Should be 0",
+            new GaugeConfiguration
+            {
+                LabelNames = new[] { "queue" }
+            });
+
     private static readonly Counter ConsistencyOrdersChecked = Prometheus.Metrics
         .CreateCounter(
             "shopeasy_consistency_orders_checked_total",
@@ -208,6 +219,11 @@ public static class OrderMetrics
         foreach (var (rule, count) in byRule)
             ConsistencyViolations.WithLabels(rule).Set(count);
     }
+
+    // Only called with what the broker just said. When the broker cannot be read the old value stays,
+    // so an outage never shows up as "no dead letters" (the failed pass is counted instead).
+    public static void SetErrorQueueMessages(string queue, int count)
+        => ErrorQueueMessages.WithLabels(queue).Set(count);
 
     public static void RecordConsistencyChecked(int orders)
         => ConsistencyOrdersChecked.Inc(orders);

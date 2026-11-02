@@ -1,10 +1,15 @@
 using Microsoft.Extensions.Options;
+using ShopEasy.OrderService.Metrics;
 
 namespace ShopEasy.OrderService.Services;
 
 // Background service that monitors the error queues of all services.
-// Logs an alert when messages land in an error queue and exposes the queue state through the
-// admin API (/api/outbox/deadletters) for inspection and requeue.
+// Every pass it exports how many messages wait in each error queue (shopeasy_error_queue_messages, the
+// DeadLettersPresent alert), logs an alert for the queues that hold messages, and the queue state is
+// available through the admin API (/api/outbox/deadletters) for inspection and requeue.
+//
+// A pass that cannot read the broker FAILS (it is counted, and PollingLoopStalled fires if it goes on):
+// it must never export 0, because "I could not look" is not "there is nothing".
 //
 // Talks AMQP through IErrorQueueClient — it does not need the RabbitMQ management plugin.
 public class DeadLetterMonitor : BackgroundService
@@ -14,7 +19,9 @@ public class DeadLetterMonitor : BackgroundService
     private readonly ILogger<DeadLetterMonitor> _logger;
     private readonly TimeSpan _interval = TimeSpan.FromSeconds(30);
     private readonly GuardedPass _guard;
-    private bool _brokerWasUnavailable;
+
+    // The queues to look at; tests point it at their own
+    internal IReadOnlyList<string> Queues { get; init; } = ErrorQueues.Monitored;
 
     public DeadLetterMonitor(
         IErrorQueueClient errorQueues,
@@ -41,27 +48,16 @@ public class DeadLetterMonitor : BackgroundService
     }
 
     // One check cycle. Internal so tests can run it without the 30-second timer.
+    // An unreachable broker is not handled here: the exception ends the pass, and the guard counts
+    // it as failed and logs the outage once.
     internal async Task CheckErrorQueues(CancellationToken ct)
     {
-        IReadOnlyList<ErrorQueueStatus> queues;
-        try
-        {
-            queues = await _errorQueues.GetStatusAsync(ErrorQueues.Monitored, ct);
-            _brokerWasUnavailable = false;
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            // Broker down or restarting: say so once, not every 30 seconds
-            if (!_brokerWasUnavailable)
-                _logger.LogWarning(ex,
-                    "Dead letter check skipped: RabbitMQ is not reachable");
-            _brokerWasUnavailable = true;
-            return;
-        }
+        var queues = await _errorQueues.GetStatusAsync(Queues, ct);
+
+        // A queue is created when its first message fails, so one that is missing has nothing in it
+        var counts = queues.ToDictionary(q => q.Queue, q => q.MessageCount);
+        foreach (var queue in Queues)
+            OrderMetrics.SetErrorQueueMessages(queue, counts.GetValueOrDefault(queue));
 
         foreach (var queue in queues.Where(q => q.MessageCount > 0))
         {
@@ -76,7 +72,7 @@ public class DeadLetterMonitor : BackgroundService
     // Used by the admin API endpoint
     public async Task<List<DeadLetterQueueInfo>> GetAllErrorQueues(CancellationToken ct = default)
     {
-        var queues = await _errorQueues.GetStatusAsync(ErrorQueues.Monitored, ct);
+        var queues = await _errorQueues.GetStatusAsync(Queues, ct);
 
         // Optional link for humans, e.g. http://localhost:15672 — never used by the service itself
         var managementUi = _config["RabbitMQ:ManagementUiUrl"]?.TrimEnd('/');

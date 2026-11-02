@@ -126,6 +126,70 @@ tests:
               summary: The orchestrator gave up on an order, and a person has to look at it
 
   - interval: 1m
+    name: a message that stays in an error queue raises DeadLettersPresent after 5 minutes, once per queue however many replicas report it
+    input_series:
+      # two Order replicas see the same queue; one of them reads it a minute later than the other
+      - series: shopeasy_error_queue_messages{queue="payment-process_error", instance="order-1:9091"}
+        values: "0 0 1 1 1 1 1 1 1 1 1 1"
+      - series: shopeasy_error_queue_messages{queue="payment-process_error", instance="order-2:9091"}
+        values: "0 0 0 1 1 1 1 1 1 1 1 1"
+      - series: shopeasy_error_queue_messages{queue="inventory-reserve_error", instance="order-1:9091"}
+        values: "0x11"
+      - series: shopeasy_error_queue_messages{queue="inventory-reserve_error", instance="order-2:9091"}
+        values: "0x11"
+    alert_rule_test:
+      - eval_time: 6m   # present for 4 minutes: still pending
+        alertname: DeadLettersPresent
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: DeadLettersPresent
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              queue: payment-process_error
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#deadletterspresent
+              summary: Messages that failed all their retries are waiting in an error queue
+              description: The queue payment-process_error holds 1 message(s). A person has to find the cause and requeue them (Dead Letter Monitor, /deadletters).
+
+  - interval: 1m
+    name: empty error queues raise nothing, and a requeued queue stops the alert
+    input_series:
+      - series: shopeasy_error_queue_messages{queue="payment-process_error", instance="order-1:9091"}
+        values: "0x20"
+      - series: shopeasy_error_queue_messages{queue="payment-refund_error", instance="order-1:9091"}
+        values: "0 0 2 2 2 2 2 2 2 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: DeadLettersPresent
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              queue: payment-refund_error
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#deadletterspresent
+              summary: Messages that failed all their retries are waiting in an error queue
+              description: The queue payment-refund_error holds 2 message(s). A person has to find the cause and requeue them (Dead Letter Monitor, /deadletters).
+      - eval_time: 12m   # requeued at 9m
+        alertname: DeadLettersPresent
+        exp_alerts: []
+
+  - interval: 1m
+    name: a message that shows for under 5 minutes raises nothing, and neither does a series that disappears
+    input_series:
+      # failed and requeued within 3 minutes
+      - series: shopeasy_error_queue_messages{queue="inventory-commit_error", instance="order-1:9091"}
+        values: "0 1 1 1 0 0 0 0 0 0 0 0"
+      # a replica that stops exporting while the queue holds a message (the pod is gone): the gap is
+      # nothing to alert on, and the 5 minutes start again when the series comes back
+      - series: shopeasy_error_queue_messages{queue="payment-process_error", instance="order-2:9091"}
+        values: "1 1 1 stale stale 1 1 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: DeadLettersPresent
+        exp_alerts: []
+
+  - interval: 1m
     name: many declined payments raise PaymentsDeclinedHigh, the usual rate does not
     input_series:
       - series: shopeasy_payments_total{result="succeeded"}
