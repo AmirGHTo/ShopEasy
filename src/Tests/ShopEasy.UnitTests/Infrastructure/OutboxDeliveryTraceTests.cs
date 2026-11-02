@@ -20,6 +20,7 @@ namespace ShopEasy.UnitTests.Infrastructure;
 // delivers it. The loop has no request, so it starts its span inside the trace the entry remembers
 // (OrderSpans): the request that placed the order, the delivery and the consumer that creates the
 // saga are then one trace. Needs PostgreSQL (the batch is claimed with FOR UPDATE SKIP LOCKED).
+[Collection(SpansCollection.Name)]
 public class OutboxDeliveryTraceTests
 {
     private static readonly ActivitySource Test = new("ShopEasy.Tests.OutboxTrace");
@@ -86,7 +87,7 @@ public class OutboxDeliveryTraceTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         (await harness.Consumed.Any<OrderConfirmedEvent>(timeout.Token)).Should().BeTrue();
 
-        var delivery = spans.Named("outbox.deliver").Should().ContainSingle().Subject;
+        var delivery = spans.Named("outbox.deliver", orderId).Should().ContainSingle().Subject;
         delivery.TraceId.Should().Be(request.TraceId);
         delivery.ParentSpanId.Should().Be(request.SpanId);
         delivery.GetTagItem("order.id").Should().Be(orderId.ToString());

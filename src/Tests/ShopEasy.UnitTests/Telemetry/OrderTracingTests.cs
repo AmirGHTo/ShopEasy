@@ -28,6 +28,7 @@ namespace ShopEasy.UnitTests.Telemetry;
 // its next look). The context of the trace is now stored on the row, and the loops start their spans
 // inside it. These tests follow the trace over each of those hand-overs, and check that "order.id" is
 // on the spans, which is how Jaeger finds all of an order's traces.
+[Collection(SpansCollection.Name)]
 public class OrderTracingTests : IDisposable
 {
     private static readonly ActivitySource Test = new("ShopEasy.Tests.OrderTracing");
@@ -182,7 +183,7 @@ public class OrderTracingTests : IDisposable
         await RunOrchestratorAsync(publish);
 
         traceOfTheCommand.Should().Be(earlier.TraceId.ToHexString(), "the command and everything after it belong to the order's trace");
-        var span = _spans.Named("saga.orchestrate").Should().ContainSingle().Subject;
+        var span = _spans.Named("saga.orchestrate", saga.OrderId).Should().ContainSingle().Subject;
         span.TraceId.Should().Be(earlier.TraceId);
         span.GetTagItem("order.id").Should().Be(saga.OrderId.ToString());
         span.GetTagItem("saga.status").Should().Be("ReservingInventory", "where the saga is after this step");
@@ -191,14 +192,14 @@ public class OrderTracingTests : IDisposable
     [Fact]
     public async Task AFailingOrchestratorStep_MarksItsSpanAsAnError()
     {
-        await SeedStartedSagaAsync(traceContext: null);
+        var saga = await SeedStartedSagaAsync(traceContext: null);
         var publish = Substitute.For<IPublishEndpoint>();
         publish.Publish(Arg.Any<ReserveInventoryCommand>(), Arg.Any<CancellationToken>())
             .Returns<Task>(_ => throw new InvalidOperationException("broker is down"));
 
         await RunOrchestratorAsync(publish);
 
-        var span = _spans.Named("saga.orchestrate").Should().ContainSingle().Subject;
+        var span = _spans.Named("saga.orchestrate", saga.OrderId).Should().ContainSingle().Subject;
         span.Status.Should().Be(ActivityStatusCode.Error);
         span.StatusDescription.Should().Be("broker is down");
     }
@@ -235,7 +236,7 @@ public class OrderTracingTests : IDisposable
             _db, publish, new InMemorySagaLocking(), CancellationToken.None);
 
         traceOfTheCommand.Should().Be(earlier.TraceId.ToHexString());
-        var span = _spans.Named("saga.timeout").Should().ContainSingle().Subject;
+        var span = _spans.Named("saga.timeout", saga.OrderId).Should().ContainSingle().Subject;
         span.TraceId.Should().Be(earlier.TraceId);
         span.GetTagItem("order.id").Should().Be(saga.OrderId.ToString());
         span.GetTagItem("saga.status").Should().Be("ReleasingInventory");
@@ -316,8 +317,18 @@ public class OrderTracingTests : IDisposable
         (await harness.Consumed.Any<Ping>(timeout.Token)).Should().BeTrue();
         (await harness.Consumed.Any<Unrelated>(timeout.Token)).Should().BeTrue();
 
-        var tagged = messaging.Started.Where(a => a.GetTagItem("order.id") is not null).ToList();
-        tagged.Should().NotBeEmpty("the consumer's span says which order it works on");
-        tagged.Select(a => a.GetTagItem("order.id")).Should().OnlyContain(id => (string?)id == orderId.ToString());
+        // the listener hears every message of the test process; these are the spans of this test's own two
+        var pingId = harness.Consumed.Select<Ping>().Single().Context.MessageId!.Value.ToString();
+        var unrelatedId = harness.Consumed.Select<Unrelated>().Single().Context.MessageId!.Value.ToString();
+        List<Activity> SpansOf(string messageId) =>
+            messaging.Started.Where(a => a.GetTagItem("messaging.masstransit.message_id")?.ToString() == messageId).ToList();
+
+        var ofThePing = SpansOf(pingId).Where(a => a.GetTagItem("order.id") is not null).ToList();
+        ofThePing.Should().NotBeEmpty("the consumer's span says which order it works on");
+        ofThePing.Select(a => a.GetTagItem("order.id")).Should().OnlyContain(id => (string?)id == orderId.ToString());
+
+        var ofTheOther = SpansOf(unrelatedId);
+        ofTheOther.Should().NotBeEmpty("the message was sent, received and processed");
+        ofTheOther.Should().OnlyContain(a => a.GetTagItem("order.id") == null, "a message without an order has no order.id");
     }
 }
