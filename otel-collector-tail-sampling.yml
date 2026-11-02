@@ -1,0 +1,62 @@
+# The Collector with tail sampling: it decides whether to keep a trace only after it has seen all of
+# it, so it can keep what matters. Use it with  OTEL_COLLECTOR_CONFIG=otel-collector-tail-sampling.yml
+# in .env  (docker compose up -d otel-collector).
+#
+# Kept: every trace with an error, every trace longer than the threshold below, and one in ten of
+# the rest. Everything else is dropped.
+#
+# Two things to know:
+#  - Leave Telemetry__SamplingRatio at 1 (the default) when you use this. A ratio below 1 drops
+#    traces in the services before this Collector sees them, including the failed and slow ones.
+#  - It works with a single Collector. With several, all spans of one trace must reach the same one
+#    (a load-balancing exporter in front); that is a deployment decision, not made here.
+#
+# Everything but the sampling is the same as in otel-collector.yml.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512 # the Collector holds traces in memory while it waits for their last span
+    spike_limit_mib: 128
+  tail_sampling:
+    # How long after the first span of a trace to wait for the rest. An order's trace goes on for a
+    # few seconds (the orchestrator looks for new orders every 3 s), so wait longer than that.
+    decision_wait: 15s
+    num_traces: 20000
+    policies:
+      - name: errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+      - name: slow
+        type: latency
+        latency:
+          # The whole trace, from its first span to its last. A normal order takes about five
+          # seconds from the request to the confirmation, so this finds the ones that were stuck.
+          threshold_ms: 15000
+      - name: a-tenth-of-the-rest
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 10
+  batch:
+    timeout: 2s
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, tail_sampling, batch]
+      exporters: [otlp/jaeger]

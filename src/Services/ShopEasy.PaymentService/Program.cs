@@ -1,7 +1,6 @@
 ﻿using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Prometheus;
 using Serilog;
@@ -13,6 +12,7 @@ using ShopEasy.Shared.Messaging;
 using ShopEasy.Shared.Middleware;
 using ShopEasy.Shared.Resilience;
 using ShopEasy.Shared.Security;
+using ShopEasy.Shared.Telemetry;
 
 
 Log.Logger = new LoggerConfiguration()
@@ -111,24 +111,9 @@ try
     });
 
 
-    builder.Services.AddOpenTelemetry()
-        .WithTracing(tracing => tracing
-            .SetResourceBuilder(ResourceBuilder.CreateDefault()
-                .AddService("ShopEasy.PaymentService"))
-            .AddSource("MassTransit") // a span per message published / consumed, linked across RabbitMQ
-            .AddSource("Npgsql") // a span per database command
-            .AddAspNetCoreInstrumentation(options =>
-            {
-                options.Filter = ctx =>
-                    !ctx.Request.Path.StartsWithSegments("/health");
-            })
-            .AddHttpClientInstrumentation()
-            .AddOtlpExporter(options =>
-            {
-                options.Endpoint = new Uri(
-                    builder.Configuration["Telemetry:Endpoint"]
-                    ?? "http://jaeger:4317");
-            }));
+    builder.Services.AddShopEasyTracing(builder.Configuration, "ShopEasy.PaymentService", builder.Environment.EnvironmentName,
+        // a span per message published / consumed, linked across RabbitMQ
+        t => t.AddSource("MassTransit"));
 
     builder.Services.AddControllers();
     builder.Services.AddEndpointsApiExplorer();

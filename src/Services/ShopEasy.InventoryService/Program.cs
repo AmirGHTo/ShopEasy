@@ -1,7 +1,6 @@
 using MassTransit;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
-using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Prometheus;
 using Serilog;
@@ -15,6 +14,7 @@ using ShopEasy.Shared.Middleware;
 using ShopEasy.Shared.Resilience;
 using ShopEasy.Shared.Security;
 using ShopEasy.Shared.Services;
+using ShopEasy.Shared.Telemetry;
 
 Log.Logger = new LoggerConfiguration()
     .ConfigureShopEasy("ShopEasy.InventoryService")
@@ -48,24 +48,12 @@ try
         options.EnableDetailedErrors = builder.Environment.IsDevelopment();
     });
 
-    builder.Services.AddOpenTelemetry()
-    .WithTracing(tracing => tracing
-        .SetResourceBuilder(ResourceBuilder.CreateDefault()
-            .AddService("ShopEasy.InventoryService"))
-        .AddSource("MassTransit") // a span per message published / consumed, linked across RabbitMQ
-        .AddSource("Npgsql") // a span per database command
-        .AddAspNetCoreInstrumentation(options =>
-        {
-            options.Filter = ctx =>
-                !ctx.Request.Path.StartsWithSegments("/health");
-        })
-        .AddHttpClientInstrumentation()
-        .AddOtlpExporter(options =>
-        {
-            options.Endpoint = new Uri(
-                builder.Configuration["Telemetry:Endpoint"]
-                ?? "http://jaeger:4317");
-        }));
+    builder.Services.AddShopEasyTracing(builder.Configuration, "ShopEasy.InventoryService", builder.Environment.EnvironmentName,
+        t => t
+            // a span per message published / consumed, linked across RabbitMQ
+            .AddSource("MassTransit")
+            // a span per Redis command (the stock cache)
+            .AddRedisInstrumentation());
 
     builder.Services.AddDbContext<InventoryDbContext>(options =>
     options.UseNpgsql(

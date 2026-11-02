@@ -6,6 +6,7 @@ using Serilog.Core;
 using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.Metrics;
 using ShopEasy.OrderService.Sagas;
+using ShopEasy.OrderService.Tracing;
 using ShopEasy.Shared.Contracts;
 using ShopEasy.Shared.Messaging;
 
@@ -143,6 +144,7 @@ public class SagaTimeoutService(
     {
         // Same trace as the request that placed the order (there is no request here)
         using var correlation = CorrelationContext.Push(saga.CorrelationId);
+        using var span = OrderSpans.StartForSaga("saga.timeout", saga);
 
         // Re-read WITH a row lock: an event consumer (or a cancel) may be changing this
         // saga right now, and we must act on its outcome, not on our stale scan result.
@@ -184,9 +186,11 @@ public class SagaTimeoutService(
             await ApplyTimeoutCompensation(lockedSaga, db, publishEndpoint, ct);
             await db.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
+            OrderSpans.TagStatus(span, lockedSaga.Status);
         }
         catch (Exception ex)
         {
+            OrderSpans.Fail(span, ex);
             await transaction.RollbackAsync(ct);
             // The next saga of this pass shares the context: what this one changed but never saved
             // (its new state, the command in the outbox) must not be saved with it

@@ -4,6 +4,7 @@ using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using ShopEasy.OrderService.Metrics;
+using ShopEasy.OrderService.Tracing;
 using ShopEasy.Shared.Messaging;
 
 namespace ShopEasy.OrderService.Services;
@@ -86,8 +87,21 @@ public class OutboxDeliveryService(
                 {
                     // The worker has no HTTP request: restore the id of the request that placed
                     // the order, so the message (and the logs below) carry it
+                    // and its span goes in the trace of that request, so the saga that starts from this
+                    // message is part of the same trace
                     using (CorrelationContext.Push(entry.CorrelationId))
-                        await PublishEntry(entry, publishEndpoint, ct);
+                    using (var span = OrderSpans.StartForOutboxEntry("outbox.deliver", entry))
+                    {
+                        try
+                        {
+                            await PublishEntry(entry, publishEndpoint, ct);
+                        }
+                        catch (Exception ex)
+                        {
+                            OrderSpans.Fail(span, ex);
+                            throw;
+                        }
+                    }
                     entry.DeliveredAt = DateTime.UtcNow;
                     await db.SaveChangesAsync(ct);
                     OrderMetrics.RecordOutboxDelivered();
@@ -184,6 +198,7 @@ public class OutboxDeliveryService(
                         {
                             PropertyNameCaseInsensitive = true
                         })!;
+                OrderSpans.TagOrder(evt.OrderId);
                 // Always under the entry's own id. If the message is published but marking the entry
                 // delivered then fails, the next cycle publishes it again; with the same MessageId
                 // the receiving inbox recognises the copy instead of treating it as a new event.

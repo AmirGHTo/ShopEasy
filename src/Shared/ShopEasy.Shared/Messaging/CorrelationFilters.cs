@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Reflection;
 using MassTransit;
 
@@ -24,6 +25,11 @@ public class CorrelationConsumeFilter<T> : IFilter<ConsumeContext<T>> where T : 
         // Every message of the order flow carries the order id; having it as a log property
         // lets one query find the order's whole story: OrderId = '...'
         var orderId = OrderIdOf(context.Message);
+
+        // ... and a tag on the span of this message, so that Jaeger finds every trace of one order
+        // (order.id = '...') whichever service consumed which message of it
+        if (orderId is not null)
+            Activity.Current?.SetTag("order.id", orderId.ToString());
 
         using (CorrelationContext.Push(correlationId))
         using (orderId is null ? null : Serilog.Context.LogContext.PushProperty("OrderId", orderId))

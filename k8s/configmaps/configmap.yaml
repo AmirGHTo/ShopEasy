@@ -49,6 +49,12 @@ data:
   # readable line of the local stack (README, "Logs"). Every line carries TraceId, SpanId, CorrelationId,
   # Service, ServiceVersion (the commit the image was built from) and Environment.
   Logging__ConsoleFormat: "json"
+  # Traces (README, "Traces"). The Collector and Jaeger are part of the Docker Compose stack only, so
+  # nothing is exported here: empty = no export (spans and the trace ids in the logs still exist).
+  # Set it to your own OpenTelemetry Collector or backend, e.g. "http://otel-collector:4317".
+  # SamplingRatio is the share of traces a service starts that is recorded (0 to 1; 1 keeps all).
+  Telemetry__Endpoint: ""
+  Telemetry__SamplingRatio: "1.0"
   # Seq (log explorer) is part of the Docker Compose stack only. Empty = do not ship logs to Seq;
   # logs still go to the container console. Set it to the URL of your own Seq to use one.
   Seq__ServerUrl: ""

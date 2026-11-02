@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.Metrics;
 using ShopEasy.OrderService.Services;
+using ShopEasy.OrderService.Tracing;
 using ShopEasy.Shared.Contracts;
 using ShopEasy.Shared.Messaging;
 using System.Text.Json;
@@ -67,12 +68,17 @@ public class SagaOrchestrator : BackgroundService
 
         foreach (var saga in pendingSagas)
         {
+            // A span inside the order's trace (this loop has none of its own); the command the saga
+            // sends below, and everything that follows from it, is part of that trace
+            using var span = OrderSpans.StartForSaga("saga.orchestrate", saga);
             try
             {
                 await ProcessSaga(saga, db, publishEndpoint, sagaLocking, ct);
+                OrderSpans.TagStatus(span, saga.Status);
             }
             catch (Exception ex)
             {
+                OrderSpans.Fail(span, ex);
                 _logger.LogError(ex,
                     "Saga {SagaId} for Order {OrderId} failed unexpectedly",
                     saga.Id, saga.OrderId);

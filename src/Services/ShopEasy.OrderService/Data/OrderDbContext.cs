@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using ShopEasy.OrderService.Idempotency;
 using ShopEasy.OrderService.ReadModels;
 using ShopEasy.OrderService.Services;
+using ShopEasy.OrderService.Tracing;
 
 namespace ShopEasy.OrderService.Data;
 
@@ -38,6 +39,11 @@ public class OrderSagaState
     // keep the commands they publish in the same trace.
     public string? CorrelationId { get; set; }
 
+    // The trace context (W3C traceparent) of the consumer that created the saga. The orchestrator and
+    // the timeout service run in background loops, with no trace of their own; they start their spans
+    // inside this one, so that everything the saga does is part of the order's trace (OrderSpans).
+    public string? TraceContext { get; set; }
+
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 
@@ -71,6 +77,10 @@ public class OutboxEntry
     // a background worker that has no request, so the id is stored with the entry and put back
     // on the message (see CorrelationContext).
     public string? CorrelationId { get; set; }
+
+    // The trace context (W3C traceparent) of the request that placed the order, for the same reason:
+    // the delivery service starts its span inside the request's trace (OrderSpans).
+    public string? TraceContext { get; set; }
 }
 
 // What is remembered about a POST /api/orders that carried an Idempotency-Key header, so that a
@@ -207,6 +217,7 @@ public class OrderDbContext : DbContext
         modelBuilder.Entity<OutboxEntry>(e =>
         {
             e.HasKey(o => o.Id);
+            e.Property(o => o.TraceContext).HasMaxLength(OrderSpans.MaxTraceContextLength);
             e.HasIndex(o => o.DeliveredAt); // fast query for pending
         });
 
@@ -239,6 +250,7 @@ public class OrderDbContext : DbContext
             e.HasKey(s => s.Id);
             e.HasIndex(s => s.OrderId).IsUnique();
             e.HasIndex(s => s.Status);
+            e.Property(s => s.TraceContext).HasMaxLength(OrderSpans.MaxTraceContextLength);
             e.Property(s => s.TotalAmount).HasColumnType("decimal(18,2)");
         });
     }

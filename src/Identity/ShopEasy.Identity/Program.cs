@@ -1,8 +1,6 @@
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using OpenTelemetry.Resources;
-using OpenTelemetry.Trace;
 using Prometheus;
 using Serilog;
 using Serilog.Events;
@@ -13,6 +11,7 @@ using ShopEasy.Shared.Logging;
 using ShopEasy.Shared.Middleware;
 using ShopEasy.Shared.Resilience;
 using ShopEasy.Shared.Security;
+using ShopEasy.Shared.Telemetry;
 
 Log.Logger = new LoggerConfiguration()
     .ConfigureShopEasy("ShopEasy.Identity")
@@ -119,20 +118,7 @@ try
 
 
 
-    builder.Services.AddOpenTelemetry()
-    .WithTracing(tracing => tracing
-        .SetResourceBuilder(ResourceBuilder.CreateDefault()
-            .AddService("ShopEasy.Identity"))
-        .AddSource("Npgsql") // a span per database command
-        .AddAspNetCoreInstrumentation(options =>
-        {
-            options.Filter = ctx =>
-                !ctx.Request.Path.StartsWithSegments("/health");
-        })
-        .AddOtlpExporter(options =>
-        {
-            options.Endpoint = new Uri("http://jaeger:4317");
-        }));
+    builder.Services.AddShopEasyTracing(builder.Configuration, "ShopEasy.Identity", builder.Environment.EnvironmentName);
 
     var app = builder.Build();
 

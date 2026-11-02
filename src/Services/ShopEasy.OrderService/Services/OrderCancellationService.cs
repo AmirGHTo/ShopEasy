@@ -4,6 +4,7 @@ using ShopEasy.OrderService.Data;
 using ShopEasy.OrderService.Metrics;
 using ShopEasy.OrderService.ReadModels;
 using ShopEasy.OrderService.Sagas;
+using ShopEasy.OrderService.Tracing;
 using ShopEasy.Shared.Contracts;
 using System.Text.Json;
 
@@ -74,6 +75,7 @@ public class OrderCancellationService(
     private async Task<CancelResult> TryCancelAsync(
         Guid orderId, string requesterId, bool isAdmin, CancellationToken ct)
     {
+        OrderSpans.TagOrder(orderId);
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
         var saga = await sagaLocking.LockByOrderIdAsync(db, orderId, ct);
@@ -115,6 +117,7 @@ public class OrderCancellationService(
                     UnitPrice = i.UnitPrice
                 }).ToList()),
                 FailureReason = reason,
+                TraceContext = OrderSpans.CurrentContext(),
                 CreatedAt = now,
                 UpdatedAt = now
             });
