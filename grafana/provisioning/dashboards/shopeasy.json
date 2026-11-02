@@ -227,6 +227,40 @@
           "legendFormat": "Age"
         }
       ]
+    },
+    {
+      "id": 14,
+      "title": "Dead Letters (messages in error queues)",
+      "description": "Messages that failed all their retries and wait for a person. Should be 0; above 0 for 5 minutes mails DeadLettersPresent. Which queue: the Dead Letter Monitor page (/deadletters).",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background"
+      },
+      "targets": [
+        {
+          "expr": "sum(max by (queue) (shopeasy_error_queue_messages))",
+          "legendFormat": "Waiting"
+        }
+      ]
     }
   ],
   "refresh": "10s",

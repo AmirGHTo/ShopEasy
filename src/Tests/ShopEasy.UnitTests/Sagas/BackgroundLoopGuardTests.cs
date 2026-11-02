@@ -77,10 +77,10 @@ public class BackgroundLoopGuardTests
     [Fact]
     public async Task The_dead_letter_monitor_logs_a_failed_pass_and_keeps_running()
     {
-        // the monitor handles an unreachable broker itself; this is a failure outside that call
+        // an unreachable broker is a failed pass: it is counted and logged once, and the loop goes on
         var queues = Substitute.For<IErrorQueueClient>();
         queues.GetStatusAsync(Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult<IReadOnlyList<ErrorQueueStatus>>(null!));
+            .Returns<Task<IReadOnlyList<ErrorQueueStatus>>>(_ => throw new BrokerUnavailableException("RabbitMQ is not reachable."));
 
         var (loop, log) = await RunFirstPass<DeadLetterMonitor>(
             (_, l) => new DeadLetterMonitor(queues, Substitute.For<IConfiguration>(), l));

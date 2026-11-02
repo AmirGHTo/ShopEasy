@@ -24,6 +24,20 @@ groups:
           runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#orderfailed
           summary: The orchestrator gave up on an order, and a person has to look at it
 
+      # A message that failed all its retries waits in an error queue until a person requeues it. The Order
+      # service exports how many wait in each (shopeasy_error_queue_messages, 0 when empty). Every Order replica
+      # reports the same queues, so the maximum per queue is taken. If the broker cannot be read the monitor keeps
+      # the last value and fails its pass (PollingLoopStalled), so a broker outage never looks like "no dead letters".
+      - alert: DeadLettersPresent
+        expr: max by (queue) (shopeasy_error_queue_messages) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#deadletterspresent
+          summary: Messages that failed all their retries are waiting in an error queue
+          description: The queue {{ $labels.queue }} holds {{ $value }} message(s). A person has to find the cause and requeue them (Dead Letter Monitor, /deadletters).
+
       - alert: StockMayHaveLeaked
         expr: sum(increase(shopeasy_order_outcomes_total{reason="release_not_confirmed"}[15m])) > 0
         labels:
