@@ -263,7 +263,13 @@ jobs:
         run: |
           cp .env.example .env
           docker compose config --quiet
-          docker compose --profile probe config --quiet
+          # every profile (each is optional and off by default, and a mistake in one would only show when someone asks for it)
+          for profile in probe load; do docker compose --profile "$profile" config --quiet; done
+
+      # The scripts of the demo (README, "Traffic and failures to try") and the probe's check run on a
+      # developer's machine and in CI, in bash: shellcheck finds the quoting and portability mistakes before they do.
+      - name: shellcheck (demo scripts, probe check)
+        run: shellcheck -x ops/demo/*.sh .github/scripts/check-probe.sh
 
       # The cluster gets what `kubectl kustomize` renders (images and their pinned tags come from
       # k8s/kustomization.yaml), so that is what is validated, together with the secrets template.
@@ -541,6 +547,7 @@ jobs:
           - { service: payment,   dockerfile: src/Services/ShopEasy.PaymentService/Dockerfile }
           - { service: order,     dockerfile: src/Services/ShopEasy.OrderService/Dockerfile }
           - { service: probe,     dockerfile: src/Tools/ShopEasy.Probe/Dockerfile }
+          - { service: loadgen,   dockerfile: src/Tools/ShopEasy.LoadGen/Dockerfile }
     steps:
       - uses: actions/checkout@v7
 

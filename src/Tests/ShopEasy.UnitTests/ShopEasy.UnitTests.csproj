@@ -29,5 +29,6 @@
 	  <ProjectReference Include="..\..\Identity\ShopEasy.Identity\ShopEasy.Identity.csproj" />
 	  <ProjectReference Include="..\..\Gateway\ShopEasy.Gateway\ShopEasy.Gateway.csproj" />
 	  <ProjectReference Include="..\..\Tools\ShopEasy.Probe\ShopEasy.Probe.csproj" />
+	  <ProjectReference Include="..\..\Tools\ShopEasy.LoadGen\ShopEasy.LoadGen.csproj" Aliases="LoadGenAssembly" />
 	</ItemGroup>
 </Project>
