@@ -16,7 +16,9 @@ compose() { docker compose -f "$ROOT/docker-compose.yml" "$@"; }
 setting() {
   local name=$1 current=${!1:-}
   if [ -n "$current" ]; then printf '%s' "$current"; return; fi
-  [ -f "$ROOT/.env" ] && grep -E "^${name}=" "$ROOT/.env" | tail -n 1 | cut -d= -f2- || true
+  if [ -f "$ROOT/.env" ]; then
+    grep -E "^${name}=" "$ROOT/.env" | tail -n 1 | cut -d= -f2- || true
+  fi
 }
 
 say() { printf '\n%s\n' "$*"; }
