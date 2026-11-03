@@ -220,8 +220,8 @@ groups:
           summary: "The probe's order has failed at the {{ $labels.step }} step in three runs in a row"
           description: "A customer's journey (sign in, product, order, confirmation, cancellation) does not work: the last run stopped at {{ $labels.step }}. The runbook says what each step points at."
 
-      # A probe that is gone (its container stopped, so Prometheus no longer finds it) leaves no series: the
-      # alert looks back for the last time it reported, up to six hours. A run ends within about 3.5 minutes
+      # A probe that is gone (its container stopped) leaves no current series (a failed scrape marks them stale):
+      # the alert looks back for the last time it reported, up to six hours. A run ends within about 3.5 minutes
       # even when the shop hangs (a step is cut off after three times its timeout), so 5 minutes without one
       # is a probe that does not run.
       - alert: SyntheticProbeStale

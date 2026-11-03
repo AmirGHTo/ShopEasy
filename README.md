@@ -1502,7 +1502,7 @@ docker compose --profile probe up -d --build     # also re-creates Order and Pay
 
 The account is created the first time the probe cannot sign in (sign-up must be open then: `REGISTRATION_ENABLED`). Without `PROBE_EMAIL` and `PROBE_PASSWORD` the container says so and stops.
 
-**What it reports.** On a metrics port of its own (9091, not published, like the services'), which Prometheus finds by looking `probe` up in DNS:
+**What it reports.** On a metrics port of its own (9091, not published, like the services'), which Prometheus finds by looking `probe` up in DNS (so a stack without the probe has no target):
 
 | Metric | Meaning |
 |---|---|
@@ -1522,13 +1522,13 @@ The Grafana dashboard **ShopEasy Synthetic Orders** shows them: the state of the
 **The alerts.**
 
 - `SyntheticOrderFailing` (critical): the last three runs in a row failed. The alert carries the `step` that failed, so the mail already says where to look. Unlike the alerts for symptoms, it is not held back while `ServiceDown` fires: it is the one that says a customer feels it.
-- `SyntheticProbeStale` (warning): no run has ended for 5 minutes, so nobody is measuring the shop from outside. A probe that is gone leaves no `up` series to watch (Prometheus finds it through DNS, and a container that does not exist is not in DNS, which is also why a stack without the probe has no target and nothing to alert about), so this alert looks back for the last time the probe reported, up to six hours. A probe you stopped on purpose therefore raises it until you silence it or six hours have passed.
+- `SyntheticProbeStale` (warning): no run has ended for 5 minutes, so nobody is measuring the shop from outside. A probe that is gone leaves no current series (a failed scrape marks them stale), so this alert looks back for the last time the probe reported, up to six hours (`last_over_time`). It does not depend on the job's `up`: whether that series goes away or stays at 0 after the container is removed depends on how DNS answers for the name, and CI showed it can stay. A stack without the probe has no target at all (the job is found through DNS, where a static target would be down all the time), so there is nothing to alert about. A probe you stopped on purpose therefore raises it until you silence it or six hours have passed.
 
 Try it: start the probe and open the dashboard; after a minute every step is `ok`. `docker compose stop payment`: the next runs fail at `confirmation`, and after about three runs `SyntheticOrderFailing` fires with `step = confirmation`. `docker compose start payment`: the next run passes and the alert resolves. This is how it was checked, with a real Prometheus.
 
 **How it signs in from inside the network.** A browser signs in at `localhost:5000` and `localhost:5001`, and the gateway's redirects name those addresses. In the probe's container they mean nothing, so `E2E_ADDRESS_MAP` sends the connection for each to the container behind it (`gateway:8080`, `identity:8080`) and keeps the address in the `Host` header, so the gateway builds the redirect Identity expects. If you change `IDENTITY_PUBLIC_URL`, set `PROBE_ADDRESS_MAP` to match (see `.env.example`).
 
-**In CI** `.github/scripts/check-probe.sh` proves what this section says on the real stack: there is no probe, no target and no alert before it is asked for; with its profile it completes the journey three times; the business counters have not moved and the saga durations have; it runs unprivileged and publishes no port; no synthetic alert fires; and once removed, Prometheus drops its target. The probe is not part of the Kubernetes manifests.
+**In CI** `.github/scripts/check-probe.sh` proves what this section says on the real stack: there is no probe, no target and no alert before it is asked for; with its profile it completes the journey three times; the business counters have not moved and the saga durations have; it runs unprivileged and publishes no port; no synthetic alert fires; and once removed, its series go stale while `last_over_time` still remembers its last report (what `SyntheticProbeStale` relies on). The probe is not part of the Kubernetes manifests.
 
 ### Runbooks
 
