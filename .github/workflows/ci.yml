@@ -337,19 +337,22 @@ jobs:
       - name: Make the consistency check quick
         run: printf 'ORDER_CONSISTENCY_CHECK_SETTLE_SECONDS=10\nORDER_CONSISTENCY_CHECK_INTERVAL_SECONDS=15\n' >> .env
 
-      # The services of the application, Prometheus to prove it can scrape them, Alertmanager with its
-      # mailbox to prove its alerts arrive, and the OpenTelemetry Collector with Jaeger to prove the
-      # traces do; the other monitoring tools (Grafana, Seq, ...) do not affect whether the application starts.
+      # The services of the application, Prometheus to prove it can scrape them (and the exporters that
+      # measure PostgreSQL and Redis), Alertmanager with its mailbox to prove its alerts arrive, and the
+      # OpenTelemetry Collector with Jaeger to prove the traces do; the other monitoring tools (Grafana,
+      # Seq, ...) do not affect whether the application starts.
       - name: Build the images and start the services
         run: >-
           docker compose up -d --build --wait --wait-timeout 900
           postgres rabbitmq redis identity product inventory payment order gateway prometheus alertmanager mailpit
-          jaeger otel-collector
+          jaeger otel-collector postgres-exporter redis-exporter
 
       - name: Containers run unprivileged
         run: bash .github/scripts/check-running-containers.sh
 
-      - name: Metrics are scraped from the internal port only
+      # Every target is up, the series the alerts and dashboards are built on exist, the dependencies'
+      # metrics ports are not published, and no queue is without a consumer on a healthy stack.
+      - name: Metrics are scraped from the internal port only, and the dependencies are measured
         run: bash .github/scripts/check-metrics.sh
 
       # Prometheus -> Alertmanager -> mailbox: the Watchdog alert always fires, so its mail arriving
@@ -464,7 +467,7 @@ jobs:
       - name: Container logs (on failure)
         if: failure()
         run: |
-          docker compose logs --no-color --timestamps --tail 150 identity product gateway postgres redis prometheus alertmanager mailpit otel-collector jaeger
+          docker compose logs --no-color --timestamps --tail 150 identity product gateway postgres redis rabbitmq postgres-exporter redis-exporter prometheus alertmanager mailpit otel-collector jaeger
           docker compose logs --no-color --timestamps --tail 1500 order inventory payment rabbitmq
 
       - name: Stop

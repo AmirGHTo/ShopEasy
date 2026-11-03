@@ -64,9 +64,10 @@ receivers:
           being delivered. Runbook: {{ (index .Alerts 0).Annotations.runbook_url }}
 
 inhibit_rules:
-  # A service that is down explains the symptoms it causes (errors, slowness, stuck orders, a backlog):
-  # while ServiceDown fires, those alerts are not mailed. They fire again if ServiceDown stops and they
-  # are still true. (Downside: a second, unrelated problem is hidden while one service is down.)
-  - source_matchers: [alertname = "ServiceDown"]
+  # A service (or RabbitMQ, PostgreSQL, Redis) that is down explains the symptoms it causes (errors, slowness,
+  # stuck orders, a backlog, queues nobody reads): while ServiceDown or DependencyDown fires, those alerts are
+  # not mailed. They fire again if it stops and they are still true. (Downside: a second, unrelated problem
+  # is hidden while one service is down.)
+  - source_matchers: [alertname =~ "ServiceDown|DependencyDown"]
     target_matchers:
-      - alertname =~ "ShopServerErrorsHigh|ShopSlow|OrderStuck|SagaCommandsNotSent|OutboxBacklog|PollingLoopStalled|PaymentsDeclinedHigh"
+      - alertname =~ "ShopServerErrorsHigh|ShopSlow|OrderStuck|SagaCommandsNotSent|OutboxBacklog|PollingLoopStalled|PaymentsDeclinedHigh|QueueWithoutConsumers|QueueBacklogGrowing"

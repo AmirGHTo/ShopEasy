@@ -121,8 +121,9 @@ groups:
       - record: shopeasy:gateway_request_duration_seconds:p95_10m
         expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service="Gateway"}[10m])))
 
+      # The application services only: RabbitMQ, PostgreSQL and Redis have their own alert (DependencyDown)
       - alert: ServiceDown
-        expr: up == 0
+        expr: up{job=~"shopeasy-.*"} == 0
         for: 1m
         labels:
           severity: critical
@@ -152,6 +153,55 @@ groups:
           runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#shopslow
           summary: 1 request in 20 takes longer than 2 seconds
           description: The 95th percentile of the gateway's answer time over the last 10 minutes is {{ $value | humanizeDuration }}.
+
+  - name: shopeasy-dependencies
+    rules:
+      # What the services depend on: RabbitMQ (its own metrics), PostgreSQL and Redis (through their exporters).
+      # README, "Dependencies". The queue alerts leave out the error queues: a message that waits there has
+      # its own alert (DeadLettersPresent), and nobody consumes an error queue on purpose.
+      - alert: DependencyDown
+        # the target cannot be scraped (the broker, or an exporter), or the exporter is up and says its server is not
+        expr: up{job=~"rabbitmq|postgres|redis"} == 0 or pg_up == 0 or redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#dependencydown
+          summary: "{{ $labels.job }} is down or cannot be measured"
+          description: The {{ $labels.job }} metrics at {{ $labels.instance }} are missing or report the server as down. Orders and sign-ins fail or wait while it lasts.
+
+      - alert: QueueWithoutConsumers
+        expr: rabbitmq_queue_consumers{queue!~".*_(error|skipped)"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#queuewithoutconsumers
+          summary: Nothing is reading the queue {{ $labels.queue }}
+          description: The queue {{ $labels.queue }} has had no consumer for 2 minutes, so what is sent to it waits. The service that reads it is down, or has lost its connection to the broker and not found it again.
+
+      - alert: QueueBacklogGrowing
+        expr: |
+          max by (queue) (rabbitmq_queue_messages_ready{queue!~".*_(error|skipped)"}) > 100
+          and
+          max by (queue) (delta(rabbitmq_queue_messages_ready{queue!~".*_(error|skipped)"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#queuebackloggrowing
+          summary: The queue {{ $labels.queue }} is filling up faster than it is read
+          description: "{{ $value | humanize }} messages have been waiting for 5 minutes or more in {{ $labels.queue }}, and the number keeps rising: the consumers are too slow or stuck."
+
+      - alert: PostgresConnectionsHigh
+        expr: max(pg_connections_used) / max(pg_connections_max) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#postgresconnectionshigh
+          summary: More than 80% of the PostgreSQL connections are in use
+          description: "{{ $value | humanizePercentage }} of max_connections are open. At 100% the services cannot open another connection and requests fail."
 
   # An alert that always fires. If its mail stops arriving (or Alertmanager stops listing it), the chain
   # Prometheus -> Alertmanager -> mailbox is broken, which no other alert could tell us.
