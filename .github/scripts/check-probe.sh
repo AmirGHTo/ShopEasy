@@ -9,8 +9,9 @@
 #  3. Its orders are left out of the numbers about the business (orders placed, outcomes, sales, payments)
 #     but not out of the numbers about the system (the saga durations): it really did place them.
 #  4. It runs unprivileged and publishes no port, and no synthetic alert fires while it works.
-#  5. When it is removed, Prometheus drops the target (this is what SyntheticProbeStale relies on to look
-#     back instead of at `up`).
+#  5. When it is removed, its series stop (they go stale) while last_over_time still remembers the last time it
+#     reported: this is what SyntheticProbeStale relies on, and it holds however DNS answers for a name that
+#     no longer exists (CI showed that the job's `up` series may stay, at 0, so that is not asserted).
 # PROBE_EMAIL and PROBE_PASSWORD are in .env already: Order and Payment were started with the account to
 # leave out. Reads the numbers from Prometheus.
 set -euo pipefail
@@ -117,11 +118,14 @@ echo "No synthetic alert fires"
 
 # ── 5. gone ──────────────────────────────────────────────────────────────────
 compose rm -sf probe
-gone=1
+current=1
 for _ in $(seq 1 24); do
-  gone="$(series 'up{job="probe"}')"
-  [ "$gone" -eq 0 ] && break
+  current="$(series 'shopeasy_probe_last_run_timestamp_seconds')"
+  [ "$current" -eq 0 ] && break
   sleep 5
 done
-[ "$gone" -eq 0 ] || fail "Prometheus still lists the probe two minutes after it was removed"
-echo "Removed: Prometheus no longer lists the probe"
+[ "$current" -eq 0 ] || fail "the probe's series are still current two minutes after it was removed"
+[ "$(series 'last_over_time(shopeasy_probe_last_run_timestamp_seconds[6h])')" -eq 1 ] \
+  || fail "SyntheticProbeStale could not tell when the probe last reported: last_over_time finds nothing"
+age="$(whole "$(value 'time() - last_over_time(shopeasy_probe_last_run_timestamp_seconds[6h])')")"
+echo "Removed: its series are gone from instant queries and last_over_time remembers the last report, ${age} s ago"
