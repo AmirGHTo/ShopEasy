@@ -1,0 +1,9 @@
+{
+  "linkPatterns": [
+    {
+      "type": "traces",
+      "url": "http://localhost:5341/#/events?filter=TraceId%20%3D%20%27#{traceID}%27",
+      "text": "Logs of this trace in Seq"
+    }
+  ]
+}

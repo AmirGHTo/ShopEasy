@@ -1,8 +1,21 @@
 apiVersion: 1
 
+# The numbers. A point on a latency graph that has a trace behind it (an exemplar, see "Traces" in the
+# README) links to that trace in Jaeger, and to the log lines of the same trace in Seq. Seq has no
+# Grafana data source, so its link is a plain address with the trace id filled in; change localhost:5341
+# if Seq is not on this machine. (The doubled dollar sign stops Grafana from reading the value
+# placeholder as an environment variable.)
 datasources:
   - name: Prometheus
+    uid: prometheus
     type: prometheus
     url: http://prometheus:9090
     isDefault: true
     access: proxy
+    jsonData:
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: jaeger
+        - name: trace_id
+          url: "http://localhost:5341/#/events?filter=TraceId%20%3D%20%27$${__value.raw}%27"
+          urlDisplayLabel: Logs of this trace in Seq

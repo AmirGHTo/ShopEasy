@@ -176,6 +176,13 @@ services:
   prometheus:
     image: prom/prometheus:v2.51.0
     container_name: shopeasy-prometheus
+    # The image's own arguments, plus exemplar storage: a histogram bucket (the latency of requests) keeps
+    # the trace id of a request that fell into it, so a point on a graph can lead to its trace
+    # (README, "From a slow request to its trace and its logs").
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --enable-feature=exemplar-storage
     ports:
       - "9090:9090"
     volumes:
@@ -233,6 +240,7 @@ services:
       - shopeasy-net
     depends_on:
       - prometheus
+      - jaeger
 
   redis:
     image: redis:7-alpine
@@ -294,6 +302,10 @@ services:
       - "16686:16686"
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
+      # Adds "Logs of this trace in Seq" to every trace page (jaeger/ui.json)
+      QUERY_UI_CONFIG: /etc/jaeger/ui.json
+    volumes:
+      - ./jaeger/ui.json:/etc/jaeger/ui.json:ro
     networks:
       - shopeasy-net
 

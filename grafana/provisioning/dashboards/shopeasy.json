@@ -5,6 +5,7 @@
     {
       "id": 1,
       "title": "HTTP Request Rate",
+      "description": "Requests per second each service answers. A drop to zero while people are shopping means a service, or the gateway in front of it, is down. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#servicedown",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -22,6 +23,7 @@
     {
       "id": 2,
       "title": "HTTP Error Rate",
+      "description": "Requests per second answered with a server error (5xx), by service. Anything above zero for minutes is worth a look; start in Seq with @Level = 'Error' for that service. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#shopservererrorshigh",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -39,6 +41,7 @@
     {
       "id": 3,
       "title": "Orders Placed",
+      "description": "Orders accepted at the door since the services started (a counter, so it restarts from zero with the service). Flat while customers are ordering: the Order service or the gateway is not taking orders. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#servicedown",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -56,6 +59,7 @@
     {
       "id": 4,
       "title": "Outbox Pending",
+      "description": "Events saved in the Order outbox that RabbitMQ has not taken yet. Normally 0 or a few. Above 50 for 5 minutes: the broker is probably unreachable. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#outboxbacklog",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -73,6 +77,7 @@
     {
       "id": 5,
       "title": "Active Sagas",
+      "description": "Orders still being processed (not yet confirmed or cancelled). It rises with load and falls back; a number that stays high together with a rising oldest age means stuck orders. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#orderstuck",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -90,6 +95,7 @@
     {
       "id": 6,
       "title": "Cache Hit Rate",
+      "description": "The share of stock checks answered from the Redis cache. Low: slower orders and more load on Inventory. The cache is only an accelerator, so this is not an alert.",
       "type": "gauge",
       "gridPos": {
         "h": 4,
@@ -112,6 +118,7 @@
     {
       "id": 7,
       "title": "Saga Duration (p95)",
+      "description": "How long an order takes from accepted to settled (95th percentile), by result. Rising: a step is slow; the Order Flow dashboard shows which one. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#orderstuck",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -129,6 +136,7 @@
     {
       "id": 8,
       "title": "HTTP Response Time (p95)",
+      "description": "The 95th-percentile answer time per service, health checks left out. The dots are requests with a trace behind them (exemplars): click one and choose Jaeger to see the trace, or the Seq link for its log lines. Sampling below 1.0 (Telemetry__SamplingRatio) keeps only some traces, so a dot can point at one that was not kept. A high value: see the runbook of ShopSlow.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -138,14 +146,16 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))",
-          "legendFormat": "p95 {{service}}"
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{endpoint!~\"/health.*\"}[5m])) by (le, service))",
+          "legendFormat": "p95 {{service}}",
+          "exemplar": true
         }
       ]
     },
     {
       "id": 9,
       "title": "Order Outcomes (5m)",
+      "description": "How accepted orders ended in the last 5 minutes. 'failed' or release_not_confirmed need a person; many payment_declined cancellations point at the payment provider. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#orderfailed",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -163,6 +173,7 @@
     {
       "id": 10,
       "title": "Orders Refused at the Door (5m)",
+      "description": "Order requests refused before anything was saved, by reason. insufficient_stock is normal; catalog_unavailable and inventory_unreachable mean a dependency is failing. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#dependencydown",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -180,6 +191,7 @@
     {
       "id": 11,
       "title": "Payments (5m)",
+      "description": "What the payment provider answered in the last 5 minutes. More than 30% declined raises an alert (the simulated provider declines about 10%). Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#paymentsdeclinedhigh",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -197,6 +209,7 @@
     {
       "id": 12,
       "title": "Confirmed Sales (last hour)",
+      "description": "The money of orders confirmed in the last hour. Zero while orders are placed: they do not reach 'confirmed'. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#orderstuck",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -214,6 +227,7 @@
     {
       "id": 13,
       "title": "Oldest Active Order (seconds)",
+      "description": "Age of the oldest order that is still being processed (0 when none). Above 600 seconds (10 minutes) raises OrderStuck; the timeout service should have settled it after 2. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#orderstuck",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -261,6 +275,18 @@
           "legendFormat": "Waiting"
         }
       ]
+    }
+  ],
+  "tags": ["shopeasy"],
+  "links": [
+    {
+      "type": "dashboards",
+      "title": "ShopEasy dashboards",
+      "tags": ["shopeasy"],
+      "asDropdown": true,
+      "includeVars": false,
+      "keepTime": true,
+      "icon": "external link"
     }
   ],
   "refresh": "10s",
