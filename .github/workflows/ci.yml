@@ -361,7 +361,7 @@ jobs:
       - name: Metrics are scraped from the internal port only, and the dependencies are measured
         run: bash .github/scripts/check-metrics.sh
 
-      # Grafana's two data sources (Prometheus and Jaeger) report themselves healthy, and the three
+      # Grafana's two data sources (Prometheus and Jaeger) work, and the three
       # signals are linked: an exemplar leads to Jaeger and to Seq, and Jaeger links to Seq.
       - name: Grafana data sources are healthy and the signals are linked
         run: bash .github/scripts/check-grafana.sh
