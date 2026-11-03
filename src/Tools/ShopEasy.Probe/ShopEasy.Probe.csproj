@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+	<!-- The synthetic probe: every minute it does what a customer does (sign in, look at the catalog,
+	     buy something, wait for the confirmation, cancel) through the gateway, and turns the result into
+	     metrics. README, "A synthetic order every minute". -->
+	<PropertyGroup>
+		<TargetFramework>net8.0</TargetFramework>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<RootNamespace>ShopEasy.Probe</RootNamespace>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<!-- the metrics server, like the services -->
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+		<PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
+	</ItemGroup>
+
+	<!-- The customer of the end-to-end tests, as source, not a second implementation of the sign-in:
+	     what the tests drive the shop with is what the probe drives it with. -->
+	<ItemGroup>
+		<Compile Include="..\..\Tests\ShopEasy.EndToEndTests\Support\Shopper.cs" Link="Customer\Shopper.cs" />
+		<Compile Include="..\..\Tests\ShopEasy.EndToEndTests\Support\BrowserCookies.cs" Link="Customer\BrowserCookies.cs" />
+		<Compile Include="..\..\Tests\ShopEasy.EndToEndTests\Support\Reply.cs" Link="Customer\Reply.cs" />
+		<Compile Include="..\..\Tests\ShopEasy.EndToEndTests\Support\Stack.cs" Link="Customer\Stack.cs" />
+	</ItemGroup>
+
+</Project>

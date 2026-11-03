@@ -65,6 +65,7 @@ message ProcessPaymentCommand
 message RefundPaymentCommand
   OrderId: Guid
   Reason: string
+  UserEmail: string?
 message ReleaseInventoryCommand
   OrderId: Guid
 message ReserveInventoryCommand

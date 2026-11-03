@@ -96,7 +96,7 @@ public class ProcessPaymentConsumer(
 
         if (success)
         {
-            PaymentMetrics.RecordSucceeded(cmd.Amount);
+            PaymentMetrics.RecordSucceeded(cmd.Amount, cmd.UserEmail);
             logger.LogInformation(
                 "Payment {PaymentId} succeeded for Order {OrderId}",
                 payment.Id, cmd.OrderId);
@@ -109,7 +109,7 @@ public class ProcessPaymentConsumer(
         }
         else
         {
-            PaymentMetrics.RecordDeclined(cmd.Amount);
+            PaymentMetrics.RecordDeclined(cmd.Amount, cmd.UserEmail);
             logger.LogWarning(
                 "Payment FAILED for Order {OrderId}: {Reason}",
                 cmd.OrderId, failureReason);

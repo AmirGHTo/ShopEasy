@@ -32,19 +32,36 @@ public sealed class Shopper : IDisposable
     public static async Task<Shopper> SignUpAsync(string label)
     {
         var email = $"e2e-{label}-{Guid.NewGuid():N}@example.com";
+        return await SignUpAsync(email, password: $"Aa1-{Guid.NewGuid():N}");
+    }
+
+    // An account with the credentials the caller chose (the synthetic probe's, which is created once)
+    public static async Task<Shopper> SignUpAsync(string email, string password)
+    {
         var shopper = new Shopper(NewBrowser(), email);
-        await shopper.RegisterAsync(password: $"Aa1-{Guid.NewGuid():N}");
+        await shopper.RegisterAsync(password);
+        await shopper.SignInToTheShopAsync();
+        return shopper;
+    }
+
+    // A customer who already has an account signs in with the password, on Identity's sign-in page
+    // (the account is not new: a sign-up page would refuse the address). Throws SignInRefusedException
+    // when Identity does not accept the address and password.
+    public static async Task<Shopper> SignInAsync(string email, string password)
+    {
+        var shopper = new Shopper(NewBrowser(), email);
+        await shopper.LogInAsync(password);
         await shopper.SignInToTheShopAsync();
         return shopper;
     }
 
     private static (HttpClient, BrowserCookies) NewBrowser()
     {
-        var cookies = new BrowserCookies(new HttpClientHandler
+        var cookies = new BrowserCookies(Stack.Transport(new HttpClientHandler
         {
             AllowAutoRedirect = false, // the redirects are followed by hand, so that each one is checked
             UseCookies = false,        // the cookies are kept the way a browser keeps them, see BrowserCookies
-        });
+        }));
         return (new HttpClient(cookies) { Timeout = TimeSpan.FromSeconds(30) }, cookies);
     }
 
@@ -89,6 +106,27 @@ public sealed class Shopper : IDisposable
     }
 
     // ── sign-up and sign-in, as a browser does them ──────────────────────────────────────────
+    private async Task LogInAsync(string password)
+    {
+        var page = new Uri(Stack.Identity, "/Account/Login?returnUrl=%2F");
+        var form = await _http.GetStringAsync(page);
+        var token = AntiforgeryToken.Match(form) is { Success: true } match
+            ? match.Groups[1].Value
+            : throw new InvalidOperationException("The sign-in page has no form to submit: " + Excerpt(form));
+
+        using var response = await _http.PostAsync(page, new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = token,
+            ["Input.Email"] = Email,
+            ["Input.Password"] = password,
+            ["Input.RememberMe"] = "false",
+        }));
+        // a browser is redirected on success; a refused password comes back as the page again, with the reason
+        if (response.StatusCode != HttpStatusCode.Redirect)
+            throw new SignInRefusedException(
+                $"Identity did not accept the sign-in of {Email} ({(int)response.StatusCode}): " + Excerpt(await response.Content.ReadAsStringAsync()));
+    }
+
     private async Task RegisterAsync(string password)
     {
         var page = new Uri(Stack.Identity, "/Account/Register?returnUrl=%2F");
@@ -176,3 +214,6 @@ public sealed class Shopper : IDisposable
 
     public void Dispose() => _http.Dispose();
 }
+
+// Identity answered the sign-in page's form with the page again instead of a redirect
+public sealed class SignInRefusedException(string message) : InvalidOperationException(message);

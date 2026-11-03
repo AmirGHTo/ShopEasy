@@ -65,7 +65,7 @@ public class OrderCommandsController(
         if (!IdempotencyKey.TryParse(
                 idempotencyKey, idempotencyOptions.Value.RequireKey, out var key, out var keyError))
         {
-            OrderMetrics.RecordOrderRejected(OrderRejection.InvalidRequest);
+            OrderMetrics.RecordOrderRejected(OrderRejection.InvalidRequest, userEmail);
             return BadRequest(new
             {
                 message = "Order could not be placed.",
@@ -80,7 +80,7 @@ public class OrderCommandsController(
             _logger.LogWarning(
                 "Order rejected for User {UserId}: invalid request — {Errors}",
                 userId, string.Join("; ", validation.Errors));
-            OrderMetrics.RecordOrderRejected(OrderRejection.InvalidRequest);
+            OrderMetrics.RecordOrderRejected(OrderRejection.InvalidRequest, userEmail);
             return BadRequest(new
             {
                 message = "Order could not be placed.",
@@ -115,7 +115,7 @@ public class OrderCommandsController(
         {
             _logger.LogError(ex,
                 "Order rejected for User {UserId}: Product service unavailable", userId);
-            OrderMetrics.RecordOrderRejected(OrderRejection.CatalogUnavailable);
+            OrderMetrics.RecordOrderRejected(OrderRejection.CatalogUnavailable, userEmail);
             Response.Headers["Retry-After"] = "5";
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new
             {
@@ -130,7 +130,7 @@ public class OrderCommandsController(
             _logger.LogWarning(
                 "Order rejected for User {UserId}: {Errors}",
                 userId, string.Join("; ", resolution.Errors));
-            OrderMetrics.RecordOrderRejected(OrderRejection.UnknownProduct);
+            OrderMetrics.RecordOrderRejected(OrderRejection.UnknownProduct, userEmail);
             return BadRequest(new
             {
                 message = "Order could not be placed.",
@@ -185,7 +185,7 @@ public class OrderCommandsController(
                 "Order rejected for User {UserId}: {Errors}",
                 userId, string.Join("; ", stockErrors));
             OrderMetrics.RecordOrderRejected(inventoryUnreachable
-                ? OrderRejection.InventoryUnreachable : OrderRejection.InsufficientStock);
+                ? OrderRejection.InventoryUnreachable : OrderRejection.InsufficientStock, userEmail);
             return BadRequest(new
             {
                 message = "Order could not be placed.",
@@ -286,7 +286,7 @@ public class OrderCommandsController(
             "Outbox entry created — Saga will orchestrate inventory + payment.",
             order.Id);
 
-        OrderMetrics.RecordOrderPlaced(order.TotalAmount);
+        OrderMetrics.RecordOrderPlaced(order.TotalAmount, userEmail);
 
         return CreatedAtAction(
             actionName: "GetById",

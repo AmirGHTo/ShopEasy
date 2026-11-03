@@ -1,4 +1,5 @@
 ﻿using Prometheus;
+using ShopEasy.Shared.Telemetry;
 
 namespace ShopEasy.OrderService.Metrics;
 
@@ -181,28 +182,41 @@ public static class OrderMetrics
 
     // ── Public methods ────────────────────────────────────────────────────────
 
-    public static void RecordOrderPlaced(decimal amount)
+    // The orders, the sales and the outcomes below are the business: the orders of the synthetic probe's
+    // account (SyntheticTraffic) are left out of them, whatever the address of the caller says
+    public static void RecordOrderPlaced(decimal amount, string? userEmail)
     {
+        if (SyntheticTraffic.IsProbe(userEmail)) return;
         OrdersPlaced.WithLabels("accepted").Inc();
         OrderAmount.Observe((double)amount);
     }
 
-    public static void RecordOrderRejected(string reason)
-        => OrdersRejected.WithLabels(reason).Inc();
+    public static void RecordOrderRejected(string reason, string? userEmail)
+    {
+        if (!SyntheticTraffic.IsProbe(userEmail))
+            OrdersRejected.WithLabels(reason).Inc();
+    }
 
     // The order was paid for and its stock taken: the sale happened
-    public static void RecordOrderConfirmed(decimal amount)
+    public static void RecordOrderConfirmed(decimal amount, string? userEmail)
     {
+        if (SyntheticTraffic.IsProbe(userEmail)) return;
         OrderOutcomes.WithLabels("confirmed", "completed").Inc();
         ConfirmedAmount.Inc((double)amount);
     }
 
-    public static void RecordOrderCancelled(string reason)
-        => OrderOutcomes.WithLabels("cancelled", reason).Inc();
+    public static void RecordOrderCancelled(string reason, string? userEmail)
+    {
+        if (!SyntheticTraffic.IsProbe(userEmail))
+            OrderOutcomes.WithLabels("cancelled", reason).Inc();
+    }
 
     // The system could not finish the order and a person has to look at it
-    public static void RecordOrderFailed(string reason)
-        => OrderOutcomes.WithLabels("failed", reason).Inc();
+    public static void RecordOrderFailed(string reason, string? userEmail)
+    {
+        if (!SyntheticTraffic.IsProbe(userEmail))
+            OrderOutcomes.WithLabels("failed", reason).Inc();
+    }
 
     public static void RecordIdempotentReplay(string result)
         => IdempotentReplays.WithLabels(result).Inc();

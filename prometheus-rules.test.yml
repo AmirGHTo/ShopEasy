@@ -518,6 +518,150 @@ tests:
         alertname: ShopSlow
         exp_alerts: []
 
+  # ── The synthetic probe ─────────────────────────────────────────────────────────
+  # The probe's gauges, as it reports them: one value per step it reached, and the count of failed runs in a row.
+  - interval: 1m
+    name: three failed runs in a row raise SyntheticOrderFailing, and the alert names the step that failed
+    input_series:
+      - series: shopeasy_probe_success{job="probe", instance="172.18.0.9:9091", step="sign_in"}
+        values: "1x10"
+      - series: shopeasy_probe_success{job="probe", instance="172.18.0.9:9091", step="catalog"}
+        values: "1x10"
+      - series: shopeasy_probe_success{job="probe", instance="172.18.0.9:9091", step="place_order"}
+        values: "1x10"
+      - series: shopeasy_probe_success{job="probe", instance="172.18.0.9:9091", step="confirmation"}
+        values: "1 0x9"
+      # the runs fail from minute 1 on: 1, 2, 3, ... in a row
+      - series: shopeasy_probe_consecutive_failures{job="probe", instance="172.18.0.9:9091"}
+        values: "0 1 2 3 4 5 6 7 8 9"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: SyntheticOrderFailing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: SyntheticOrderFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: probe
+              instance: 172.18.0.9:9091
+              step: confirmation
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#syntheticorderfailing
+              summary: "The probe's order has failed at the confirmation step in three runs in a row"
+              description: "A customer's journey (sign in, product, order, confirmation, cancellation) does not work: the last run stopped at confirmation. The runbook says what each step points at."
+
+  - interval: 1m
+    name: SyntheticOrderFailing names whichever step failed, and stops when the next run works
+    input_series:
+      - series: shopeasy_probe_success{job="probe", instance="172.18.0.9:9091", step="sign_in"}
+        values: "0 0 0 0 1 1 1 1"
+      # the steps after a failed one are not reported at all
+      - series: shopeasy_probe_success{job="probe", instance="172.18.0.9:9091", step="catalog"}
+        values: "_ _ _ _ 1 1 1 1"
+      - series: shopeasy_probe_success{job="probe", instance="172.18.0.9:9091", step="place_order"}
+        values: "_ _ _ _ 1 1 1 1"
+      - series: shopeasy_probe_consecutive_failures{job="probe", instance="172.18.0.9:9091"}
+        values: "1 2 3 4 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SyntheticOrderFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: probe
+              instance: 172.18.0.9:9091
+              step: sign_in
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#syntheticorderfailing
+              summary: "The probe's order has failed at the sign_in step in three runs in a row"
+              description: "A customer's journey (sign in, product, order, confirmation, cancellation) does not work: the last run stopped at sign_in. The runbook says what each step points at."
+      - eval_time: 5m
+        alertname: SyntheticOrderFailing
+        exp_alerts: []
+
+  - interval: 1m
+    name: one or two failed runs are a hiccup, not an alert
+    input_series:
+      - series: shopeasy_probe_success{job="probe", instance="172.18.0.9:9091", step="confirmation"}
+        values: "0 0 1 1 0 1 1"
+      - series: shopeasy_probe_consecutive_failures{job="probe", instance="172.18.0.9:9091"}
+        values: "1 2 0 0 1 0 0"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: SyntheticOrderFailing
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: SyntheticOrderFailing
+        exp_alerts: []
+
+  - interval: 1m
+    name: a probe that stops reporting raises SyntheticProbeStale, even though its series vanish
+    input_series:
+      # the value is the time of the run, which is the time of the sample while the probe is alive;
+      # at 5 minutes the probe is gone and its series end
+      - series: shopeasy_probe_last_run_timestamp_seconds{job="probe", instance="172.18.0.9:9091"}
+        values: "0+60x5 _x20"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: SyntheticProbeStale
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: SyntheticProbeStale
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: SyntheticProbeStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: probe
+              instance: 172.18.0.9:9091
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#syntheticprobestale
+              summary: The synthetic probe has not finished a run for 5 minutes
+              description: "The last run ended 8m 0s ago. Without the probe nobody is measuring the shop from outside, and SyntheticOrderFailing cannot fire."
+
+  - interval: 1m
+    name: a probe that is still scraped but no longer finishes runs raises SyntheticProbeStale too
+    input_series:
+      - series: shopeasy_probe_last_run_timestamp_seconds{job="probe", instance="172.18.0.9:9091"}
+        values: "0+60x5 300x20"
+    alert_rule_test:
+      - eval_time: 13m
+        alertname: SyntheticProbeStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: probe
+              instance: 172.18.0.9:9091
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#syntheticprobestale
+              summary: The synthetic probe has not finished a run for 5 minutes
+              description: "The last run ended 8m 0s ago. Without the probe nobody is measuring the shop from outside, and SyntheticOrderFailing cannot fire."
+
+  - interval: 1m
+    name: a probe that runs on schedule, or that was never started, raises no SyntheticProbeStale
+    input_series:
+      - series: shopeasy_probe_last_run_timestamp_seconds{job="probe", instance="172.18.0.9:9091"}
+        values: "0+60x30"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SyntheticProbeStale
+        exp_alerts: []
+
+  - interval: 1m
+    name: a stack without the probe has no synthetic alerts at all
+    input_series:
+      - series: up{job="shopeasy-gateway", instance="gateway:9091"}
+        values: "1x30"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SyntheticProbeStale
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: SyntheticOrderFailing
+        exp_alerts: []
+
   - interval: 1m
     name: the watchdog always fires, so a missing watchdog means alerting is broken
     input_series: []

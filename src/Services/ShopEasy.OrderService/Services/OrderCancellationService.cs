@@ -125,7 +125,7 @@ public class OrderCancellationService(
             await MarkCancelledAsync(order, reason, now, ct);
             await transaction.CommitAsync(ct);
 
-            OrderMetrics.RecordOrderCancelled(FailureReasons.CancelReasonOf(reason));
+            OrderMetrics.RecordOrderCancelled(FailureReasons.CancelReasonOf(reason), order.UserEmail);
             logger.LogInformation(
                 "Order {OrderId} cancelled before its saga started ({Reason})", orderId, reason);
             return new CancelResult(CancelOutcome.Cancelled);
@@ -140,7 +140,7 @@ public class OrderCancellationService(
                 saga.FailureReason = reason;
                 saga.RetryCount = 0; // each step of a paid cancellation counts its own attempts
                 saga.UpdatedAt = now;
-                await publishEndpoint.Publish(new RefundPaymentCommand { OrderId = order.Id, Reason = reason }, ct);
+                await publishEndpoint.Publish(new RefundPaymentCommand { OrderId = order.Id, UserEmail = order.UserEmail, Reason = reason }, ct);
                 await db.SaveChangesAsync(ct);
 
                 await readModelUpdater.UpdateStatusAsync(
@@ -190,7 +190,7 @@ public class OrderCancellationService(
                 await transaction.CommitAsync(ct);
 
                 OrderMetrics.RecordSagaCancelled(now - saga.CreatedAt);
-                OrderMetrics.RecordOrderCancelled(FailureReasons.CancelReasonOf(reason));
+                OrderMetrics.RecordOrderCancelled(FailureReasons.CancelReasonOf(reason), order.UserEmail);
                 logger.LogInformation(
                     "Order {OrderId} cancelled before any stock was reserved ({Reason})", orderId, reason);
                 return new CancelResult(CancelOutcome.Cancelled);
