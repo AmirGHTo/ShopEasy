@@ -282,6 +282,14 @@ jobs:
             docker run --rm --entrypoint promtool -v "$PWD:/work:ro" -w /work prom/prometheus:v2.51.0 $check
           done
 
+      # A panel that asks for a metric nobody exports shows "No data", which reads as "all quiet". Every
+      # dashboard needs a description on each panel, and the shopeasy_* metrics its queries name must be ones
+      # the code defines. (The queries themselves are tried against Prometheus in the Compose job.)
+      - name: Grafana dashboards (descriptions, metric names)
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 .github/scripts/check-dashboards.py static
+
       # Alertmanager's own configuration must be valid, every alert must carry a severity and a
       # runbook link to a README heading that exists, and the inhibitions may only name real alerts.
       - name: Alertmanager configuration and the alerts' runbooks
@@ -345,7 +353,7 @@ jobs:
         run: >-
           docker compose up -d --build --wait --wait-timeout 900
           postgres rabbitmq redis identity product inventory payment order gateway prometheus alertmanager mailpit
-          jaeger otel-collector postgres-exporter redis-exporter
+          jaeger otel-collector postgres-exporter redis-exporter grafana
 
       - name: Containers run unprivileged
         run: bash .github/scripts/check-running-containers.sh
@@ -435,6 +443,13 @@ jobs:
       # none in disagreement with its payment
       - name: The consistency check found nothing wrong
         run: bash .github/scripts/check-consistency.sh
+
+      # The dashboards, with real data behind them: Prometheus accepts every query of every dashboard and holds
+      # every library and exporter metric they name, and Grafana lists and loads each dashboard.
+      - name: Dashboards load, and their queries and metrics are real
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 .github/scripts/check-dashboards.py live http://localhost:9090 http://localhost:3000
 
       # The orders those tests placed left traces: Jaeger must hold one that is the whole story of an order,
       # from the request at the gateway to the confirmation, through the Collector. See "Traces" in the README.
