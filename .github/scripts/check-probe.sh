@@ -49,6 +49,12 @@ fail() {
 [ "$(series 'ALERTS{alertname=~"Synthetic.*"}')" -eq 0 ] || fail "a synthetic alert is raised on a stack without the probe"
 echo "Without the profile: no probe target, no probe series, no synthetic alert"
 
+# When did Order and Payment start? Starting the probe must not re-create them: their counters would begin
+# again at zero and the comparison below would prove nothing. (`up --build probe` would build and re-create
+# the services it depends on too, since the build context now holds files the earlier steps made.)
+started() { docker inspect -f '{{.State.StartedAt}}' "$(compose ps -q order)" "$(compose ps -q payment)" | tr '\n' ' '; }
+started_before="$(started)"
+
 # the figures, once they have stopped moving (the last test order is settled; Prometheus is 15 s behind)
 before=""
 for _ in $(seq 1 6); do
@@ -61,7 +67,8 @@ placed_before="$(whole "$(value 'sum(shopeasy_orders_placed_total)')")"
 [ "$placed_before" -gt 0 ] || fail "the end-to-end tests left no placed order in the metrics, so 'the probe's orders are not counted' would prove nothing"
 
 # ── 2. the probe, with its profile ───────────────────────────────────────────
-compose up -d --build --wait probe
+compose build probe
+compose up -d --no-deps --wait probe
 echo "The probe is running"
 
 ok=0
@@ -82,6 +89,7 @@ age="$(whole "$(value 'time() - shopeasy_probe_last_success_timestamp_seconds')"
 echo "All five steps work (last full success ${age} s ago); $(value 'shopeasy_probe_duration_seconds{step="confirmation"}') s to the confirmation"
 
 # ── 3. business numbers unmoved, system numbers moved ────────────────────────
+[ "$(started)" = "$started_before" ] || fail "starting the probe re-created Order or Payment, so their counters began again (before: $started_before, now: $(started))"
 sleep 20   # a scrape after the last of those orders
 after="$(business) sagas=$(sagas)"
 echo "after the probe:  $after"
