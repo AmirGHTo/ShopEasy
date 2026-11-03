@@ -129,6 +129,7 @@
     {
       "id": 8,
       "title": "HTTP Response Time (p95)",
+      "description": "The 95th-percentile answer time per service, health checks left out. The dots are requests with a trace behind them (exemplars): click one and choose Jaeger to see the trace, or the Seq link for its log lines. Sampling below 1.0 (Telemetry__SamplingRatio) keeps only some traces, so a dot can point at one that was not kept. A high value: see the runbook of ShopSlow.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -138,8 +139,9 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))",
-          "legendFormat": "p95 {{service}}"
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{endpoint!~\"/health.*\"}[5m])) by (le, service))",
+          "legendFormat": "p95 {{service}}",
+          "exemplar": true
         }
       ]
     },

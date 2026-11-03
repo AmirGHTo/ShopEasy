@@ -290,6 +290,12 @@ jobs:
           python3 -m pip install --quiet pyyaml
           python3 .github/scripts/check-alert-rules.py
 
+      # Grafana reads its provisioning files only when it starts and says little when one is wrong: the
+      # data sources must have unique uids, the exemplar link must point at a data source that exists,
+      # and Jaeger's link pattern (to the logs of a trace in Seq) must be complete.
+      - name: Grafana and Jaeger provisioning files
+        run: python3 .github/scripts/check-grafana-provisioning.py
+
       # The Collector validates its own configuration (receivers, processors, exporters and the
       # pipeline that joins them), both the plain one and the one with tail sampling. The image is the
       # one the Compose file runs; a test makes sure the two versions are the same.
@@ -345,7 +351,7 @@ jobs:
         run: >-
           docker compose up -d --build --wait --wait-timeout 900
           postgres rabbitmq redis identity product inventory payment order gateway prometheus alertmanager mailpit
-          jaeger otel-collector postgres-exporter redis-exporter
+          jaeger otel-collector postgres-exporter redis-exporter grafana
 
       - name: Containers run unprivileged
         run: bash .github/scripts/check-running-containers.sh
@@ -354,6 +360,11 @@ jobs:
       # metrics ports are not published, and no queue is without a consumer on a healthy stack.
       - name: Metrics are scraped from the internal port only, and the dependencies are measured
         run: bash .github/scripts/check-metrics.sh
+
+      # Grafana's two data sources (Prometheus and Jaeger) work, and the three
+      # signals are linked: an exemplar leads to Jaeger and to Seq, and Jaeger links to Seq.
+      - name: Grafana data sources are healthy and the signals are linked
+        run: bash .github/scripts/check-grafana.sh
 
       # Prometheus -> Alertmanager -> mailbox: the Watchdog alert always fires, so its mail arriving
       # proves that an alert raised anywhere would arrive too.
@@ -441,6 +452,10 @@ jobs:
       - name: Traces reach Jaeger (one trace per order)
         run: python3 .github/scripts/check-traces.py
 
+      # A point on the latency graph (an exemplar) is the id of a trace that Jaeger really holds.
+      - name: Exemplars lead to traces
+        run: python3 .github/scripts/check-exemplars.py
+
       # Data can be lost (a deleted volume, a dead disk), and then only a backup helps. This takes
       # one of every database the tests have just filled, throws the PostgreSQL container and its
       # volume away, restores into a new empty one and compares every table row count; the order
@@ -467,7 +482,7 @@ jobs:
       - name: Container logs (on failure)
         if: failure()
         run: |
-          docker compose logs --no-color --timestamps --tail 150 identity product gateway postgres redis rabbitmq postgres-exporter redis-exporter prometheus alertmanager mailpit otel-collector jaeger
+          docker compose logs --no-color --timestamps --tail 150 identity product gateway postgres redis rabbitmq postgres-exporter redis-exporter prometheus alertmanager mailpit otel-collector jaeger grafana
           docker compose logs --no-color --timestamps --tail 1500 order inventory payment rabbitmq
 
       - name: Stop
