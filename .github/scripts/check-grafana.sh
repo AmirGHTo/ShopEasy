@@ -77,10 +77,19 @@ else
 fi
 
 # ── 3. Jaeger's link to Seq ──────────────────────────────────────────────────
-if curl --silent --fail --max-time 10 "$JAEGER/" | grep -q 'Logs of this trace in Seq'; then
+# The page is read into a variable first and asked again for up to a minute: Jaeger answers its API before it
+# serves the page with the UI configuration (this once failed on a runner that was fast to get here), and a
+# `curl | grep -q` would also fail on the broken pipe when grep stops reading at the first match.
+page=""
+for _ in $(seq 1 12); do
+  page="$(curl --silent --fail --max-time 10 "$JAEGER/" || true)"
+  grep -q 'Logs of this trace in Seq' <<<"$page" && break
+  sleep 5
+done
+if grep -q 'Logs of this trace in Seq' <<<"$page"; then
   echo "Jaeger offers 'Logs of this trace in Seq'"
 else
-  echo "::error::Jaeger's page does not carry the link pattern from jaeger/ui.json (QUERY_UI_CONFIG)"; failed=1
+  echo "::error::Jaeger's page does not carry the link pattern from jaeger/ui.json (QUERY_UI_CONFIG); it answered: ${page:0:300}"; failed=1
 fi
 
 exit "$failed"
