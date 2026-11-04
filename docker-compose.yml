@@ -183,12 +183,14 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --enable-feature=exemplar-storage
+      # the error-budget panel adds up 30 days (README, "Service level objectives"); the default would keep 15
+      - --storage.tsdb.retention.time=30d
     ports:
       - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - ./prometheus-rules.yml:/etc/prometheus/prometheus-rules.yml
-      # the history (Prometheus keeps 15 days by default) survives a restart or a re-created container
+      # the history (kept for 30 days, see the command) survives a restart or a re-created container
       - prometheus-data:/prometheus
     networks:
       - shopeasy-net

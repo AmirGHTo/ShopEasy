@@ -1,0 +1,505 @@
+{
+  "uid": "shopeasy-slo",
+  "title": "ShopEasy SLOs",
+  "tags": [
+    "shopeasy"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "links": [
+    {
+      "type": "dashboards",
+      "title": "ShopEasy dashboards",
+      "tags": [
+        "shopeasy"
+      ],
+      "asDropdown": true,
+      "includeVars": false,
+      "keepTime": true,
+      "icon": "external link"
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Where the budget stands",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Availability budget left",
+      "description": "Of the share of gateway answers that may be a server error (5xx) - 0.5 %, for an objective of 99.5 % - how much is left over the span Prometheus holds (up to 30 days; less after a fresh start). 100 %: none spent. Below 0: the objective is missed. Health checks are not counted. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#errorbudgetfastburn",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1 - shopeasy:gateway_bad_ratio:rate30d{sli=\"availability\"} / on(sli) shopeasy:slo_budget:ratio",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 0.25
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Latency budget left",
+      "description": "Of the share of gateway answers that may take longer than 2 seconds (5 %, for an objective of 95 % under 2 s; counted at the 2.048 s edge of the histogram) - how much is left over the span Prometheus holds. Below 0: the objective is missed. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#errorbudgetslowburn",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1 - shopeasy:gateway_bad_ratio:rate30d{sli=\"latency\"} / on(sli) shopeasy:slo_budget:ratio",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 0.25
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Burn rate now (1 h)",
+      "description": "How many times faster than the month allows the budget was spent over the last hour: 1 uses it exactly up in 30 days, 14.4 would use it up in 2 days (the line of ErrorBudgetFastBurn, together with the last 5 minutes), 6 in 5 days (ErrorBudgetSlowBurn, over 6 hours). No data: the gateway got no requests. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#errorbudgetfastburn",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "shopeasy:gateway_bad_ratio:rate1h / on(sli) shopeasy:slo_budget:ratio",
+          "legendFormat": "{{sli}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 6
+              },
+              {
+                "color": "red",
+                "value": 14.4
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "row",
+      "title": "How fast it is burning",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "panels": []
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Burn rate - availability",
+      "description": "How many times too fast the availability budget is spent, over 5 minutes, 1 hour and 6 hours. A graph that stays over the orange line (6) for hours is a leak (ErrorBudgetSlowBurn); the 1 hour and 5 minute lines both over the red one (14.4) is an outage (ErrorBudgetFastBurn). Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#errorbudgetfastburn",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "shopeasy:gateway_bad_ratio:rate5m{sli=\"availability\"} / on(sli) shopeasy:slo_budget:ratio",
+          "legendFormat": "5 min"
+        },
+        {
+          "refId": "B",
+          "expr": "shopeasy:gateway_bad_ratio:rate1h{sli=\"availability\"} / on(sli) shopeasy:slo_budget:ratio",
+          "legendFormat": "1 h"
+        },
+        {
+          "refId": "C",
+          "expr": "shopeasy:gateway_bad_ratio:rate6h{sli=\"availability\"} / on(sli) shopeasy:slo_budget:ratio",
+          "legendFormat": "6 h"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 6
+              },
+              {
+                "color": "red",
+                "value": 14.4
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Burn rate - latency",
+      "description": "The same for answers slower than 2 seconds, whose budget is 5 %: the red line is 72 % of the answers being slow. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#errorbudgetslowburn",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "shopeasy:gateway_bad_ratio:rate5m{sli=\"latency\"} / on(sli) shopeasy:slo_budget:ratio",
+          "legendFormat": "5 min"
+        },
+        {
+          "refId": "B",
+          "expr": "shopeasy:gateway_bad_ratio:rate1h{sli=\"latency\"} / on(sli) shopeasy:slo_budget:ratio",
+          "legendFormat": "1 h"
+        },
+        {
+          "refId": "C",
+          "expr": "shopeasy:gateway_bad_ratio:rate6h{sli=\"latency\"} / on(sli) shopeasy:slo_budget:ratio",
+          "legendFormat": "6 h"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 6
+              },
+              {
+                "color": "red",
+                "value": 14.4
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "What is going wrong",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "panels": []
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Server errors (5xx), share of the gateway's answers",
+      "description": "The share of answers over 5 minutes that were a server error, against the objective's 0.5 % (the line). Look at Service Health for which service, then Seq and Jaeger. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#errorbudgetfastburn",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "shopeasy:gateway_bad_ratio:rate5m{sli=\"availability\"}",
+          "legendFormat": "5 min"
+        },
+        {
+          "refId": "B",
+          "expr": "shopeasy:gateway_bad_ratio:rate1h{sli=\"availability\"}",
+          "legendFormat": "1 h"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.005
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Slow answers (over 2 s), share of the gateway's answers",
+      "description": "The share of answers over 5 minutes that took longer than 2 seconds, against the objective's 5 % (the line). In Jaeger sort the slowest traces and see which span is long. Runbook: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#errorbudgetslowburn",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "shopeasy:gateway_bad_ratio:rate5m{sli=\"latency\"}",
+          "legendFormat": "5 min"
+        },
+        {
+          "refId": "B",
+          "expr": "shopeasy:gateway_bad_ratio:rate1h{sli=\"latency\"}",
+          "legendFormat": "1 h"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ]
+}
