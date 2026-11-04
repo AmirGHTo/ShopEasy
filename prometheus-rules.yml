@@ -154,6 +154,154 @@ groups:
           summary: 1 request in 20 takes longer than 2 seconds
           description: The 95th percentile of the gateway's answer time over the last 10 minutes is {{ $value | humanizeDuration }}.
 
+  # Service level objectives and how fast the error budget burns (README, "Service level objectives").
+  # Two measures of the gateway, each a share of requests that were bad:
+  #   availability: the answer was a server error (5xx). Objective 99.5 % over 30 days, so the budget is 0.5 %.
+  #   latency:      the answer took longer than 2 seconds. Objective 95 % under 2 s, so the budget is 5 %.
+  # (The slowest histogram bucket edge not above 2 s would be 1.024; the first one above is 2.048, which is
+  # what is counted: a request between 2 and 2.048 s counts as fast.) Health checks are left out of both.
+  # A burn rate of 1 uses the budget exactly as fast as the month allows; 14.4 would use it up in 2 days.
+  - name: shopeasy-slo
+    interval: 1m
+    rules:
+      - record: shopeasy:slo_budget:ratio
+        labels:
+          sli: availability
+        expr: vector(0.005)
+
+      - record: shopeasy:slo_budget:ratio
+        labels:
+          sli: latency
+        expr: vector(0.05)
+
+      # How much the gateway was asked, for the alerts: a ratio of a handful of requests says nothing
+      - record: shopeasy:gateway_requests:increase1h
+        expr: sum(increase(http_requests_received_total{service="Gateway",endpoint!~"/health.*"}[1h]))
+
+      - record: shopeasy:gateway_requests:increase6h
+        expr: sum(increase(http_requests_received_total{service="Gateway",endpoint!~"/health.*"}[6h]))
+
+      # The share of bad requests over six windows (the 30 days are what the error-budget panel adds up:
+      # Prometheus has to keep that long, see --storage.tsdb.retention.time in docker-compose.yml)
+      - record: shopeasy:gateway_bad_ratio:rate5m
+        labels:
+          sli: availability
+        expr: |
+          (sum(rate(http_requests_received_total{service="Gateway",endpoint!~"/health.*",code=~"5.."}[5m])) or vector(0))
+            / sum(rate(http_requests_received_total{service="Gateway",endpoint!~"/health.*"}[5m]))
+
+      - record: shopeasy:gateway_bad_ratio:rate5m
+        labels:
+          sli: latency
+        expr: |
+          1 - sum(rate(http_request_duration_seconds_bucket{service="Gateway",endpoint!~"/health.*",le="2.048"}[5m]))
+            / sum(rate(http_request_duration_seconds_count{service="Gateway",endpoint!~"/health.*"}[5m]))
+
+      - record: shopeasy:gateway_bad_ratio:rate30m
+        labels:
+          sli: availability
+        expr: |
+          (sum(rate(http_requests_received_total{service="Gateway",endpoint!~"/health.*",code=~"5.."}[30m])) or vector(0))
+            / sum(rate(http_requests_received_total{service="Gateway",endpoint!~"/health.*"}[30m]))
+
+      - record: shopeasy:gateway_bad_ratio:rate30m
+        labels:
+          sli: latency
+        expr: |
+          1 - sum(rate(http_request_duration_seconds_bucket{service="Gateway",endpoint!~"/health.*",le="2.048"}[30m]))
+            / sum(rate(http_request_duration_seconds_count{service="Gateway",endpoint!~"/health.*"}[30m]))
+
+      - record: shopeasy:gateway_bad_ratio:rate1h
+        labels:
+          sli: availability
+        expr: |
+          (sum(rate(http_requests_received_total{service="Gateway",endpoint!~"/health.*",code=~"5.."}[1h])) or vector(0))
+            / sum(rate(http_requests_received_total{service="Gateway",endpoint!~"/health.*"}[1h]))
+
+      - record: shopeasy:gateway_bad_ratio:rate1h
+        labels:
+          sli: latency
+        expr: |
+          1 - sum(rate(http_request_duration_seconds_bucket{service="Gateway",endpoint!~"/health.*",le="2.048"}[1h]))
+            / sum(rate(http_request_duration_seconds_count{service="Gateway",endpoint!~"/health.*"}[1h]))
+
+      - record: shopeasy:gateway_bad_ratio:rate6h
+        labels:
+          sli: availability
+        expr: |
+          (sum(rate(http_requests_received_total{service="Gateway",endpoint!~"/health.*",code=~"5.."}[6h])) or vector(0))
+            / sum(rate(http_requests_received_total{service="Gateway",endpoint!~"/health.*"}[6h]))
+
+      - record: shopeasy:gateway_bad_ratio:rate6h
+        labels:
+          sli: latency
+        expr: |
+          1 - sum(rate(http_request_duration_seconds_bucket{service="Gateway",endpoint!~"/health.*",le="2.048"}[6h]))
+            / sum(rate(http_request_duration_seconds_count{service="Gateway",endpoint!~"/health.*"}[6h]))
+
+      - record: shopeasy:gateway_bad_ratio:rate3d
+        labels:
+          sli: availability
+        expr: |
+          (sum(rate(http_requests_received_total{service="Gateway",endpoint!~"/health.*",code=~"5.."}[3d])) or vector(0))
+            / sum(rate(http_requests_received_total{service="Gateway",endpoint!~"/health.*"}[3d]))
+
+      - record: shopeasy:gateway_bad_ratio:rate3d
+        labels:
+          sli: latency
+        expr: |
+          1 - sum(rate(http_request_duration_seconds_bucket{service="Gateway",endpoint!~"/health.*",le="2.048"}[3d]))
+            / sum(rate(http_request_duration_seconds_count{service="Gateway",endpoint!~"/health.*"}[3d]))
+
+      - record: shopeasy:gateway_bad_ratio:rate30d
+        labels:
+          sli: availability
+        expr: |
+          (sum(rate(http_requests_received_total{service="Gateway",endpoint!~"/health.*",code=~"5.."}[30d])) or vector(0))
+            / sum(rate(http_requests_received_total{service="Gateway",endpoint!~"/health.*"}[30d]))
+
+      - record: shopeasy:gateway_bad_ratio:rate30d
+        labels:
+          sli: latency
+        expr: |
+          1 - sum(rate(http_request_duration_seconds_bucket{service="Gateway",endpoint!~"/health.*",le="2.048"}[30d]))
+            / sum(rate(http_request_duration_seconds_count{service="Gateway",endpoint!~"/health.*"}[30d]))
+
+      # The two ways to be told. Both ask two windows at once: the long one says the budget is really being spent,
+      # the short one says it is still being spent now (so an alert ends soon after the cause is gone).
+      # Fewer requests than the guard says is too little to judge: a rate limit or a night's few requests must not page.
+      - alert: ErrorBudgetFastBurn
+        expr: |
+          (
+            shopeasy:gateway_bad_ratio:rate1h / on(sli) shopeasy:slo_budget:ratio > 14.4
+            and
+            shopeasy:gateway_bad_ratio:rate5m / on(sli) shopeasy:slo_budget:ratio > 14.4
+          )
+          and on() shopeasy:gateway_requests:increase1h >= 100
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#errorbudgetfastburn
+          summary: "The gateway's {{ $labels.sli }} budget is burning 14 times too fast"
+          description: "Over the last hour the {{ $labels.sli }} budget was spent {{ $value | printf \"%.1f\" }} times as fast as a 30-day month allows, and it still is (last 5 minutes). At this rate the whole month's budget is gone in about 2 days."
+
+      - alert: ErrorBudgetSlowBurn
+        expr: |
+          (
+            shopeasy:gateway_bad_ratio:rate6h / on(sli) shopeasy:slo_budget:ratio > 6
+            and
+            shopeasy:gateway_bad_ratio:rate30m / on(sli) shopeasy:slo_budget:ratio > 6
+          )
+          and on() shopeasy:gateway_requests:increase6h >= 300
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#errorbudgetslowburn
+          summary: "The gateway's {{ $labels.sli }} budget is leaking: 6 times too fast for hours"
+          description: "Over the last 6 hours the {{ $labels.sli }} budget was spent {{ $value | printf \"%.1f\" }} times as fast as a 30-day month allows, and it still is (last 30 minutes). Too slow to page, but the month's budget would be gone in 5 days."
+
   - name: shopeasy-dependencies
     rules:
       # What the services depend on: RabbitMQ (its own metrics), PostgreSQL and Redis (through their exporters).
