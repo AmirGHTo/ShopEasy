@@ -637,6 +637,36 @@ services:
     networks:
       - shopeasy-net
 
+  # ── Demo load generator ─────────────────────────────────────────────────────
+  # Places orders through the gateway at a chosen rate with a mix of outcomes (confirmed, declined, cancelled),
+  # so that the dashboards have something to show (README, "Traffic and failures to try"). It runs only when
+  # asked for, and ends by itself when it has a duration:
+  #   ops/demo/load.sh --rate 30 --duration 300
+  # Its orders are real, and count in the sales and payment figures. It signs up new customers on every run.
+  loadgen:
+    <<: *hardened
+    profiles: ["load"]
+    build:
+      context: .
+      dockerfile: src/Tools/ShopEasy.LoadGen/Dockerfile
+    container_name: shopeasy-loadgen
+    restart: "no"
+    environment:
+      LOAD_RATE_PER_MINUTE: "${LOAD_RATE_PER_MINUTE:-12}"
+      LOAD_DURATION_SECONDS: "${LOAD_DURATION_SECONDS:-0}"
+      LOAD_MIX: "${LOAD_MIX:-70,10,20}"
+      # reaches the gateway and Identity the way the synthetic probe does (see there)
+      E2E_GATEWAY_URL: "http://localhost:5000"
+      E2E_IDENTITY_URL: "${IDENTITY_PUBLIC_URL:-http://localhost:5001}"
+      E2E_ADDRESS_MAP: "${PROBE_ADDRESS_MAP:-localhost:5000=gateway:8080,localhost:5001=identity:8080}"
+    depends_on:
+      gateway:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
+    networks:
+      - shopeasy-net
+
 # ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   postgres-data:

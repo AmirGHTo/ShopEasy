@@ -60,6 +60,7 @@ updates:
   - package-ecosystem: docker
     directories:
       - /src/Tools/ShopEasy.Probe
+      - /src/Tools/ShopEasy.LoadGen
       - /src/Identity/ShopEasy.Identity
       - /src/Gateway/ShopEasy.Gateway
       - /src/Services/ShopEasy.ProductService

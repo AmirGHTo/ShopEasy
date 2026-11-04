@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<!-- The demo load generator: places orders through the gateway at a chosen rate, with a mix of outcomes
+	     (confirmed, declined, cancelled), so that the dashboards have something to show.
+	     ops/demo/load.sh, README "Traffic and failures to try". -->
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<TargetFramework>net8.0</TargetFramework>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<RootNamespace>ShopEasy.LoadGen</RootNamespace>
+	</PropertyGroup>
+
+	<!-- The customer of the end-to-end tests, as source (see ShopEasy.Probe): one implementation of the sign-in -->
+	<ItemGroup>
+		<Compile Include="..\..\Tests\ShopEasy.EndToEndTests\Support\Shopper.cs" Link="Customer\Shopper.cs" />
+		<Compile Include="..\..\Tests\ShopEasy.EndToEndTests\Support\BrowserCookies.cs" Link="Customer\BrowserCookies.cs" />
+		<Compile Include="..\..\Tests\ShopEasy.EndToEndTests\Support\Reply.cs" Link="Customer\Reply.cs" />
+		<Compile Include="..\..\Tests\ShopEasy.EndToEndTests\Support\Stack.cs" Link="Customer\Stack.cs" />
+	</ItemGroup>
+
+</Project>
