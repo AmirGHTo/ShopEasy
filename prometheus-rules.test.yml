@@ -662,6 +662,212 @@ tests:
         alertname: SyntheticOrderFailing
         exp_alerts: []
 
+  # ── Service level objectives: how fast the error budget burns ─────────────────────
+  # Counters go up by "a+bxn": a, a+b, ... (n+1 samples, one a minute). A flat stretch is "axn".
+  - interval: 1m
+    name: the shares of bad requests are recorded against the gateway only, without the health checks, and are 0 when nothing failed
+    input_series:
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="200"}
+        values: "0+750x20"
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="500"}
+        values: "0+250x20"
+      - series: http_requests_received_total{service="Gateway", endpoint="/health", method="GET", code="500"}
+        values: "0+6x20"
+      - series: http_request_duration_seconds_count{service="Gateway", endpoint="/api/orders", method="GET", code="200"}
+        values: "0+1000x20"
+      - series: http_request_duration_seconds_bucket{service="Gateway", endpoint="/api/orders", method="GET", code="200", le="2.048"}
+        values: "0+750x20"
+      - series: http_requests_received_total{service="Product", endpoint="/api/v1/products", method="GET", code="500"}
+        values: "0+500x20"
+    promql_expr_test:
+      - expr: shopeasy:gateway_bad_ratio:rate5m{sli="availability"}
+        eval_time: 15m
+        exp_samples:
+          - labels: 'shopeasy:gateway_bad_ratio:rate5m{sli="availability"}'
+            value: 0.25
+      - expr: shopeasy:gateway_bad_ratio:rate5m{sli="latency"}
+        eval_time: 15m
+        exp_samples:
+          - labels: 'shopeasy:gateway_bad_ratio:rate5m{sli="latency"}'
+            value: 0.25
+      - expr: shopeasy:slo_budget:ratio
+        eval_time: 15m
+        exp_samples:
+          - labels: 'shopeasy:slo_budget:ratio{sli="availability"}'
+            value: 0.005
+          - labels: 'shopeasy:slo_budget:ratio{sli="latency"}'
+            value: 0.05
+
+  - interval: 1m
+    name: a gateway without a single server error has an availability ratio of 0, not no value
+    input_series:
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="200"}
+        values: "0+1000x20"
+    promql_expr_test:
+      - expr: shopeasy:gateway_bad_ratio:rate5m{sli="availability"}
+        eval_time: 15m
+        exp_samples:
+          - labels: 'shopeasy:gateway_bad_ratio:rate5m{sli="availability"}'
+            value: 0
+
+  - interval: 1m
+    name: an outage after a healthy hour raises ErrorBudgetFastBurn once both windows are over 14.4 times the budget
+    input_series:
+      # 1000 requests a minute, all answered until minute 60, none after it: every request fails
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="200"}
+        values: "0+1000x60 60000x60"
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="500"}
+        values: "0x60 1000+1000x60"
+    alert_rule_test:
+      - eval_time: 64m
+        alertname: ErrorBudgetFastBurn
+        exp_alerts: []          # the 5-minute window is over; the hour is at 13.3 times, just under 14.4
+      - eval_time: 68m
+        alertname: ErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              sli: availability
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#errorbudgetfastburn
+              summary: "The gateway's availability budget is burning 14 times too fast"
+              description: "Over the last hour the availability budget was spent 26.7 times as fast as a 30-day month allows, and it still is (last 5 minutes). At this rate the whole month's budget is gone in about 2 days."
+      - eval_time: 68m
+        alertname: ErrorBudgetSlowBurn
+        exp_alerts: []          # the 6-hour window has not caught up yet: this is the fast alert's moment
+
+  - interval: 1m
+    name: a steady leak of 4 percent raises only ErrorBudgetSlowBurn, because the hour never reaches 14.4 times the budget
+    input_series:
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="200"}
+        values: "0+960x480"
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="500"}
+        values: "0+40x480"
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: ErrorBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 2h
+        alertname: ErrorBudgetSlowBurn
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              sli: availability
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#errorbudgetslowburn
+              summary: "The gateway's availability budget is leaking: 6 times too fast for hours"
+              description: "Over the last 6 hours the availability budget was spent 8.0 times as fast as a 30-day month allows, and it still is (last 30 minutes). Too slow to page, but the month's budget would be gone in 5 days."
+      - eval_time: 7h
+        alertname: ErrorBudgetFastBurn
+        exp_alerts: []
+
+  - interval: 1m
+    name: a blip of three minutes in a healthy afternoon raises neither alert
+    input_series:
+      # healthy for 4 hours, three minutes in which every request fails, healthy again
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="200"}
+        values: "0+1000x240 240000x2 241000+1000x56"
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="500"}
+        values: "0x240 1000+1000x2 3000x56"
+    alert_rule_test:
+      - eval_time: 243m
+        alertname: ErrorBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 250m
+        alertname: ErrorBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 250m
+        alertname: ErrorBudgetSlowBurn
+        exp_alerts: []
+      - eval_time: 300m
+        alertname: ErrorBudgetSlowBurn
+        exp_alerts: []
+
+  - interval: 1m
+    name: ErrorBudgetFastBurn stops soon after the cause is gone, although the hour behind it is still far over
+    input_series:
+      # healthy for an hour, then 30 minutes in which every request fails, then 20 minutes with 5 percent of them failing
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="200"}
+        values: "0+1000x60 60000x30 60950+950x20"
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="500"}
+        values: "0x60 1000+1000x30 30000+50x20"
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: ErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              sli: availability
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#errorbudgetfastburn
+              summary: "The gateway's availability budget is burning 14 times too fast"
+              description: "Over the last hour the availability budget was spent 66.7 times as fast as a 30-day month allows, and it still is (last 5 minutes). At this rate the whole month's budget is gone in about 2 days."
+      - eval_time: 105m
+        alertname: ErrorBudgetFastBurn
+        exp_alerts: []          # the last 5 minutes are at 5 percent, 10 times the budget: under 14.4, so it ends
+
+  - interval: 1m
+    name: ErrorBudgetSlowBurn stops once the leak is closed, although the six hours behind it are still over
+    input_series:
+      # 8 percent of the requests fail for 3 hours, then none for an hour
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="200"}
+        values: "0+920x180 166600+1000x59"
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="500"}
+        values: "0+80x180 14400x59"
+    alert_rule_test:
+      - eval_time: 120m
+        alertname: ErrorBudgetSlowBurn
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              sli: availability
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#errorbudgetslowburn
+              summary: "The gateway's availability budget is leaking: 6 times too fast for hours"
+              description: "Over the last 6 hours the availability budget was spent 16.0 times as fast as a 30-day month allows, and it still is (last 30 minutes). Too slow to page, but the month's budget would be gone in 5 days."
+      - eval_time: 240m
+        alertname: ErrorBudgetSlowBurn
+        exp_alerts: []          # six hours say 12 times, the last 30 minutes say nothing
+
+  - interval: 1m
+    name: a gateway that is asked almost nothing raises nothing, however much of it fails
+    input_series:
+      # half a request a minute (30 an hour, 180 in six), every one of them fails: 100 percent, but too few to judge
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="500"}
+        values: "0+0.5x480"
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: ErrorBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 7h
+        alertname: ErrorBudgetSlowBurn
+        exp_alerts: []
+
+  - interval: 1m
+    name: answers that all take too long raise ErrorBudgetFastBurn for the latency, and not for the availability
+    input_series:
+      # 1000 requests a minute, all answered with 200; up to minute 60 all within 2.048 s, after it none of them
+      - series: http_requests_received_total{service="Gateway", endpoint="/api/orders", method="GET", code="200"}
+        values: "0+1000x120"
+      - series: http_request_duration_seconds_count{service="Gateway", endpoint="/api/orders", method="GET", code="200"}
+        values: "0+1000x120"
+      - series: http_request_duration_seconds_bucket{service="Gateway", endpoint="/api/orders", method="GET", code="200", le="2.048"}
+        values: "0+1000x60 60000x60"
+    alert_rule_test:
+      - eval_time: 75m
+        alertname: ErrorBudgetFastBurn
+        exp_alerts: []          # 15 slow minutes in the hour are 25 percent: 5 times the budget of 5 percent
+      - eval_time: 110m
+        alertname: ErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              sli: latency
+            exp_annotations:
+              runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#errorbudgetfastburn
+              summary: "The gateway's latency budget is burning 14 times too fast"
+              description: "Over the last hour the latency budget was spent 16.7 times as fast as a 30-day month allows, and it still is (last 5 minutes). At this rate the whole month's budget is gone in about 2 days."
+
   - interval: 1m
     name: the watchdog always fires, so a missing watchdog means alerting is broken
     input_series: []

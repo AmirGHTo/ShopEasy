@@ -96,7 +96,7 @@ public class ObservabilityGuideTests
             .Concat(Regex.Matches(AllPages, @"`(Watchdog)`").Select(m => m.Groups[1].Value))
             .Where(word => !notAlerts.Contains(word)).ToHashSet();
 
-        named.Should().Contain(["ServiceDown", "DependencyDown", "QueueWithoutConsumers", "DeadLettersPresent", "Watchdog"],
+        named.Should().Contain(["ServiceDown", "DependencyDown", "QueueWithoutConsumers", "DeadLettersPresent", "ErrorBudgetFastBurn", "Watchdog"],
             "the scenario table and the guide are about these");
         foreach (var alert in named)
         {
@@ -114,7 +114,7 @@ public class ObservabilityGuideTests
 
         var named = Regex.Matches(AllPages, @"\*\*(ShopEasy [A-Z][A-Za-z ]+?)\*\*").Select(m => m.Groups[1].Value).ToHashSet();
 
-        named.Should().Contain(["ShopEasy Overview", "ShopEasy Service Health", "ShopEasy Order Flow", "ShopEasy Dependencies"]);
+        named.Should().Contain(["ShopEasy Overview", "ShopEasy Service Health", "ShopEasy Order Flow", "ShopEasy Dependencies", "ShopEasy SLOs"]);
         named.Should().BeSubsetOf(titles, "a dashboard the guide sends people to must exist");
     }
 

@@ -41,6 +41,7 @@ Three signals about the same system: **logs** (what happened, in words), **trace
 | Where in the life of an order? | Grafana, **ShopEasy Order Flow**, and the **Saga Monitor** (http://localhost:5000/sagas, as an administrator) | The funnel placed → stock reserved → paid → confirmed |
 | Which dependency? | Grafana, **ShopEasy Dependencies** | RabbitMQ queues, PostgreSQL connections, Redis |
 | Can a customer buy right now? | Grafana, **ShopEasy Synthetic Orders** (empty unless the [probe](../../README.md#a-synthetic-order-every-minute) runs) | The five steps of the last run |
+| Is the month at risk? | Grafana, **ShopEasy SLOs** | Budget left and burn rate ([Service level objectives](../../README.md#service-level-objectives)) |
 | What happened to *this* order? | Seq (http://localhost:5341), Jaeger (http://localhost:16686), the Saga Monitor timeline | `OrderId = '<guid>'` in Seq; tag `order.id=<guid>` in Jaeger |
 | Why was *this* request slow? | Grafana's latency graph → an exemplar → Jaeger → Seq | [From a slow request to its trace and its logs](../../README.md#from-a-slow-request-to-its-trace-and-its-logs) |
 | Who tells me when it breaks? | Prometheus alerts (http://localhost:9090/alerts) → Alertmanager (http://localhost:9093) → the mail in Mailpit (http://localhost:8025) | The `Watchdog` mail: proof that alerts can reach you |
@@ -60,7 +61,7 @@ The details, including what to do when a trace is not there (not sampled), are i
 
 ## How an alert reaches you, and what to do
 
-Prometheus evaluates [`prometheus-rules.yml`](../../prometheus-rules.yml) every 15 seconds. An alert that stays true for its `for:` time **fires**; Alertmanager groups it and mails it to Mailpit, with a link to its **runbook** in the README. Each runbook says what the alert **means**, where to **look** first and what to **do**. Two severities, as [`alertmanager.yml`](../../alertmanager.yml) treats them: **critical** needs a person now (mailed within seconds, repeated every hour); **warning** is grouped and repeated every four hours. While a known cause fires (`ServiceDown`, `DependencyDown`), the symptoms it explains are not mailed ([How alerts reach you](../../README.md#how-alerts-reach-you)). `Watchdog` always fires, on purpose: if its mail stops arriving, alerts are not being delivered.
+Prometheus evaluates [`prometheus-rules.yml`](../../prometheus-rules.yml) every 15 seconds. An alert that stays true for its `for:` time **fires**; Alertmanager groups it and mails it to Mailpit, with a link to its **runbook** in the README. Each runbook says what the alert **means**, where to **look** first and what to **do**. Two severities, as [`alertmanager.yml`](../../alertmanager.yml) treats them: **critical** needs a person now (mailed within seconds, repeated every hour); **warning** is grouped and repeated every four hours. While a known cause fires (`ServiceDown`, `DependencyDown`), the symptoms it explains are not mailed ([How alerts reach you](../../README.md#how-alerts-reach-you)). Two more alerts, `ErrorBudgetFastBurn` (critical) and `ErrorBudgetSlowBurn` (warning), do not ask "is something wrong now?" but "is the month's error budget being spent too fast?"; they are deliberately not held back by `ServiceDown`. `Watchdog` always fires, on purpose: if its mail stops arriving, alerts are not being delivered.
 
 ## Your first fifteen minutes
 
@@ -97,5 +98,6 @@ The other five failures are in [scenarios.md](scenarios.md), which is also the d
 - Alerts are **mails to a local mailbox**; no pager or chat is wired up (add a receiver in `alertmanager.yml`).
 - The **Kubernetes** manifests ship none of this stack.
 - **Governance** was left out: log retention, personal data in logs and an audit log have not been worked on.
+- The budget panels and the burn-rate alerts need hours of traffic to mean much; right after a fresh start they show what exists.
 - The **probe** and the **load generator** are off unless asked for (Compose profiles `probe` and `load`).
 - On a fresh start the dashboards are empty until orders flow, and an alert fires only after its own `for:` time (a minute for `ServiceDown`, several for the others).
