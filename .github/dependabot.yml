@@ -56,9 +56,10 @@ updates:
       - dependency-name: "Serilog.AspNetCore"
         update-types: ["version-update:semver-major"]
 
-  # Base images in the six service Dockerfiles
+  # Base images in the six service Dockerfiles, and the synthetic probe's
   - package-ecosystem: docker
     directories:
+      - /src/Tools/ShopEasy.Probe
       - /src/Identity/ShopEasy.Identity
       - /src/Gateway/ShopEasy.Gateway
       - /src/Services/ShopEasy.ProductService

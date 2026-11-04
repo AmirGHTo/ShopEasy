@@ -30,6 +30,10 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
 
+    // The synthetic probe's account, whose orders and payments are left out of the business counters
+    // (README, "A synthetic order every minute"); empty means there is no probe
+    SyntheticTraffic.Configure(builder.Configuration);
+
     builder.Host.UseSerilog((ctx, _, cfg) => cfg
         .ConfigureShopEasy("ShopEasy.OrderService", ctx.Configuration, ctx.HostingEnvironment.EnvironmentName));
 

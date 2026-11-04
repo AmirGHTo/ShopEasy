@@ -63,3 +63,16 @@ scrape_configs:
     static_configs:
       - targets: ['redis-exporter:9121']
     metrics_path: '/metrics'
+
+  # The synthetic probe (README, "A synthetic order every minute"). It runs only with `--profile probe`, so
+  # it is looked up in DNS instead of being listed: a stack without the probe has no target, where a static
+  # one would be down all the time. When the probe stops its series go stale (a failed scrape does that), and
+  # whether the job's `up` goes away or stays at 0 depends on how DNS answers for a name that no longer
+  # exists; SyntheticProbeStale does not depend on it: it looks at the last time the probe reported.
+  - job_name: 'probe'
+    dns_sd_configs:
+      - names: ['probe']
+        type: A
+        port: 9091
+        refresh_interval: 15s
+    metrics_path: '/metrics'

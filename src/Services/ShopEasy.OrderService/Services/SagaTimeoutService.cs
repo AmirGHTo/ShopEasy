@@ -264,6 +264,7 @@ public class SagaTimeoutService(
                     await publishEndpoint.Publish(new RefundPaymentCommand
                     {
                         OrderId = saga.OrderId,
+                        UserEmail = saga.UserEmail,
                         Reason = saga.FailureReason ?? "Cancelled"
                     }, ct);
                 else
@@ -326,7 +327,7 @@ public class SagaTimeoutService(
 
         await db.SaveChangesAsync();
 
-        OrderMetrics.RecordOrderCancelled(metricReason);
+        OrderMetrics.RecordOrderCancelled(metricReason, saga.UserEmail);
         _logger.LogWarning(
             "Saga {SagaId}: Order {OrderId} cancelled due to timeout. Reason: {Reason}",
             saga.Id, saga.OrderId, reason);

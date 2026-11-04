@@ -263,6 +263,7 @@ jobs:
         run: |
           cp .env.example .env
           docker compose config --quiet
+          docker compose --profile probe config --quiet
 
       # The cluster gets what `kubectl kustomize` renders (images and their pinned tags come from
       # k8s/kustomization.yaml), so that is what is validated, together with the secrets template.
@@ -350,6 +351,13 @@ jobs:
       # tests does not wait minutes.
       - name: Make the consistency check quick
         run: printf 'ORDER_CONSISTENCY_CHECK_SETTLE_SECONDS=10\nORDER_CONSISTENCY_CHECK_INTERVAL_SECONDS=15\n' >> .env
+
+      # The synthetic probe's customer account (README, "A synthetic order every minute"). The probe itself is
+      # not started with the stack (it has a Compose profile): the account is in .env from the start because
+      # Order and Payment are told which orders to leave out of the business numbers when they start. A run
+      # every 20 s, so the step that starts the probe does not wait minutes.
+      - name: Give the synthetic probe an account
+        run: printf 'PROBE_EMAIL=probe@shopeasy.test\nPROBE_PASSWORD=Probe-Pa55word-ci\nPROBE_INTERVAL_SECONDS=20\n' >> .env
 
       # The services of the application, Prometheus to prove it can scrape them (and the exporters that
       # measure PostgreSQL and Redis), Alertmanager with its mailbox to prove its alerts arrive, and the
@@ -471,6 +479,12 @@ jobs:
       - name: Exemplars lead to traces
         run: python3 .github/scripts/check-exemplars.py
 
+      # What a customer does, done by a container of its own every minute through the gateway: off unless the
+      # profile asks for it; here it runs for a while and is removed again, so the steps below see the stack
+      # they saw before. Its orders are left out of the business numbers and its target comes and goes in DNS.
+      - name: Synthetic probe (orders through the gateway, off by default, outside the business numbers)
+        run: bash .github/scripts/check-probe.sh
+
       # Data can be lost (a deleted volume, a dead disk), and then only a backup helps. This takes
       # one of every database the tests have just filled, throws the PostgreSQL container and its
       # volume away, restores into a new empty one and compares every table row count; the order
@@ -497,7 +511,7 @@ jobs:
       - name: Container logs (on failure)
         if: failure()
         run: |
-          docker compose logs --no-color --timestamps --tail 150 identity product gateway postgres redis rabbitmq postgres-exporter redis-exporter prometheus alertmanager mailpit otel-collector jaeger grafana
+          docker compose --profile probe logs --no-color --timestamps --tail 150 identity product gateway postgres redis rabbitmq postgres-exporter redis-exporter prometheus alertmanager mailpit otel-collector jaeger grafana probe
           docker compose logs --no-color --timestamps --tail 1500 order inventory payment rabbitmq
 
       - name: Stop
@@ -526,6 +540,7 @@ jobs:
           - { service: inventory, dockerfile: src/Services/ShopEasy.InventoryService/Dockerfile }
           - { service: payment,   dockerfile: src/Services/ShopEasy.PaymentService/Dockerfile }
           - { service: order,     dockerfile: src/Services/ShopEasy.OrderService/Dockerfile }
+          - { service: probe,     dockerfile: src/Tools/ShopEasy.Probe/Dockerfile }
     steps:
       - uses: actions/checkout@v7
 

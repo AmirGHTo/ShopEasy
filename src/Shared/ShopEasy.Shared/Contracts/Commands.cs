@@ -39,4 +39,8 @@ public record RefundPaymentCommand
 {
     public Guid OrderId { get; init; }
     public string Reason { get; init; } = string.Empty;
+
+    // Whose order this is. Optional: Payment uses it only to leave the synthetic probe's refunds out of its
+    // business counters (SyntheticTraffic); a sender that does not know it leaves it null, and nothing breaks.
+    public string? UserEmail { get; init; }
 }

@@ -80,6 +80,12 @@ x-web-security: &web-security
   ForwardedHeaders__KnownNetworks: "${FORWARDED_HEADERS_KNOWN_NETWORKS:-}"
   ForwardedHeaders__KnownProxies: "${FORWARDED_HEADERS_KNOWN_PROXIES:-}"
 
+# The customer account of the synthetic probe (README, "A synthetic order every minute"). Order and
+# Payment leave that account's orders out of the business numbers (sales, outcomes, payments); empty
+# means there is no probe account, and every order counts. Merged into the environment of order and payment.
+x-synthetic: &synthetic
+  Synthetic__ProbeEmail: "${PROBE_EMAIL:-}"
+
 services:
 
   # ── PostgreSQL Database ─────────────────────────────────────────────────────
@@ -451,7 +457,7 @@ services:
     ports:
       - "5104:8080"
     environment:
-      <<: [*logging, *telemetry, *resilience-postgres, *resilience-consumers, *identity-validation, *swagger]
+      <<: [*logging, *telemetry, *resilience-postgres, *resilience-consumers, *identity-validation, *swagger, *synthetic]
       ASPNETCORE_URLS: http://+:8080
       Testing__ForcePaymentSuccess: "true"
       ConnectionStrings__DefaultConnection: "Host=postgres;Database=shopeasy_payments;Username=shopeasy;Password=${POSTGRES_PASSWORD}"
@@ -486,7 +492,7 @@ services:
     ports:
       - "8080"        # ← change from "5102:8080" to just "8080" (dynamic host port)
     environment:
-      <<: [*logging, *telemetry, *resilience-postgres, *resilience-consumers, *resilience-retry-budget, *redis, *identity-validation, *swagger]
+      <<: [*logging, *telemetry, *resilience-postgres, *resilience-consumers, *resilience-retry-budget, *redis, *identity-validation, *swagger, *synthetic]
       # Calls to the Inventory service (the stock check): deadline, retries, circuit breaker
       Resilience__Inventory__TimeoutSeconds: "${RESILIENCE_INVENTORY_TIMEOUT_SECONDS:-3}"
       Resilience__Inventory__MaxRetries: "${RESILIENCE_INVENTORY_MAX_RETRIES:-2}"
@@ -596,6 +602,38 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+    networks:
+      - shopeasy-net
+
+  # ── Synthetic probe ─────────────────────────────────────────────────────────
+  # Places an order through the gateway every minute, waits for it to be confirmed and cancels it, and
+  # says how that went (README, "A synthetic order every minute"). It runs only when asked for:
+  #   docker compose --profile probe up -d
+  # with PROBE_EMAIL and PROBE_PASSWORD set in .env. It signs in the way a browser does, so it reaches the
+  # gateway and Identity by their public addresses; E2E_ADDRESS_MAP sends the connection to the container
+  # behind each (the default is the local stack: set PROBE_ADDRESS_MAP too when IDENTITY_PUBLIC_URL is not
+  # http://localhost:5001). Its metrics (port 9091) are read by Prometheus only.
+  probe:
+    <<: *hardened
+    profiles: ["probe"]
+    build:
+      context: .
+      dockerfile: src/Tools/ShopEasy.Probe/Dockerfile
+    container_name: shopeasy-probe
+    restart: on-failure:5
+    environment:
+      Probe__Email: "${PROBE_EMAIL:-}"
+      Probe__Password: "${PROBE_PASSWORD:-}"
+      Probe__IntervalSeconds: "${PROBE_INTERVAL_SECONDS:-60}"
+      Probe__StepTimeoutSeconds: "${PROBE_STEP_TIMEOUT_SECONDS:-60}"
+      E2E_GATEWAY_URL: "http://localhost:5000"
+      E2E_IDENTITY_URL: "${IDENTITY_PUBLIC_URL:-http://localhost:5001}"
+      E2E_ADDRESS_MAP: "${PROBE_ADDRESS_MAP:-localhost:5000=gateway:8080,localhost:5001=identity:8080}"
+    depends_on:
+      gateway:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
     networks:
       - shopeasy-net
 

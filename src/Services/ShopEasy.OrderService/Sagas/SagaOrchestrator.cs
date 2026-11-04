@@ -111,7 +111,7 @@ public class SagaOrchestrator : BackgroundService
                 await db.SaveChangesAsync(ct);
 
                 if (failed.Status == SagaStatus.Failed)
-                    OrderMetrics.RecordOrderFailed(FailReason.OrchestratorError);
+                    OrderMetrics.RecordOrderFailed(FailReason.OrchestratorError, failed.UserEmail);
             }
         }
     }

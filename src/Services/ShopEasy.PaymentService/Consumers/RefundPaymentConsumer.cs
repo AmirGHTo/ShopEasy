@@ -34,7 +34,7 @@ public class RefundPaymentConsumer(
         payment.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
         if (!alreadyRefunded)
-            PaymentMetrics.RecordRefunded(payment.Amount);
+            PaymentMetrics.RecordRefunded(payment.Amount, cmd.UserEmail);
 
         logger.LogWarning(
             "Payment {PaymentId} refunded for Order {OrderId}. Amount: {Amount}",

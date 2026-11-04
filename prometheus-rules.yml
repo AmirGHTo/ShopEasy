@@ -203,6 +203,37 @@ groups:
           summary: More than 80% of the PostgreSQL connections are in use
           description: "{{ $value | humanizePercentage }} of max_connections are open. At 100% the services cannot open another connection and requests fail."
 
+  # The shop as a customer sees it, measured from outside: the probe (src/Tools/ShopEasy.Probe, README, "A
+  # synthetic order every minute") signs in, orders, waits for the confirmation and cancels, once a minute,
+  # through the gateway. These alerts exist only when the probe runs (docker compose --profile probe).
+  - name: shopeasy-synthetic
+    rules:
+      # shopeasy_probe_success{step} is 0 for the step that failed in the last run and absent for the steps
+      # after it. The step is taken from there, and the count of failed runs from the other gauge: one failed
+      # run is a hiccup, three in a row (three minutes) is the shop.
+      - alert: SyntheticOrderFailing
+        expr: (shopeasy_probe_success == 0) and on(job, instance) (shopeasy_probe_consecutive_failures >= 3)
+        labels:
+          severity: critical
+        annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#syntheticorderfailing
+          summary: "The probe's order has failed at the {{ $labels.step }} step in three runs in a row"
+          description: "A customer's journey (sign in, product, order, confirmation, cancellation) does not work: the last run stopped at {{ $labels.step }}. The runbook says what each step points at."
+
+      # A probe that is gone (its container stopped) leaves no current series (a failed scrape marks them stale):
+      # the alert looks back for the last time it reported, up to six hours. A run ends within about 3.5 minutes
+      # even when the shop hangs (a step is cut off after three times its timeout), so 5 minutes without one
+      # is a probe that does not run.
+      - alert: SyntheticProbeStale
+        expr: time() - last_over_time(shopeasy_probe_last_run_timestamp_seconds[6h]) > 300
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          runbook_url: https://github.com/AmirGHTo/ShopEasy/blob/main/README.md#syntheticprobestale
+          summary: The synthetic probe has not finished a run for 5 minutes
+          description: "The last run ended {{ $value | humanizeDuration }} ago. Without the probe nobody is measuring the shop from outside, and SyntheticOrderFailing cannot fire."
+
   # An alert that always fires. If its mail stops arriving (or Alertmanager stops listing it), the chain
   # Prometheus -> Alertmanager -> mailbox is broken, which no other alert could tell us.
   - name: shopeasy-meta

@@ -96,7 +96,7 @@ public class InventoryRestockedConsumer(
         await transaction.CommitAsync();
 
         OrderMetrics.RecordSagaCancelled(DateTime.UtcNow - saga.CreatedAt);
-        OrderMetrics.RecordOrderCancelled(FailureReasons.CancelReasonOf(saga.FailureReason));
+        OrderMetrics.RecordOrderCancelled(FailureReasons.CancelReasonOf(saga.FailureReason), saga.UserEmail);
 
         logger.LogInformation(
             "Saga {SagaId}: Order {OrderId} cancelled, refunded and restocked", saga.Id, saga.OrderId);

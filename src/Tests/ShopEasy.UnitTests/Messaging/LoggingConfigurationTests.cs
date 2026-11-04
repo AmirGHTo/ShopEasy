@@ -106,7 +106,10 @@ public class LoggingConfigurationTests
     [Fact]
     public void EveryDockerfile_TakesTheVersionAsABuildArgument_AndBakesItIntoTheImage()
     {
-        var dockerfiles = Directory.GetFiles(Path.Combine(RepositoryFiles.Root, "src"), "Dockerfile", SearchOption.AllDirectories);
+        // the six services; the synthetic probe (src/Tools) is not one: it does not log with the shared setup
+        var dockerfiles = Directory.GetFiles(Path.Combine(RepositoryFiles.Root, "src"), "Dockerfile", SearchOption.AllDirectories)
+            .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}Tools{Path.DirectorySeparatorChar}"))
+            .ToArray();
         dockerfiles.Should().HaveCount(6);
 
         foreach (var file in dockerfiles)

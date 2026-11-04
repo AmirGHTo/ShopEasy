@@ -144,7 +144,7 @@ public class InventoryReservationFailedConsumer(
         await transaction.CommitAsync();
 
         OrderMetrics.RecordSagaCancelled(DateTime.UtcNow - saga.CreatedAt);
-        OrderMetrics.RecordOrderCancelled(CancelReason.StockUnavailable);
+        OrderMetrics.RecordOrderCancelled(CancelReason.StockUnavailable, saga.UserEmail);
     }
 }
 
@@ -192,6 +192,7 @@ public class PaymentSucceededConsumer(
                     await publishEndpoint.Publish(new RefundPaymentCommand
                     {
                         OrderId = saga.OrderId,
+                        UserEmail = saga.UserEmail,
                         Reason = $"Order was already in state {saga.Status} " +
                                   $"when payment arrived"
                     }, context.CancellationToken);
@@ -283,7 +284,7 @@ public class InventoryCommittedConsumer(
                 "Saga {SagaId}: commit done for Order {OrderId}, which was cancelled meanwhile — refunding",
                 saga.Id, saga.OrderId);
             await context.Publish(
-                new RefundPaymentCommand { OrderId = saga.OrderId, Reason = saga.FailureReason! },
+                new RefundPaymentCommand { OrderId = saga.OrderId, UserEmail = saga.UserEmail, Reason = saga.FailureReason! },
                 context.CancellationToken);
             await transaction.CommitAsync();
             return;
@@ -307,7 +308,7 @@ public class InventoryCommittedConsumer(
         await transaction.CommitAsync();
 
         OrderMetrics.RecordSagaCompleted(DateTime.UtcNow - saga.CreatedAt);
-        OrderMetrics.RecordOrderConfirmed(saga.TotalAmount);
+        OrderMetrics.RecordOrderConfirmed(saga.TotalAmount, saga.UserEmail);
 
         logger.LogInformation(
             "Saga {SagaId}: Order {OrderId} completed successfully ✅",
@@ -331,6 +332,7 @@ public class InventoryCommitFailedConsumer(
     {
         var evt = context.Message;
         var failedSaga = false;
+        string? failedSagaEmail = null;
 
         await using (var transaction = await db.Database.BeginOrJoinAsync(context.CancellationToken))
         {
@@ -377,11 +379,13 @@ public class InventoryCommitFailedConsumer(
                     paymentStatus: "Refunding",
                     failureReason: saga.FailureReason);
                 failedSaga = true;
+                failedSagaEmail = saga.UserEmail;
             }
 
             await publishEndpoint.Publish(new RefundPaymentCommand
             {
                 OrderId = saga.OrderId,
+                UserEmail = saga.UserEmail,
                 Reason = $"Inventory could not be committed: {evt.Reason}"
             }, context.CancellationToken);
             await transaction.CommitAsync();
@@ -390,7 +394,7 @@ public class InventoryCommitFailedConsumer(
         if (failedSaga)
         {
             OrderMetrics.RecordSagaFailed();
-            OrderMetrics.RecordOrderCancelled(CancelReason.InventoryCommitFailed);
+            OrderMetrics.RecordOrderCancelled(CancelReason.InventoryCommitFailed, failedSagaEmail);
         }
     }
 }
@@ -499,6 +503,6 @@ public class InventoryReleasedConsumer(
         await transaction.CommitAsync();
 
         OrderMetrics.RecordSagaCancelled(DateTime.UtcNow - saga.CreatedAt);
-        OrderMetrics.RecordOrderCancelled(FailureReasons.CancelReasonOf(saga.FailureReason));
+        OrderMetrics.RecordOrderCancelled(FailureReasons.CancelReasonOf(saga.FailureReason), saga.UserEmail);
     }
 }

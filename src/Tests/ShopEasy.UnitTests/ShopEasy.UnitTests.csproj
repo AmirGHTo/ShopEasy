@@ -28,5 +28,6 @@
 	  <ProjectReference Include="..\..\Services\ShopEasy.ProductService\ShopEasy.ProductService.csproj" />
 	  <ProjectReference Include="..\..\Identity\ShopEasy.Identity\ShopEasy.Identity.csproj" />
 	  <ProjectReference Include="..\..\Gateway\ShopEasy.Gateway\ShopEasy.Gateway.csproj" />
+	  <ProjectReference Include="..\..\Tools\ShopEasy.Probe\ShopEasy.Probe.csproj" />
 	</ItemGroup>
 </Project>
