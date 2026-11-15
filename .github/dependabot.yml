@@ -51,6 +51,14 @@ updates:
       #  - Serilog.AspNetCore 10 is already in use; later majors follow the framework version.
       - dependency-name: "MassTransit*"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      #  - OpenTelemetry stays on 1.20.x: 1.21 depends on Microsoft.Extensions.* 11.0.0
+      #    (Configuration.Abstractions, Configuration.Binder, Hosting.Abstractions, Logging.Configuration),
+      #    while the services stay on .NET 8 with the 8.x packages, so restore fails with NU1605 (a package
+      #    downgrade is an error here; seen in a Dependabot pull request, #248). Patches of 1.20.x still
+      #    arrive. Move to 1.21+ together with the framework and the Microsoft.Extensions packages, then
+      #    delete this rule.
+      - dependency-name: "OpenTelemetry*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: "Swashbuckle.AspNetCore*"
         update-types: ["version-update:semver-major"]
       - dependency-name: "Serilog.AspNetCore"
