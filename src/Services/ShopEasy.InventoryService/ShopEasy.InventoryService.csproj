@@ -11,8 +11,8 @@
 	    <PrivateAssets>all</PrivateAssets>
 	    <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
 	  </PackageReference>
-	  <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.33" />
-	  <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.33" />
+	  <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.34" />
+	  <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.34" />
 	  <PackageReference Include="MassTransit" Version="8.2.5" />
 	  <PackageReference Include="MassTransit.EntityFrameworkCore" Version="8.2.5" />
 	  <PackageReference Include="MassTransit.RabbitMQ" Version="8.2.5" />
@@ -28,7 +28,7 @@
 	  <PackageReference Include="StackExchange.Redis" Version="2.13.23" />
 	  <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
 	  <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
-	  <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="8.0.33" />
+	  <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="8.0.34" />
 	  <PackageReference Include="AspNetCore.HealthChecks.Rabbitmq" Version="8.0.2" />
 	  <PackageReference Include="AspNetCore.HealthChecks.NpgSql" Version="8.0.2" />
 	  <PackageReference Include="AspNetCore.HealthChecks.Uris" Version="8.0.1" />
