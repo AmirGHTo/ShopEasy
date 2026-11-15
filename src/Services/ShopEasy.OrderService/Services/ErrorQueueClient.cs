@@ -10,22 +10,29 @@ public static class ErrorQueues
 {
     public const string Suffix = "_error";
 
-    // Add new ones as you add consumers
+    // One per consumer queue of every service (the cfg.ReceiveEndpoint names in the three Program.cs files).
+    // Add a new one when you add a consumer: ErrorQueuesTests fails until you do.
     public static readonly IReadOnlyList<string> Monitored =
     [
+        // Inventory
         "inventory-reserve_error",
         "inventory-commit_error",
         "inventory-release_error",
+        "inventory-restock_error",
+        // Payment
         "payment-process_error",
-        "order-saga-starter_error",
         "payment-refund_error",
+        // Order (the saga's own queues)
+        "order-saga-starter_error",
         "order-saga-inventory-reserved_error",
         "order-saga-inventory-failed_error",
         "order-saga-inventory-committed_error",
         "order-saga-inventory-commit-failed_error",
         "order-saga-payment-succeeded_error",
         "order-saga-payment-failed_error",
-        "order-saga-inventory-released_error"
+        "order-saga-inventory-released_error",
+        "order-saga-payment-refunded_error",
+        "order-saga-inventory-restocked_error"
     ];
 
     public static bool IsMonitored(string queueName) =>
