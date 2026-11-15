@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -27,6 +28,38 @@ public class ErrorQueuesTests
     [Fact]
     public void EveryMonitoredQueueIsAnErrorQueue()
         => ErrorQueues.Monitored.Should().OnlyContain(q => q.EndsWith(ErrorQueues.Suffix));
+
+    // The services declare their consumer queues in Program.cs (cfg.ReceiveEndpoint("name", ...)). Each has a
+    // <name>_error queue where a message that failed all its retries is parked. One that is not in
+    // ErrorQueues.Monitored is invisible: no DEAD LETTER ALERT, no DeadLettersPresent, and the requeue
+    // endpoint refuses it. So a consumer added without its error queue fails here.
+    private static string[] ConsumerQueuesOf(string service) =>
+        Regex.Matches(RepositoryFiles.Read("src", "Services", service, "Program.cs"), @"ReceiveEndpoint\(""([^""]+)""")
+            .Select(m => m.Groups[1].Value).ToArray();
+
+    [Theory]
+    [InlineData("ShopEasy.OrderService")]
+    [InlineData("ShopEasy.PaymentService")]
+    [InlineData("ShopEasy.InventoryService")]
+    public void EveryConsumerQueueOfAService_HasItsErrorQueueMonitored(string service)
+    {
+        var queues = ConsumerQueuesOf(service);
+
+        queues.Should().NotBeEmpty($"{service} declares its consumer queues in Program.cs");
+        ErrorQueues.Monitored.Should().Contain(queues.Select(q => q + ErrorQueues.Suffix),
+            $"a message that fails all its retries in a queue of {service} must be seen and requeueable");
+    }
+
+    [Fact]
+    public void EveryMonitoredQueue_BelongsToAConsumerQueue_AndIsListedOnce()
+    {
+        var errorQueues = new[] { "ShopEasy.OrderService", "ShopEasy.PaymentService", "ShopEasy.InventoryService" }
+            .SelectMany(ConsumerQueuesOf).Select(q => q + ErrorQueues.Suffix).ToArray();
+
+        // a name no consumer declares is never created, so it would always read 0
+        ErrorQueues.Monitored.Should().BeSubsetOf(errorQueues);
+        ErrorQueues.Monitored.Should().OnlyHaveUniqueItems();
+    }
 
     [Theory]
     [InlineData("payment-process_error", true)]
